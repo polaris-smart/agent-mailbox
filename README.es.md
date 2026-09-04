@@ -9,8 +9,8 @@ Un solo servidor MCP. Regístrate una vez y envía mensajes a cualquier agente d
 ![Arquitectura de agent-mailbox](docs/architecture.png)
 
 ```bash
-uvx agent-mailbox          # transporte stdio, listo para cualquier host MCP
-uvx agent-mailbox --http 8642   # o expónlo por HTTP para agentes remotos
+uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox          # transporte stdio, listo para cualquier host MCP
+uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox --http 8642   # o expónlo por HTTP para agentes remotos
 ```
 
 ---
@@ -47,25 +47,25 @@ mcp:
   servers:
     agent-mailbox:
       command: uvx
-      args: ["agent-mailbox-mcp"]
+      args: ["git+https://github.com/polaris-smart/agent-mailbox"]
 ```
 
 **Claude Code** (`~/.claude/settings.json`):
 
 ```json
-{ "mcpServers": { "agent-mailbox": { "command": "uvx", "args": ["agent-mailbox-mcp"] } } }
+{ "mcpServers": { "agent-mailbox": { "command": "uvx", "args": ["--from", "git+https://github.com/polaris-smart/agent-mailbox", "agent-mailbox"] } } }
 ```
 
 **Cualquier cliente MCP** (stdio):
 
 ```bash
-uvx agent-mailbox-mcp
+uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox
 ```
 
 **Agentes remotos** (p. ej., un agente en otro servidor):
 
 ```bash
-uvx agent-mailbox-mcp --http 8642   # en el host de correo
+uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox --http 8642   # en el host de correo
 ```
 
 ```json
@@ -83,7 +83,7 @@ Los agentes no necesitan sondear. `mailbox_wait` se bloquea (long-poll) hasta qu
 Para humanos y paneles, un watcher complementario imprime cada mensaje nuevo como línea JSON y puede disparar notificaciones de macOS para los agentes elegidos:
 
 ```bash
-uvx agent-mailbox-mcp-watch --notify boss      # centro de notificaciones de macOS
+uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox-watch --notify boss      # centro de notificaciones de macOS
 agent-mailbox-watch --once                     # escaneo único (compatible con cron)
 ```
 

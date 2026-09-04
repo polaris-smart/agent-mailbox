@@ -9,8 +9,8 @@ One MCP server. Register once, message any agent on this machine. No cron. No po
 ![agent-mailbox architecture](docs/architecture.png)
 
 ```bash
-uvx agent-mailbox          # stdio transport, ready for any MCP host
-uvx agent-mailbox --http 8642   # or expose it over HTTP for remote agents
+uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox          # stdio transport, ready for any MCP host
+uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox --http 8642   # or expose it over HTTP for remote agents
 ```
 
 ---
@@ -47,25 +47,25 @@ mcp:
   servers:
     agent-mailbox:
       command: uvx
-      args: ["agent-mailbox-mcp"]
+      args: ["--from", "git+https://github.com/polaris-smart/agent-mailbox", "agent-mailbox"]
 ```
 
 **Claude Code** (`~/.claude/settings.json`):
 
 ```json
-{ "mcpServers": { "agent-mailbox": { "command": "uvx", "args": ["agent-mailbox-mcp"] } } }
+{ "mcpServers": { "agent-mailbox": { "command": "uvx", "args": ["--from", "git+https://github.com/polaris-smart/agent-mailbox", "agent-mailbox"] } } }
 ```
 
 **Any MCP client** (stdio):
 
 ```bash
-uvx agent-mailbox-mcp
+uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox
 ```
 
 **Remote agents** (e.g. an agent on another server):
 
 ```bash
-uvx agent-mailbox-mcp --http 8642   # on the mail host
+uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox --http 8642   # on the mail host
 ```
 
 ```json
@@ -87,7 +87,7 @@ For humans and dashboards, a companion watcher prints every new message as a
 JSON line and can fire macOS notifications for chosen agents:
 
 ```bash
-uvx agent-mailbox-mcp-watch --notify boss      # macOS notification center
+uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox-watch --notify boss      # macOS notification center
 agent-mailbox-watch --once                     # single scan (cron-friendly)
 ```
 

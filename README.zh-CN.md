@@ -9,8 +9,8 @@
 ![agent-mailbox 架构图](docs/architecture.png)
 
 ```bash
-uvx agent-mailbox          # stdio transport，任何 MCP 宿主即插即用
-uvx agent-mailbox --http 8642   # 或走 HTTP，供远程 Agent 使用
+uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox          # stdio transport，任何 MCP 宿主即插即用
+uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox --http 8642   # 或走 HTTP，供远程 Agent 使用
 ```
 
 ---
@@ -47,25 +47,25 @@ mcp:
   servers:
     agent-mailbox:
       command: uvx
-      args: ["agent-mailbox-mcp"]
+      args: ["git+https://github.com/polaris-smart/agent-mailbox"]
 ```
 
 **Claude Code** (`~/.claude/settings.json`)：
 
 ```json
-{ "mcpServers": { "agent-mailbox": { "command": "uvx", "args": ["agent-mailbox-mcp"] } } }
+{ "mcpServers": { "agent-mailbox": { "command": "uvx", "args": ["--from", "git+https://github.com/polaris-smart/agent-mailbox", "agent-mailbox"] } } }
 ```
 
 **任何 MCP 客户端** (stdio)：
 
 ```bash
-uvx agent-mailbox-mcp
+uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox
 ```
 
 **远程 Agent**（比如另一台服务器上的 Agent）：
 
 ```bash
-uvx agent-mailbox-mcp --http 8642   # 在邮件主机上
+uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox --http 8642   # 在邮件主机上
 ```
 
 ```json
@@ -83,7 +83,7 @@ Agent 不需要轮询。`mailbox_wait` 阻塞长轮询直到消息到达 —— 
 对人类和仪表盘，配套的 watcher 把每条新消息按 JSON 行打印，还能给指定 Agent 发 macOS 通知：
 
 ```bash
-uvx agent-mailbox-mcp-watch --notify boss      # macOS 通知中心
+uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox-watch --notify boss      # macOS 通知中心
 agent-mailbox-watch --once                     # 单次扫描（适合 cron）
 ```
 

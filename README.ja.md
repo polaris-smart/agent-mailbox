@@ -9,8 +9,8 @@ MCP サーバーはひとつ。一度登録すれば、このマシン上のど�
 ![agent-mailbox アーキテクチャ](docs/architecture.png)
 
 ```bash
-uvx agent-mailbox          # stdio transport、あらゆる MCP ホストで即使用可能
-uvx agent-mailbox --http 8642   # または HTTP で公開し、リモートエージェントに対応
+uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox          # stdio transport、あらゆる MCP ホストで即使用可能
+uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox --http 8642   # または HTTP で公開し、リモートエージェントに対応
 ```
 
 ---
@@ -47,25 +47,25 @@ mcp:
   servers:
     agent-mailbox:
       command: uvx
-      args: ["agent-mailbox-mcp"]
+      args: ["git+https://github.com/polaris-smart/agent-mailbox"]
 ```
 
 **Claude Code** (`~/.claude/settings.json`)：
 
 ```json
-{ "mcpServers": { "agent-mailbox": { "command": "uvx", "args": ["agent-mailbox-mcp"] } } }
+{ "mcpServers": { "agent-mailbox": { "command": "uvx", "args": ["--from", "git+https://github.com/polaris-smart/agent-mailbox", "agent-mailbox"] } } }
 ```
 
 **任意の MCP クライアント** (stdio)：
 
 ```bash
-uvx agent-mailbox-mcp
+uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox
 ```
 
 **リモートエージェント**（別サーバー上のエージェントなど）：
 
 ```bash
-uvx agent-mailbox-mcp --http 8642   # メールホスト上で
+uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox --http 8642   # メールホスト上で
 ```
 
 ```json
@@ -83,7 +83,7 @@ uvx agent-mailbox-mcp --http 8642   # メールホスト上で
 人間とダッシュボードのために、専用ウォッチャーが新しいメッセージを JSON 行として出力し、指定エージェントに macOS 通知を送ることもできます：
 
 ```bash
-uvx agent-mailbox-mcp-watch --notify boss      # macOS 通知センター
+uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox-watch --notify boss      # macOS 通知センター
 agent-mailbox-watch --once                     # 単一スキャン（cron 向け）
 ```
 
