@@ -4,11 +4,15 @@ import json
 import os
 import select
 import subprocess
+import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENV = {**os.environ, "AGENT_MAIL_HOME": os.path.join(ROOT, ".test-mail")}
+# Use the interpreter running the tests (CI has no .venv); fall back to repo venv locally.
 PY = os.path.join(ROOT, ".venv", "bin", "python")
+if not os.path.exists(PY):
+    PY = sys.executable
 
 
 def main():
