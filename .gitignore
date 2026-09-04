@@ -5,3 +5,4 @@ __pycache__/
 .test-mail/
 dist/
 .env
+.test-mail2/
