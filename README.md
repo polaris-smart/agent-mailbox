@@ -4,6 +4,10 @@
 
 One MCP server. Register once, message any agent on this machine. No cron. No polling daemons. No shared markdown files. No cloud.
 
+📖 **Docs**: [English](README.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [Español](README.es.md) — [Architecture diagram](docs/architecture.html)
+
+![agent-mailbox architecture](docs/architecture.png)
+
 ```bash
 uvx agent-mailbox          # stdio transport, ready for any MCP host
 uvx agent-mailbox --http 8642   # or expose it over HTTP for remote agents
