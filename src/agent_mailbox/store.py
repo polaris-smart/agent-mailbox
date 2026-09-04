@@ -59,17 +59,17 @@ class MailStore:
 
     class _Lock:
         def __init__(self, path: Path) -> None:
-            self._fh = open(path, "a+")
+            self._fh = open(path, "a+")  # noqa: SIM115 — lock must outlive the with-block
             fcntl.flock(self._fh, fcntl.LOCK_EX)
 
-        def __enter__(self) -> "MailStore._Lock":
+        def __enter__(self) -> MailStore._Lock:
             return self
 
-        def __exit__(self, *exc: Any) -> None:
+        def __exit__(self, *exc: object) -> None:
             fcntl.flock(self._fh, fcntl.LOCK_UN)
             self._fh.close()
 
-    def _locked(self) -> "MailStore._Lock":
+    def _locked(self) -> MailStore._Lock:
         return MailStore._Lock(self._lock_path)
 
     # -------------------------------------------------------------- registry
@@ -153,7 +153,6 @@ class MailStore:
         mid_base = _msg_id()
         out = []
         with self._locked():
-            reg = self._read_registry()
             for rid in recipients:
                 self._validate_id(rid)
                 inbox = self._inbox_dir(rid)

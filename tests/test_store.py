@@ -1,6 +1,5 @@
 """Tests for agent-mailbox store: register, send, check, ack, broadcast, safety."""
 
-import json
 import threading
 
 import pytest
@@ -86,8 +85,6 @@ def test_reply_chain(store):
     sent = store.send("HS", "WB", "review this", "please")
     msg_id = sent[0]["id"]
     store.check("WB")
-    reply = store.reply.__self__ if False else None  # placeholder
-    # reply via store primitives
     st = store
     st.set_status("WB", msg_id, "done")
     back = st.send("WB", "HS", "Re: review this", "done, all green", reply_to=msg_id)
@@ -141,7 +138,7 @@ def test_concurrent_sends_no_corruption(store):
         try:
             for j in range(10):
                 store.send("HS", "WB", f"m{i}-{j}", "x")
-        except Exception as e:  # pragma: no cover
+        except (OSError, MailboxError) as e:  # pragma: no cover
             errors.append(e)
 
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
