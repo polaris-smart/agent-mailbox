@@ -169,7 +169,7 @@ def main() -> None:
         os.environ["AGENT_MAIL_HOME"] = args.home
 
     if args.http:
-        server.run(transport="http", port=args.http)
+        server.run(transport="streamable-http", port=args.http)
     else:
         server.run(transport="stdio")
 
