@@ -97,6 +97,16 @@ Local mailboxes solve same-machine and trusted-LAN coordination. When you need c
 - The store is append-oriented with atomic writes and file locks; a crashed writer cannot corrupt the registry.
 - For tamper-evidence, signed receipts (ed25519) are on the roadmap — see [agenttransfer](https://github.com/shehryarsaroya/agenttransfer) for the pattern.
 
+
+## Roadmap
+
+- **v0.1.0** (current) — same-machine agent mailboxes over stdio MCP. Zero infrastructure.
+- **v0.2.0** — federation: streamable HTTP transport for agents on other machines (Tailscale/LAN friendly).
+- **v0.3.0** — signed receipts (ed25519) for tamper-evident delivery.
+- **v1.0.0** — AAMP bridge: graduate local threads to cross-organization email via the [AAMP protocol](https://github.com/larksuite/aamp).
+
+Sister project: [dsh-devices](https://github.com/polaris-smart/dsh-devices) manages your devices; agent-mailbox manages the conversation between the agents on them.
+
 ## Development
 
 ```bash
