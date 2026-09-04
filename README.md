@@ -103,22 +103,12 @@ agent-mailbox-watch --once                     # single scan (cron-friendly)
 
 Local mailboxes solve same-machine and trusted-LAN coordination. The message lifecycle (`pending → acked → done`) is designed to carry over unchanged when an agent's threads need to reach other machines and organizations over real email infrastructure.
 
-## Comparison with neighbors
-
-| | agent-mailbox | [cc2cc](https://github.com/non4me/cc2cc) | [agent-talk](https://github.com/xhluca/agent-talk) | email-based kits |
-|---|---|---|---|---|
-| External service | **none** | Claude Code channels | retalk relay | SMTP / IMAP / cloud |
-| Works offline | **yes** | yes | relay required | no |
-| Persistent identity | **register once** | session-bound | invite codes | per-provider |
-| Any MCP client | **yes** | Claude Code only | six CLIs, plugin-only | yes |
-| Human-readable store | **plain JSON** | JSON | relay-side | mailbox export |
-
 ## Security notes
 
 - Mail root lives in your home directory; messages never leave the machine unless you opt into HTTP transport on a trusted network.
 - Agent ids are strictly validated (`[A-Za-z0-9_-]`, ≤64 chars) — no path traversal.
 - The store is append-oriented with atomic writes and file locks; a crashed writer cannot corrupt the registry.
-- For tamper-evidence, signed receipts (ed25519) are on the roadmap — see [agenttransfer](https://github.com/shehryarsaroya/agenttransfer) for the pattern.
+- For tamper-evidence, signed receipts (ed25519) are on the roadmap.
 
 
 ## Roadmap

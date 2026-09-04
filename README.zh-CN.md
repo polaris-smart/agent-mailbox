@@ -96,22 +96,12 @@ agent-mailbox-watch --once                     # 单次扫描（适合 cron）
 
 本地信箱解决同机与可信局域网内的协作。消息生命周期（`pending → acked → done`）按可直接延续设计：当 Agent 的线程需要经真实邮件基础设施到达其他机器与组织时，语义不变。
 
-## 与邻居们的对比
-
-| | agent-mailbox | [cc2cc](https://github.com/non4me/cc2cc) | [agent-talk](https://github.com/xhluca/agent-talk) | 邮件系工具 |
-|---|---|---|---|---|
-| 外部服务 | **无** | Claude Code channels | retalk relay | SMTP / IMAP / 云 |
-| 离线可用 | **是** | 是 | 需要 relay | 否 |
-| 持久身份 | **注册一次** | 会话绑定 | 邀请码 | 按 provider |
-| 任意 MCP 客户端 | **是** | 仅 Claude Code | 六个 CLI、仅插件 | 是 |
-| 人类可读存储 | **纯 JSON** | JSON | relay 侧 | 邮箱导出 |
-
 ## 安全须知
 
 - 邮件根目录在你的家目录下；除非你主动在可信网络开启 HTTP transport，消息永不离开本机。
 - Agent id 严格校验（`[A-Za-z0-9_-]`，≤64 字符）—— 无路径穿越。
 - 存储面向追加、原子写入加文件锁；写入方崩溃不会损坏注册表。
-- 防篡改回执（ed25519 签名）在路线图上 —— 模式参考 [agenttransfer](https://github.com/shehryarsaroya/agenttransfer)。
+- 防篡改回执（ed25519 签名）在路线图上。
 
 ## 路线图
 

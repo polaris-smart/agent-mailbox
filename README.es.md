@@ -96,22 +96,12 @@ agent-mailbox-watch --once                     # escaneo único (compatible con 
 
 Los buzones locales resuelven la coordinación en la misma máquina y en LAN de confianza. El ciclo de vida de mensajes (`pending → acked → done`) está diseñado para continuar intacto cuando los hilos de un agente necesiten llegar a otras máquinas y organizaciones sobre infraestructura de correo real.
 
-## Comparación con vecinos
-
-| | agent-mailbox | [cc2cc](https://github.com/non4me/cc2cc) | [agent-talk](https://github.com/xhluca/agent-talk) | kits basados en email |
-|---|---|---|---|---|
-| Servicio externo | **ninguno** | Claude Code channels | retalk relay | SMTP / IMAP / nube |
-| Funciona sin conexión | **sí** | sí | requiere relay | no |
-| Identidad persistente | **registrar una vez** | ligada a sesión | códigos de invitación | por proveedor |
-| Cualquier cliente MCP | **sí** | solo Claude Code | seis CLIs, solo plugin | sí |
-| Almacén legible | **JSON plano** | JSON | lado del relay | exportación del buzón |
-
 ## Notas de seguridad
 
 - La raíz del correo vive en tu directorio personal; los mensajes nunca salen de la máquina salvo que actives el transporte HTTP en una red confiable.
 - Los IDs de agente se validan estrictamente (`[A-Za-z0-9_-]`, ≤64 caracteres) — sin path traversal.
 - El almacén está orientado a añadir, con escrituras atómicas y bloqueos de archivo; un escritor que falle no corrompe el registro.
-- Para prueba de manipulación, los recibos firmados (ed25519) están en la hoja de ruta — ver [agenttransfer](https://github.com/shehryarsaroya/agenttransfer) para el patrón.
+- Para prueba de manipulación, los recibos firmados (ed25519) están en la hoja de ruta.
 
 ## Hoja de ruta
 
