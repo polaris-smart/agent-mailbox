@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import time
 
 from mcp.server.mcpserver import MCPServer
 
@@ -135,6 +136,25 @@ def mailbox_whoami() -> dict:
         "default_identity": os.environ.get("AGENT_MAIL_ID", ""),
         "agents": reg["agents"],
     }
+
+
+@server.tool()
+def mailbox_wait(agent_id: str = "", timeout_seconds: float = 25.0) -> dict:
+    """Block until a new message arrives (long-poll, up to timeout). Returns
+    immediately if pending messages exist. Import 'time' is at module top."""
+    me = agent_id or os.environ.get("AGENT_MAIL_ID", "")
+    if not me:
+        raise MailboxError("agent_id required (or set AGENT_MAIL_ID env)")
+    st = _store_instance()
+    deadline = time.time() + max(1.0, min(timeout_seconds, 60.0))
+    while True:
+        msgs = st.list_messages(me, status="pending")
+        if msgs:
+            got = st.check(me, mark=True)
+            return {"agent_id": me, "received": len(got), "messages": got}
+        if time.time() >= deadline:
+            return {"agent_id": me, "received": 0, "messages": [], "timeout": True}
+        time.sleep(0.5)
 
 
 def main() -> None:

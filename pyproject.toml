@@ -29,6 +29,7 @@ dev = ["pytest>=8", "pytest-timeout>=3", "ruff>=0.6"]
 
 [project.scripts]
 agent-mailbox = "agent_mailbox.server:main"
+agent-mailbox-watch = "agent_mailbox.watch:main"
 
 [project.urls]
 Homepage = "https://github.com/polaris-smart/agent-mailbox"

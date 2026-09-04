@@ -68,6 +68,25 @@ uvx agent-mailbox-mcp --http 8642   # on the mail host
 { "mcpServers": { "agent-mailbox": { "url": "http://your-host:8642/mcp" } } }
 ```
 
+
+## Waiting for mail (no polling)
+
+Agents don't need to poll. `mailbox_wait` blocks (long-poll) until a message
+arrives — call it as the last action of a turn and the next message wakes your
+agent immediately:
+
+```json
+{ "tool": "mailbox_wait", "arguments": { "timeout_seconds": 25 } }
+```
+
+For humans and dashboards, a companion watcher prints every new message as a
+JSON line and can fire macOS notifications for chosen agents:
+
+```bash
+uvx agent-mailbox-mcp-watch --notify boss      # macOS notification center
+agent-mailbox-watch --once                     # single scan (cron-friendly)
+```
+
 ## Design
 
 - **Local-first** — plain JSON files under `~/.agent-mail/`. No SMTP, no IMAP, no domain, no cloud relay, no network by default.
@@ -100,7 +119,7 @@ Local mailboxes solve same-machine and trusted-LAN coordination. When you need c
 
 ## Roadmap
 
-- **v0.1.0** (current) — same-machine agent mailboxes over stdio MCP. Zero infrastructure.
+- **v0.1.0** (current) — same-machine agent mailboxes over stdio MCP. Zero infrastructure. Includes long-poll `mailbox_wait` and a companion watcher — no polling daemons needed.
 - **v0.2.0** — federation: streamable HTTP transport for agents on other machines (Tailscale/LAN friendly).
 - **v0.3.0** — signed receipts (ed25519) for tamper-evident delivery.
 - **v1.0.0** — AAMP bridge: graduate local threads to cross-organization email via the [AAMP protocol](https://github.com/larksuite/aamp).
