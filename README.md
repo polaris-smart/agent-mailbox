@@ -101,7 +101,7 @@ agent-mailbox-watch --once                     # single scan (cron-friendly)
 
 ### When you outgrow it
 
-Local mailboxes solve same-machine and trusted-LAN coordination. When you need cross-organization delivery over real email infrastructure, graduate your protocol semantics to [AAMP](https://github.com/larksuite/aamp) (Agent Asynchronous Messaging Protocol) — agent-mailbox's message lifecycle is designed to map onto it cleanly.
+Local mailboxes solve same-machine and trusted-LAN coordination. The message lifecycle (`pending → acked → done`) is designed to carry over unchanged when an agent's threads need to reach other machines and organizations over real email infrastructure.
 
 ## Comparison with neighbors
 
@@ -126,7 +126,7 @@ Local mailboxes solve same-machine and trusted-LAN coordination. When you need c
 - **v0.1.0** (current) — same-machine agent mailboxes over stdio MCP. Zero infrastructure. Includes long-poll `mailbox_wait` and a companion watcher — no polling daemons needed.
 - **v0.2.0** — federation: streamable HTTP transport for agents on other machines (Tailscale/LAN friendly).
 - **v0.3.0** — signed receipts (ed25519) for tamper-evident delivery.
-- **v1.0.0** — AAMP bridge: graduate local threads to cross-organization email via the [AAMP protocol](https://github.com/larksuite/aamp).
+- **v1.0.0** — cross-organization bridge: local threads reach agents on other machines and organizations over standard email infrastructure, with the same mailbox lifecycle.
 
 Sister project: [dsh-devices](https://github.com/polaris-smart/dsh-devices) manages your devices; agent-mailbox manages the conversation between the agents on them.
 

@@ -94,7 +94,7 @@ agent-mailbox-watch --once                     # escaneo único (compatible con 
 - **MCP nativo** — no es un plugin de CLI más: cualquier host MCP puede registrarse.
 - **Identidad por registro** — `mailbox_register` una vez, identidad persistente; no desaparece al terminar la sesión.
 
-Los buzones locales resuelven la coordinación en la misma máquina y en LAN de confianza. Cuando necesites entrega entre organizaciones sobre infraestructura de correo real, gradúa la semántica de tu protocolo a [AAMP](https://github.com/larksuite/aamp) (Agent Asynchronous Messaging Protocol) — el ciclo de vida de mensajes de agent-mailbox está diseñado para mapear limpiamente sobre él.
+Los buzones locales resuelven la coordinación en la misma máquina y en LAN de confianza. El ciclo de vida de mensajes (`pending → acked → done`) está diseñado para continuar intacto cuando los hilos de un agente necesiten llegar a otras máquinas y organizaciones sobre infraestructura de correo real.
 
 ## Comparación con vecinos
 
@@ -118,7 +118,7 @@ Los buzones locales resuelven la coordinación en la misma máquina y en LAN de 
 - **v0.1.0** (actual) — buzones de agente en la misma máquina sobre stdio MCP. Infraestructura cero. Incluye `mailbox_wait` de long-poll y un watcher complementario — sin demonios de sondeo.
 - **v0.2.0** — federación: transporte HTTP streamable para agentes en otras máquinas (Tailscale/LAN friendly).
 - **v0.3.0** — recibos firmados (ed25519) para entrega a prueba de manipulación.
-- **v1.0.0** — puente AAMP: gradúa hilos locales a correo entre organizaciones vía el [protocolo AAMP](https://github.com/larksuite/aamp).
+- **v1.0.0** — puente entre organizaciones: los hilos locales llegan a agentes en otras máquinas y organizaciones sobre infraestructura de correo estándar, con el mismo ciclo de vida del buzón.
 
 Proyecto hermano: [dsh-devices](https://github.com/polaris-smart/dsh-devices) gestiona tus dispositivos; agent-mailbox gestiona la conversación entre los agentes que hay en ellos.
 

@@ -94,7 +94,7 @@ agent-mailbox-watch --once                     # 单次扫描（适合 cron）
 - **MCP-native** —— 不是又一个 CLI 插件：任何 MCP 宿主都能注册。
 - **注册制身份** —— `mailbox_register` 一次，永久持久身份；不会因会话结束而消失。
 
-本地信箱解决同机与可信局域网内的协作。当需要跨组织的真实邮件基础设施投递时，把协议语义升级到 [AAMP](https://github.com/larksuite/aamp)（Agent Asynchronous Messaging Protocol）—— agent-mailbox 的消息生命周期就是按能干净映射到它而设计的。
+本地信箱解决同机与可信局域网内的协作。消息生命周期（`pending → acked → done`）按可直接延续设计：当 Agent 的线程需要经真实邮件基础设施到达其他机器与组织时，语义不变。
 
 ## 与邻居们的对比
 
@@ -118,7 +118,7 @@ agent-mailbox-watch --once                     # 单次扫描（适合 cron）
 - **v0.1.0**（当前）—— 同机 Agent 信箱，stdio MCP，零基础设施。含长轮询 `mailbox_wait` 与配套 watcher —— 无需轮询守护进程。
 - **v0.2.0** —— 联邦化：为其他机器上的 Agent 提供 streamable HTTP transport（Tailscale/局域网友好）。
 - **v0.3.0** —— 签名回执（ed25519），投递防篡改。
-- **v1.0.0** —— AAMP 桥：本地线程升级为跨组织邮件，走 [AAMP 协议](https://github.com/larksuite/aamp)。
+- **v1.0.0** —— 跨组织桥：本地线程经标准邮件基础设施到达其他机器与组织，沿用同一套信箱生命周期。
 
 姊妹项目：[dsh-devices](https://github.com/polaris-smart/dsh-devices) 管理你的设备；agent-mailbox 管理设备上 Agent 之间的对话。
 
