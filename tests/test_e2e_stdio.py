@@ -2,10 +2,10 @@
 
 import json
 import os
-import select
+import queue
 import subprocess
 import sys
-import time
+import threading
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENV = {**os.environ, "AGENT_MAIL_HOME": os.path.join(ROOT, ".test-mail")}
@@ -26,15 +26,19 @@ def main():
         proc.stdin.write((json.dumps(m) + "\n").encode())
         proc.stdin.flush()
 
+    # Cross-platform reader: select() on Windows cannot poll pipes, so a
+    # background reader thread + queue is used on all platforms.
+    q: queue.Queue = queue.Queue()
+    threading.Thread(target=lambda: [q.put(proc.stdout.readline()) for _ in iter(int, 1)], daemon=True).start()
+
     def read_resp(timeout=10):
-        end = time.time() + timeout
-        while time.time() < end:
-            r, _, _ = select.select([proc.stdout], [], [], 0.3)
-            if r:
-                line = proc.stdout.readline()
-                if line:
-                    return json.loads(line)
-        raise TimeoutError("no MCP response in time")
+        try:
+            line = q.get(timeout=timeout)
+        except queue.Empty:
+            raise TimeoutError("no MCP response in time")
+        if line:
+            return json.loads(line)
+        raise TimeoutError("empty MCP response")
 
     try:
         send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
