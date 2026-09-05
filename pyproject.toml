@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-mailbox-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Give every local AI agent its own mailbox — one MCP server, register once, message any agent on this machine."
 readme = "README.md"
 requires-python = ">=3.10"

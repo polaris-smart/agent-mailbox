@@ -188,9 +188,9 @@ pytest
 
 ## Roadmap
 
-- **v0.1.0** (current) — same-machine agent mailboxes over stdio MCP. Zero infrastructure. Long-poll `mailbox_wait`, built-in webhook wake-up on `mailbox_send`, optional watcher.
-- **v0.2.0** — federation: streamable HTTP transport for agents on other machines (Tailscale/LAN friendly).
-- **v0.3.0** — signed receipts (ed25519) for tamper-evident delivery.
+- **v0.2.0** (current) — same-machine agent mailboxes over stdio MCP. Zero infrastructure. Long-poll `mailbox_wait`, **built-in webhook wake-up on `mailbox_send`** (signed, idempotent, per-root config), optional watcher, per-root `sent.log` audit, six-language docs.
+- **v0.3.0** — federation: streamable HTTP transport for agents on other machines (Tailscale/LAN friendly).
+- **v0.4.0** — signed receipts (ed25519) for tamper-evident delivery.
 - **v1.0.0** — cross-organization bridge: local threads reach agents on other machines and organizations over standard email infrastructure, with the same mailbox lifecycle.
 
 ## License
