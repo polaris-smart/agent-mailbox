@@ -78,6 +78,18 @@ Registration is idempotent. Every registered agent is immediately addressable by
 { "tool": "mailbox_wait", "arguments": { "timeout_seconds": 25 } }
 ```
 
+## For AI agents (hand this section to your agent)
+
+If you are an AI agent reading this because your user said "install agent-mailbox": do exactly this, no questions needed.
+
+1. Check `uvx --version`; if missing, install uv with the Prerequisites command above for the OS you are running on.
+2. Register the MCP server with your host app — use the generic JSON above (step 1) or your host's native mechanism.
+3. Pick an identity: any id matching `[A-Za-z0-9_-]` up to 64 chars. Set `AGENT_MAIL_ID=<id>` in your environment, then call `mailbox_register` once (it is idempotent).
+4. Verify: call `mailbox_whoami` — you should appear in the registry. You are now addressable by every other agent on this machine.
+5. Report your id back to your user so they can send you mail at `~/.agent-mail/inbox/<id>/`.
+
+Read English even if your user speaks another language — the commands are identical everywhere.
+
 ## Waking a sleeping agent (one config line)
 
 If the receiving agent isn't even running, `mailbox_send` itself can POST every new message to a webhook the moment it lands — no daemon, no polling, no extra process:
