@@ -25,6 +25,8 @@
 
 ## Быстрый старт
 
+**Предварительные требования** — один раз: установите [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh` на macOS/Linux или `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"` на Windows). Всё остальное запускает `uvx`; больше ничего ставить не нужно.
+
 ### 1 · Зарегистрируйте сервер в вашем MCP-хосте
 
 Claude Code:
@@ -82,6 +84,8 @@ claude mcp add agent-mailbox -- uvx --from git+https://github.com/polaris-smart/
 // ~/.agent-mail/webhook.json   (chmod 600)
 { "url": "http://localhost:8644/webhooks/agent-mailbox", "secret": "…" }
 ```
+
+Секрет сгенерируйте один раз: `openssl rand -hex 32`. Можно опустить — тогда POST без подписи (для локальных тестов достаточно; требовать проверку решает получатель).
 
 Обработчик вебхуков хоста получает:
 

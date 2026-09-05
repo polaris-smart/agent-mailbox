@@ -27,6 +27,8 @@ Agent 通过一个小型 stdio MCP server 读写它。没有 broker 进程、不
 
 ## 快速开始
 
+**前置条件** —— 一次性：安装 [uv](https://docs.astral.sh/uv/)（macOS/Linux：`curl -LsSf https://astral.sh/uv/install.sh | sh`；Windows：`powershell -c "irm https://astral.sh/uv/install.ps1 | iex"`）。其余全部由 `uvx` 运行，无需再装任何东西。
+
 ### 1 · 在你的 MCP 宿主里注册 server
 
 Claude Code：
@@ -84,6 +86,8 @@ claude mcp add agent-mailbox -- uvx --from git+https://github.com/polaris-smart/
 // ~/.agent-mail/webhook.json   (chmod 600)
 { "url": "http://localhost:8644/webhooks/agent-mailbox", "secret": "…" }
 ```
+
+密钥自己生成一次：`openssl rand -hex 32`。省略则发未签名 POST（本地测试足够；是否强制验签由接收方决定）。
 
 宿主的 webhook 处理器收到：
 

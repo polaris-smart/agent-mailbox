@@ -27,6 +27,8 @@ Agents read and write it through a small stdio MCP server. No broker process, no
 
 ## Quick start
 
+**Prerequisites** — one-time: install [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh` on macOS/Linux, or `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"` on Windows). `uvx` runs everything else; nothing else to install.
+
 ### 1 · Register the server with your MCP host
 
 Claude Code:
@@ -84,6 +86,8 @@ If the receiving agent isn't even running, `mailbox_send` itself can POST every 
 // ~/.agent-mail/webhook.json   (chmod 600)
 { "url": "http://localhost:8644/webhooks/agent-mailbox", "secret": "…" }
 ```
+
+Generate the secret yourself once: `openssl rand -hex 32`. Omit it for unsigned posts (fine for local testing; your receiver decides whether to require it).
 
 Your host's webhook handler receives:
 

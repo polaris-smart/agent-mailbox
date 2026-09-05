@@ -25,6 +25,8 @@ Os agentes leem e escrevem através de um pequeno servidor MCP por stdio. Sem pr
 
 ## Início rápido
 
+**Pré-requisitos** — apenas uma vez: instale o [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh` no macOS/Linux, ou `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"` no Windows). O `uvx` roda todo o resto; nada mais a instalar.
+
 ### 1 · Registre o servidor no seu host MCP
 
 Claude Code:
@@ -82,6 +84,8 @@ Se o agente receptor nem está em execução, o próprio `mailbox_send` pode faz
 // ~/.agent-mail/webhook.json   (chmod 600)
 { "url": "http://localhost:8644/webhooks/agent-mailbox", "secret": "…" }
 ```
+
+Gere o segredo uma vez: `openssl rand -hex 32`. Omita para POSTs não assinados (suficiente para testes locais; exigir a verificação é decisão do receptor).
 
 O manipulador de webhooks do host recebe:
 
