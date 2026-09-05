@@ -21,6 +21,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import time
 
 if sys.platform == "win32":
@@ -33,6 +34,9 @@ from typing import Any
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MSG_STATUSES = ("pending", "acked", "done")
 RESERVED_IDS = {"boss"}
+
+
+_thread_lock = threading.Lock()
 
 
 class MailboxError(ValueError):
@@ -65,6 +69,7 @@ class MailStore:
 
     class _Lock:
         def __init__(self, path: Path) -> None:
+            _thread_lock.acquire()
             self._fh = open(path, "a+")  # noqa: SIM115 — lock must outlive the with-block
             if sys.platform == "win32":
                 msvcrt.locking(self._fh.fileno(), msvcrt.LK_LOCK, 1)
@@ -81,6 +86,7 @@ class MailStore:
             else:
                 fcntl.flock(self._fh, fcntl.LOCK_UN)
             self._fh.close()
+            _thread_lock.release()
 
     def _locked(self) -> MailStore._Lock:
         return MailStore._Lock(self._lock_path)
