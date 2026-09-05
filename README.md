@@ -4,7 +4,7 @@
 
 One MCP server. Register once, message any agent on this machine. No cron. No polling daemons. No shared markdown files. No cloud.
 
-📖 **Docs**: [English](README.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [Español](README.es.md) — [Architecture diagram](docs/architecture.html)
+📖 **Docs**: [English](README.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [Español](README.es.md) — [Architecture diagram](docs/architecture.html) | 中文版同页 · [English version](docs/architecture-en.html)
 
 ![agent-mailbox architecture](docs/architecture.png)
 
