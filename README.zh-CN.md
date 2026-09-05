@@ -2,7 +2,7 @@
 
 **给每一个本地 AI Agent 一个专属信箱。** 一个 stdio MCP server，零守护进程，每封信一个 JSON 文件。
 
-📖 **文档**: [English](README.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [Español](README.es.md)
+📖 **文档**: [English](README.md) · [中文](README.zh-CN.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Français](README.fr.md) · [Русский](README.ru.md)
 
 ---
 
@@ -22,6 +22,8 @@
 ```
 
 Agent 通过一个小型 stdio MCP server 读写它。没有 broker 进程、不开端口、没有数据库、默认零网络。任意多个 MCP 宿主进程共享同一个邮件根目录（文件锁保护）。
+
+![agent-mailbox 架构图](docs/architecture.png)
 
 ## 快速开始
 

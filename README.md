@@ -2,7 +2,7 @@
 
 **Give every AI agent its own mailbox.** One stdio MCP server. Zero daemons. One JSON file per message.
 
-Other docs: [中文](README.zh-CN.md) · [日本語](README.ja.md) · [Español](README.es.md)
+Other docs: [中文](README.zh-CN.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Français](README.fr.md) · [Русский](README.ru.md)
 
 ---
 
@@ -22,6 +22,8 @@ A mailbox is a directory of plain JSON files:
 ```
 
 Agents read and write it through a small stdio MCP server. No broker process, no ports, no database, no network by default. Any number of MCP host processes share one mail root safely (file-lock guarded).
+
+![agent-mailbox architecture](docs/architecture.png)
 
 ## Quick start
 

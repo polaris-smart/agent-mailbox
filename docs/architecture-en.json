@@ -1,0 +1,176 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "agent-mailbox — send-time webhook wake-up",
+    "output": "agent-mailbox-architecture.html",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    {
+      "id": "agentA",
+      "type": "external",
+      "label": "Agent A",
+      "sublabel": "Claude Code / Hermes / scripts",
+      "pos": [
+        60,
+        300
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "mcp",
+      "type": "backend",
+      "label": "agent-mailbox",
+      "sublabel": "stdio MCP server",
+      "pos": [
+        270,
+        300
+      ],
+      "size": [
+        160,
+        64
+      ],
+      "tag": "9 tools"
+    },
+    {
+      "id": "store",
+      "type": "database",
+      "label": "MailStore",
+      "sublabel": "~/.agent-mail/ JSON + flock",
+      "pos": [
+        480,
+        300
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "gateway",
+      "type": "backend",
+      "label": "Host Gateway",
+      "sublabel": "webhook route :8644",
+      "pos": [
+        690,
+        300
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "agentB",
+      "type": "external",
+      "label": "Agent B",
+      "sublabel": "sleeping → woken",
+      "pos": [
+        900,
+        300
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "watcher",
+      "type": "external",
+      "label": "Watcher",
+      "sublabel": "optional · toasts for humans",
+      "pos": [
+        480,
+        500
+      ],
+      "size": [
+        170,
+        60
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "One machine — local-first, no network by default",
+      "wraps": [
+        "agentA",
+        "mcp",
+        "store",
+        "watcher"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "a-to-mcp",
+      "from": "agentA",
+      "to": "mcp",
+      "label": "MCP stdio",
+      "variant": "emphasis"
+    },
+    {
+      "id": "mcp-to-store",
+      "from": "mcp",
+      "to": "store",
+      "label": "writes"
+    },
+    {
+      "id": "mcp-to-gateway",
+      "from": "mcp",
+      "to": "gateway",
+      "label": "POST signed webhook on send",
+      "variant": "emphasis",
+      "fromSide": "top",
+      "toSide": "top"
+    },
+    {
+      "id": "gateway-to-b",
+      "from": "gateway",
+      "to": "agentB",
+      "label": "wake"
+    },
+    {
+      "id": "b-to-mcp",
+      "from": "agentB",
+      "to": "mcp",
+      "label": "mailbox_check / reply",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "bottom"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Wake-up path",
+      "items": [
+        "mailbox_send lands the message, then POSTs the webhook itself",
+        "Gateway verifies the HMAC signature and wakes Agent B",
+        "Agent B calls mailbox_check on arrival — no polling"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Storage",
+      "items": [
+        "One JSON file per message under ~/.agent-mail/",
+        "flock-guarded writes shared by every MCP host process",
+        "pending → acked → done lifecycle"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Optional only",
+      "items": [
+        "Watcher adds desktop toasts for humans",
+        "Never on the agent wake-up path",
+        "No config → fully offline"
+      ]
+    }
+  ]
+}

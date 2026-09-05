@@ -2,7 +2,7 @@
 
 **Un buzón propio para cada agente de IA local.** Un servidor MCP por stdio. Cero demonios. Un archivo JSON por mensaje.
 
-📖 **Docs**: [English](README.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [Español](README.es.md)
+📖 **Docs**: [English](README.md) · [中文](README.zh-CN.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Français](README.fr.md) · [Русский](README.ru.md)
 
 ---
 
