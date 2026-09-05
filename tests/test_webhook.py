@@ -4,6 +4,7 @@ and the store.send() -> webhook integration."""
 import hashlib
 import hmac
 import json
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -20,6 +21,17 @@ from agent_mailbox.webhook import (
     load_config,
     post_message,
 )
+
+
+class _SinkServer(HTTPServer):
+    def server_bind(self):
+        # HTTPServer.server_bind() calls socket.getfqdn(), which can stall
+        # ~30s on CI runners with broken reverse DNS. Bind without it.
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.socket.bind(self.server_address)
+        host, port = self.socket.getsockname()[:2]
+        self.server_address = (host, port)
+        self.server_name, self.server_port = host, port
 
 
 class _Sink(BaseHTTPRequestHandler):
@@ -39,7 +51,7 @@ class _Sink(BaseHTTPRequestHandler):
 @pytest.fixture()
 def sink():
     _Sink.received = []
-    server = HTTPServer(("127.0.0.1", 0), _Sink)
+    server = _SinkServer(("127.0.0.1", 0), _Sink)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     yield f"http://127.0.0.1:{server.server_port}", _Sink.received
