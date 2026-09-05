@@ -3,6 +3,7 @@ and the store.send() -> webhook integration."""
 
 import hashlib
 import hmac
+from typing import ClassVar
 import json
 import threading
 import time
@@ -17,13 +18,12 @@ from agent_mailbox.webhook import (
     _sign,
     _validate_url,
     load_config,
-    notify_new_messages,
     post_message,
 )
 
 
 class _Sink(BaseHTTPRequestHandler):
-    received: list[tuple[dict, bytes]] = []
+    received: ClassVar[list[tuple[dict, bytes]]] = []
 
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
