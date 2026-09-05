@@ -50,7 +50,7 @@ def _now_iso() -> str:
 
 def _msg_id() -> str:
     return time.strftime("%Y%m%d%H%M%S", time.gmtime()) + "-" + hashlib.sha1(
-        f"{time.time_ns()}".encode()
+        f"{time.time_ns()}-{os.urandom(8).hex()}".encode()
     ).hexdigest()[:8]
 
 
@@ -169,9 +169,9 @@ class MailStore:
         recipients = self._resolve_recipients(to)
         if not recipients:
             raise MailboxError("no recipients resolved")
-        mid_base = _msg_id()
         out = []
         with self._locked():
+            mid_base = _msg_id()
             for rid in recipients:
                 self._validate_id(rid)
                 inbox = self._inbox_dir(rid)
