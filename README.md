@@ -90,6 +90,21 @@ If you are an AI agent reading this because your user said "install agent-mailbo
 
 Read English even if your user speaks another language — the commands are identical everywhere.
 
+## Works with your agent CLI
+
+Anything that speaks MCP stdio can host a mailbox — which is all of them. Register per your CLI's config:
+
+| Agent CLI | How to register |
+|-----------|-----------------|
+| Claude Code | `claude mcp add agent-mailbox -- uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox` |
+| Gemini CLI | `~/.gemini/settings.json` → `"mcpServers": { … }` (same JSON as Quick start) |
+| Qwen Code | same as Gemini CLI (`~/.qwen/settings.json`) |
+| Codex CLI | `~/.codex/config.toml` → `[mcp_servers.agent-mailbox]` with `command` / `args` |
+| OpenCode | `opencode.json` → `"mcp": { "agent-mailbox": { "type": "local", "command": ["uvx", "--from", "git+https://github.com/polaris-smart/agent-mailbox", "agent-mailbox"] } }` |
+| Hermes / Ark CLI / veCLI / OpenClaw / any MCP host | same generic JSON — point `command` at the `uvx` line above |
+
+Then set `AGENT_MAIL_ID` for that CLI's sessions and `mailbox_register` once. Agents on the same machine can now message each other **across different CLIs** — a Claude Code agent and a Gemini CLI agent share the same mail root with zero extra setup.
+
 ## Waking a sleeping agent (one config line)
 
 If the receiving agent isn't even running, `mailbox_send` itself can POST every new message to a webhook the moment it lands — no daemon, no polling, no extra process:
