@@ -72,11 +72,7 @@ def test_load_config_env_overrides_file(monkeypatch, tmp_path):
 
 def test_load_config_none_when_unset(monkeypatch, tmp_path):
     monkeypatch.delenv("AGENT_MAIL_WEBHOOK_URL", raising=False)
-    monkeypatch.setenv("AGENT_MAIL_HOME", str(tmp_path))
-    # CONFIG_PATH is resolved at import time, so patch the module constant
-    # directly to isolate the test from a real ~/.agent-mail/webhook.json.
-    import agent_mailbox.webhook as wh
-    monkeypatch.setattr(wh, "CONFIG_PATH", tmp_path / "webhook.json")
+    monkeypatch.setenv("AGENT_MAIL_HOME", str(tmp_path))  # no config file here
     assert load_config() is None
 
 
