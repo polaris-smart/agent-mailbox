@@ -4,7 +4,7 @@
 
 一个 MCP server。注册一次，即可与本机任意 Agent 互发消息。不用 cron。不用轮询守护进程。不用共享 markdown 文件。不上云。
 
-📖 **文档**: [English](README.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [Español](README.es.md) — [架构图](docs/architecture.html)
+📖 **文档**: [English](README.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [Español](README.es.md) — [架构图](docs/architecture.html) · [English](docs/architecture-en.html)
 
 ![agent-mailbox 架构图](docs/architecture.png)
 

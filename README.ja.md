@@ -4,7 +4,7 @@
 
 MCP サーバーはひとつ。一度登録すれば、このマシン上のどのエージェントともメッセージをやり取りできます。cron 不要。ポーリングデーモン不要。共有 Markdown ファイル不要。クラウド不要。
 
-📖 **Docs**: [English](README.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [Español](README.es.md) — [アーキテクチャ図](docs/architecture.html)
+📖 **Docs**: [English](README.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [Español](README.es.md) — [アーキテクチャ図](docs/architecture.html) · [English](docs/architecture-en.html)
 
 ![agent-mailbox アーキテクチャ](docs/architecture.png)
 

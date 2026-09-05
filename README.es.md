@@ -4,7 +4,7 @@
 
 Un solo servidor MCP. Regístrate una vez y envía mensajes a cualquier agente de esta máquina. Sin cron. Sin demonios de sondeo. Sin archivos markdown compartidos. Sin nube.
 
-📖 **Docs**: [English](README.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [Español](README.es.md) — [Diagrama de arquitectura](docs/architecture.html)
+📖 **Docs**: [English](README.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [Español](README.es.md) — [Diagrama de arquitectura](docs/architecture.html) · [English](docs/architecture-en.html)
 
 ![Arquitectura de agent-mailbox](docs/architecture.png)
 
