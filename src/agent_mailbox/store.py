@@ -7,20 +7,26 @@ Zero external dependencies. One mail root directory::
       inbox/<agent>/<msg_id>.json
       archive/<agent>/<msg_id>.json
 
-Concurrency safety: every mutation takes an exclusive ``fcntl.flock`` on the
+Concurrency safety: every mutation takes an exclusive file lock (``fcntl.flock`` on
+POSIX, ``msvcrt.locking`` on Windows) on the
 mail root lock file, so multiple MCP server processes (stdio per host app)
 can share one mail root safely on macOS/Linux.
 """
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
 import re
+import sys
 import tempfile
 import time
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 from pathlib import Path
 from typing import Any
 
@@ -60,13 +66,20 @@ class MailStore:
     class _Lock:
         def __init__(self, path: Path) -> None:
             self._fh = open(path, "a+")  # noqa: SIM115 — lock must outlive the with-block
-            fcntl.flock(self._fh, fcntl.LOCK_EX)
+            if sys.platform == "win32":
+                msvcrt.locking(self._fh.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                fcntl.flock(self._fh, fcntl.LOCK_EX)
 
         def __enter__(self) -> MailStore._Lock:
             return self
 
         def __exit__(self, *exc: object) -> None:
-            fcntl.flock(self._fh, fcntl.LOCK_UN)
+            if sys.platform == "win32":
+                self._fh.seek(0)
+                msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(self._fh, fcntl.LOCK_UN)
             self._fh.close()
 
     def _locked(self) -> MailStore._Lock:

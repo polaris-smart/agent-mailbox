@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
+import sys
 import time
 
 from .store import MailStore
@@ -17,11 +19,18 @@ from .store import MailStore
 def _notify_macos(title: str, body: str) -> None:
     """Post a macOS notification center alert (best-effort)."""
     try:
-        subprocess.run(
-            ["osascript", "-e",
-             f'display notification "{body[:120]}" with title "{title}"'],
-            check=False, timeout=5,
-        )
+        if sys.platform == "darwin":
+            subprocess.run(
+                ["osascript", "-e",
+                 f'display notification "{body[:120]}" with title "{title}"'],
+                check=False, timeout=5,
+            )
+        elif sys.platform == "linux" and shutil.which("notify-send"):
+            subprocess.run(
+                ["notify-send", title, body[:120]],
+                check=False, timeout=5,
+            )
+        # windows / other: no native toast without third-party deps — skip silently
     except (OSError, subprocess.SubprocessError):
         pass  # notifications are best-effort
 
