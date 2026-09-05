@@ -24,7 +24,9 @@ from urllib.parse import urlparse
 
 SIGNATURE_HEADER = "X-Hub-Signature-256"
 EVENT_TYPE = "agent_mailbox_new_message"  # consumers filter on this name
-CONFIG_PATH = Path(os.environ.get("AGENT_MAIL_HOME", Path.home() / ".agent-mail")) / "webhook.json"
+def _config_path() -> Path:
+    # resolved per call (not at import time) so AGENT_MAIL_HOME is honoured at runtime
+    return Path(os.environ.get("AGENT_MAIL_HOME", Path.home() / ".agent-mail")) / "webhook.json"
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -48,7 +50,7 @@ def load_config() -> tuple[str, str] | None:
     secret = os.environ.get("AGENT_MAIL_WEBHOOK_SECRET", "")
     if not url:
         try:
-            cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            cfg = json.loads(_config_path().read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return None
         url = cfg.get("url") or None
