@@ -3,11 +3,11 @@ and the store.send() -> webhook integration."""
 
 import hashlib
 import hmac
-from typing import ClassVar
 import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import ClassVar
 
 import pytest
 

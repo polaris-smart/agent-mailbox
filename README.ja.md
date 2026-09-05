@@ -1,125 +1,159 @@
 # agent-mailbox
 
-**ローカルのすべての AI エージェントに、専用のメールボックスを。**
+**ローカルのすべての AI エージェントに、専用のメールボックスを。** stdio MCP サーバーはひとつ。デーモン不要。メッセージは 1 通 = JSON ファイル 1 つ。
 
-MCP サーバーはひとつ。一度登録すれば、このマシン上のどのエージェントともメッセージをやり取りできます。cron 不要。ポーリングデーモン不要。共有 Markdown ファイル不要。クラウド不要。
-
-📖 **Docs**: [English](README.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [Español](README.es.md) — [アーキテクチャ図](docs/architecture.html) · [English](docs/architecture-en.html)
-
-![agent-mailbox アーキテクチャ](docs/architecture.png)
-
-```bash
-uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox          # stdio transport、あらゆる MCP ホストで即使用可能
-uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox --http 8642   # または HTTP で公開し、リモートエージェントに対応
-```
+📖 **Docs**: [English](README.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [Español](README.es.md)
 
 ---
 
-## 問題
+## 課題
 
-コーディングエージェント、運用エージェント、レビューエージェント —— すべて同じマシンで動いているのに、互いに会話できません。そこで**あなた**が伝書鳩になります：あるターミナルから結論をコピーし、別のターミナルに指示を貼り付け、ステータス更新を手動で中継する。
-
-ファイルベースの代 workarounds（共有 Markdown「ログ」や `dropped-notes/` フォルダ）は、いつか読めない記録の山に腐ります。cron スキャン式の回避策は、空ポーリングでトークンを無駄に燃やします。クラウドリレーは、ワークフローデータを他人の API の向こう側に置いてしまいます。
+1 台のマシンで複数の AI エージェント（Claude Code、Hermes、自作スクリプト）を動かしても、互いにメッセージを残す手段がありません。エージェント同士が待ち合ったり、あなたがウィンドウ間のコピー＆ペースト係になったりしがちです。
 
 ## 解決策
 
-**それ自体がただのツール**であるメールボックス：
+メールボックスの実体は、ただの JSON ファイルのディレクトリです：
 
-| ツール | 機能 |
-|---|---|
-| `mailbox_register` | メールボックスを取得。冪等。 |
-| `mailbox_send` | 1 人、複数人、または `"all"` で全員に配信。 |
-| `mailbox_check` | 未読メッセージを取得 —— 読むと自動 ack。 |
-| `mailbox_reply` | スレッド内で返信、送信者へ自動ルーティング。 |
-| `mailbox_list` | ステータス別に閲覧（`pending` / `acked` / `done`）。 |
-| `mailbox_done` | 処理済みをマーク；done メッセージは自動アーカイブ。 |
-| `mailbox_broadcast` | 1 回の呼び出しで、登録済みの全エージェントへ。 |
-| `mailbox_whoami` | 誰が登録済みか、メールルートはどこか。 |
+```
+~/.agent-mail/
+  registry.json                agent_id → {owner, description, created_at}
+  inbox/HS/20260905-….json     メッセージ 1 通 = ファイル 1 つ
+  archive/HS/…
+```
 
-メッセージはプレーンな JSON で、ライフサイクルは極めてシンプル：`pending → acked → done`。受信者がオフラインの間、メッセージは静かに待ちます —— メールはあるべき姿で。
+エージェントは小型の stdio MCP サーバーを通して読み書きします。ブローカープロセスなし、ポート開放なし、データベースなし、デフォルトでネットワーク無し。複数の MCP ホストプロセスがファイルロック付きでひとつのメールルートを安全に共有します。
 
 ## クイックスタート
 
-**Hermes** (`~/.hermes/config.yaml`)：
+### 1 · MCP ホストにサーバーを登録
 
-```yaml
-mcp:
-  servers:
-    agent-mailbox:
-      command: uvx
-      args: ["git+https://github.com/polaris-smart/agent-mailbox"]
-```
-
-**Claude Code** (`~/.claude/settings.json`)：
-
-```json
-{ "mcpServers": { "agent-mailbox": { "command": "uvx", "args": ["--from", "git+https://github.com/polaris-smart/agent-mailbox", "agent-mailbox"] } } }
-```
-
-**任意の MCP クライアント** (stdio)：
+Claude Code：
 
 ```bash
-uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox
+claude mcp add agent-mailbox -- uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox
 ```
 
-**リモートエージェント**（別サーバー上のエージェントなど）：
-
-```bash
-uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox --http 8642   # メールホスト上で
-```
+汎用 MCP ホスト（JSON）：
 
 ```json
-{ "mcpServers": { "agent-mailbox": { "url": "http://your-host:8642/mcp" } } }
+{
+  "mcpServers": {
+    "agent-mailbox": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/polaris-smart/agent-mailbox", "agent-mailbox"]
+    }
+  }
+}
 ```
 
-## メールを待つ（ポーリングなし）
+ヒント：エージェントの環境に `AGENT_MAIL_ID=HS` を一度設定すれば、全ツールが自分宛てとして動作し、毎回 `agent_id` を渡す必要がなくなります。
 
-エージェントはポーリングする必要がありません。`mailbox_wait` はメッセージが到着するまでブロック（ロングポール）します —— ターンの最後のアクションとして呼べば、次のメッセージが即座にエージェントを起こします：
+### 2 · エージェントは一度だけ登録
+
+```json
+{ "tool": "mailbox_register", "arguments": { "agent_id": "HS", "owner": "Hermes", "description": "PM & QA" } }
+```
+
+登録は冪等。登録済みのエージェントは全員から即座にアドレス指定可能 — 人間が直接読める `boss` 用メールボックスも含まれます。
+
+### 3 · 送信・受信・返信
+
+```json
+{ "tool": "mailbox_send", "arguments": { "to": "HS", "subject": "deploy ready", "body": "v0.1.0 をステージングしました。検証をお願いします。" } }
+{ "tool": "mailbox_check", "arguments": {} }
+{ "tool": "mailbox_reply", "arguments": { "msg_id": "20260905-…-hs", "body": "検証 OK、done にしました。" } }
+```
+
+`mailbox_check` は未読メッセージを取得して `acked` にします。ライフサイクル：`pending → acked → done`、その後アーカイブ可能。メッセージは `cat` できる小さな JSON ファイル — ボスは受信箱を直接読めます。
+
+### 4 · ポーリングではなく待機
+
+`mailbox_wait` はメッセージが届くまでロングポーリングでブロックします — ターンの最後のアクションとして呼びます：
 
 ```json
 { "tool": "mailbox_wait", "arguments": { "timeout_seconds": 25 } }
 ```
 
-人間とダッシュボードのために、専用ウォッチャーが新しいメッセージを JSON 行として出力し、指定エージェントに macOS 通知を送ることもできます：
+## 寝ているエージェントの起こし方（設定 1 行）
+
+受信側のエージェントが起動していない場合でも、`mailbox_send` は新着メッセージを着信瞬間に webhook へ POST できます — デーモン不要、ポーリング不要、追加プロセス不要：
+
+```json
+// ~/.agent-mail/webhook.json   (chmod 600)
+{ "url": "http://localhost:8644/webhooks/agent-mailbox", "secret": "…" }
+```
+
+ホストの webhook ハンドラが受信：
+
+```json
+{ "event": "agent_mailbox_new_message", "event_type": "agent_mailbox_new_message", "message": { "id": "…", "from": "ZC", "to": "HS", "subject": "…", "body": "…" } }
+```
+
+…エージェントを起こし、到着したエージェントが `mailbox_check` を呼ぶ。統合はこれで全部です。
+
+- 署名 `X-Hub-Signature-256: sha256=<hmac>`（GitHub 方式 — Hermes gateway をはじめ多くの webhook 消費者がそのまま受け付けます）。
+- 宛先は固定：http/https のみ、デフォルトはループバック/プライベートアドレスのみ、リダイレクト拒否、システムプロキシ経由しない。
+- 環境変数 `AGENT_MAIL_WEBHOOK_URL` / `AGENT_MAIL_WEBHOOK_SECRET` はファイルより優先。未設定 = 完全オフライン。
+
+## ツール一覧
+
+| ツール | メモ |
+|--------|------|
+| `mailbox_register(agent_id, owner?, description?)` | メールボックス取得。冪等 |
+| `mailbox_send(to, subject, body, priority?)` | `to` = 1 つの id、リスト、または `"all"` |
+| `mailbox_check(agent_id?, mark?)` | 未読取得（→ `acked`） |
+| `mailbox_reply(msg_id, body)` | 元の送信者へ自動ルーティング |
+| `mailbox_list(agent_id?, status?)` | 一覧。ステータス絞り込み可 |
+| `mailbox_done(msg_id)` | 処理済みマーク |
+| `mailbox_broadcast(subject, body)` | 登録済み全エージェントへ |
+| `mailbox_whoami()` | エージェント一覧 + メールルート |
+| `mailbox_wait(agent_id?, timeout_seconds?)` | 新着をロングポーリング |
+
+## オプション：人間向けデスクトップ通知
+
+補助のウォッチャーは新着メッセージを JSON 行として出力し、デスクトップ通知（macOS / Linux / Windows）を出します。エージェントの起床経路には決して載っていません — エージェントには不要です：
 
 ```bash
-uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox-watch --notify boss      # macOS 通知センター
-agent-mailbox-watch --once                     # 単一スキャン（cron 向け）
+uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox-watch --notify boss
 ```
+
+| プラットフォーム | インストール | 検証 |
+|------------------|--------------|------|
+| macOS (launchd) | `scripts/install-watch-macos.sh --notify boss` | `tail -f ~/.agent-mail/watch.log` |
+| Linux (systemd user) | `scripts/install-watch-linux.sh …` | `journalctl --user -u agent-mailbox-watch -f` |
+| Windows (schtasks) | `scripts\install-watch-windows.ps1` | `schtasks /Query /TN AgentMailboxWatch /V` |
 
 ## 設計
 
-- **ローカルファースト** —— `~/.agent-mail/` 以下のプレーンな JSON ファイル。SMTP も IMAP もドメインもクラウドリレーも不要、ネットワーク接続もなし（HTTP transport を意図的に有効化しない限り）。
-- **ゼロ依存** —— Python 標準ライブラリのみ。約 500 行のコードベース、一度読めばわかります。
-- **MCP ネイティブ** —— 単なる別の CLI プラグインではありません：あらゆる MCP ホストが登録可能。
-- **登録制のアイデンティティ** —— `mailbox_register` 一度で、永続的なアイデンティティ。セッション終了で消えません。
+- **ローカルファースト** — `~/.agent-mail/` の素の JSON ファイル。SMTP も IMAP もドメインもクラウド中継もなし、デフォルトでネットワーク無し。
+- **登録一回のアドレッシング** — `mailbox_register("HS")` だけで全員から到達可能。
+- **外部依存ゼロ** — 依存は `mcp` のみ。ストアは `flock` でアトミックに保護された単一 Python ファイル。
+- **人間が読める** — メッセージは `cat` できる小さな JSON。ボスが受信箱を直接読めます。
+- **既存のアイデンティティを尊重** — `AGENT_MAIL_ID` を一度設定すれば全ツールが自己宛て。
 
-ローカルメールボックスは同一マシンおよび信頼された LAN 内の調整を解決します。メッセージライフサイクル（`pending → acked → done`）は、エージェントのスレッドが実際のメールインフラ経由で他のマシンや組織に届く必要が生じても、そのまま引き継げるように設計されています。
+## セキュリティノート
 
-## セキュリティに関する注意
-
-- メールルートはホームディレクトリにあります。信頼されたネットワークで HTTP transport を意図的に有効にしない限り、メッセージがマシンの外に出ることはありません。
-- エージェント ID は厳格に検証されます（`[A-Za-z0-9_-]`、64 文字以下）—— パストラバーサルなし。
-- ストアは追記指向、アトミック書き込み＋ファイルロック。ライターがクラッシュしてもレジストリは破損しません。
-- 改ざん耐性のあるレシート（ed25519 署名）はロードマップ上にあります。
-
-## ロードマップ
-
-- **v0.1.0**（現在）—— stdio MCP による同一マシン上のエージェントメールボックス。インフラゼロ。ロングポール `mailbox_wait` と専用ウォッチャー付き —— ポーリングデーモンは不要。
-- **v0.2.0** —— フェデレーション：他のマシンのエージェント向け streamable HTTP transport（Tailscale/LAN フレンドリー）。
-- **v0.3.0** —— 署名付きレシート（ed25519）による改ざん耐性のある配信。
-- **v1.0.0** —— 組織間ブリッジ：標準メールインフラ経由で、同じメールボックスライフサイクルのままローカルスレッドを他マシン・他組織へ届ける。
-
-姉妹プロジェクト：[dsh-devices](https://github.com/polaris-smart/dsh-devices) はデバイスを管理し、agent-mailbox はその上のエージェント間の会話を管理します。
+- メールルートはホームディレクトリ内。webhook（デフォルトでループバック/プライベートに固定）を明示的に有効にしない限り、メッセージがマシンの外に出ることはありません。
+- agent id は厳格に検証（`[A-Za-z0-9_-]`、≤64 文字）— パストラバーサルなし。
+- ストアは追記指向のアトミック書き込み + ファイルロック。クラッシュしてもレジストリは破損しません。
+- webhook ペイロードは HMAC 署名付き。検証側は定数時間比較を使ってください。
+- 改ざん検出用の署名済みレシート（ed25519）は roadmap 上。
 
 ## 開発
 
 ```bash
 git clone https://github.com/polaris-smart/agent-mailbox && cd agent-mailbox
-pip install -e ".[dev]"
+uv venv && uv pip install -e ".[dev]"
 pytest
 ```
 
+## Roadmap
+
+- **v0.1.0**（現行）— 同一マシンのエージェントメールボックス、stdio MCP。インフラゼロ。ロングポーリング `mailbox_wait`、`mailbox_send` 内蔵 webhook 起こし、オプションのウォッチャー。
+- **v0.2.0** — フェデレーション：他マシンのエージェント向け streamable HTTP トランスポート（Tailscale/LAN 向け）。
+- **v0.3.0** — 署名済みレシート（ed25519）。
+- **v1.0.0** — 組織間ブリッジ：標準メールインフラ経由で他マシン・他組織のエージェントへ、同じメールボックスライフサイクルのまま。
+
 ## ライセンス
 
-MIT — [LICENSE](LICENSE) を参照。
+MIT

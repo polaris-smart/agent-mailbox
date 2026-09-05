@@ -1,83 +1,74 @@
 # agent-mailbox
 
-**Give every local AI agent its own mailbox.**
+**Give every AI agent its own mailbox.** One stdio MCP server. Zero daemons. One JSON file per message.
 
-One MCP server. Register once, message any agent on this machine. No cron. No polling daemons. No shared markdown files. No cloud.
-
-📖 **Docs**: [English](README.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [Español](README.es.md) — [Architecture diagram](docs/architecture-en.html) · [中文版](docs/architecture.html)
-
-![agent-mailbox architecture](docs/architecture.png)
-
-```bash
-uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox          # stdio transport, ready for any MCP host
-uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox --http 8642   # or expose it over HTTP for remote agents
-```
+Other docs: [中文](README.zh-CN.md) · [日本語](README.ja.md) · [Español](README.es.md)
 
 ---
 
 ## The problem
 
-Your coding agent, your ops agent, your review agent — all running on the same machine, all perfectly capable — cannot talk to each other. So **you** end up being the messenger: copying conclusions from one terminal, pasting instructions into another, relaying status updates by hand.
-
-File-based workarounds (a shared markdown "log", a `dropped-notes/` folder) decay into an unreadable transcript. Cron-and-scan workarounds burn tokens on empty polls. Cloud relays put your workflow data behind someone else's API.
+Run several AI agents on one machine — Claude Code, Hermes, your own scripts — and they have no way to leave each other messages. Agents overlap, wait on each other, or you end up copy-pasting between their windows like a human switchboard.
 
 ## The fix
 
-A mailbox that is **just another tool**:
+A mailbox is a directory of plain JSON files:
 
-| Tool | What it does |
-|---|---|
-| `mailbox_register` | Claim your mailbox. Idempotent. |
-| `mailbox_send` | Deliver to one agent, a list, or `"all"` for broadcast. |
-| `mailbox_check` | Fetch pending messages — they auto-ack on read. |
-| `mailbox_reply` | Reply inside a thread, auto-routed to the sender. |
-| `mailbox_list` | Browse by status (`pending` / `acked` / `done`). |
-| `mailbox_done` | Mark handled; done messages archive automatically. |
-| `mailbox_broadcast` | One call, every registered agent. |
-| `mailbox_whoami` | Who's registered, where the mail root is. |
+```
+~/.agent-mail/
+  registry.json                agent_id → {owner, description, created_at}
+  inbox/HS/20260905-….json     one file per message
+  archive/HS/…
+```
 
-Messages are plain JSON with a tiny lifecycle: `pending → acked → done`. A message that arrives while the recipient is offline simply waits — mail, like mail should.
+Agents read and write it through a small stdio MCP server. No broker process, no ports, no database, no network by default. Any number of MCP host processes share one mail root safely (file-lock guarded).
 
 ## Quick start
 
-**Hermes** (`~/.hermes/config.yaml`):
+### 1 · Register the server with your MCP host
 
-```yaml
-mcp:
-  servers:
-    agent-mailbox:
-      command: uvx
-      args: ["--from", "git+https://github.com/polaris-smart/agent-mailbox", "agent-mailbox"]
-```
-
-**Claude Code** (`~/.claude/settings.json`):
-
-```json
-{ "mcpServers": { "agent-mailbox": { "command": "uvx", "args": ["--from", "git+https://github.com/polaris-smart/agent-mailbox", "agent-mailbox"] } } }
-```
-
-**Any MCP client** (stdio):
+Claude Code:
 
 ```bash
-uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox
+claude mcp add agent-mailbox -- uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox
 ```
 
-**Remote agents** (e.g. an agent on another server):
-
-```bash
-uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox --http 8642   # on the mail host
-```
+Any MCP host (generic JSON):
 
 ```json
-{ "mcpServers": { "agent-mailbox": { "url": "http://your-host:8642/mcp" } } }
+{
+  "mcpServers": {
+    "agent-mailbox": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/polaris-smart/agent-mailbox", "agent-mailbox"]
+    }
+  }
+}
 ```
 
+Tip: set `AGENT_MAIL_ID=HS` (or whichever id) in the agent's environment and every tool becomes self-addressed — no need to pass `agent_id` on each call.
 
-## Waiting for mail (no polling)
+### 2 · Agents register once
 
-Agents don't need to poll. `mailbox_wait` blocks (long-poll) until a message
-arrives — call it as the last action of a turn and the next message wakes your
-agent immediately:
+```json
+{ "tool": "mailbox_register", "arguments": { "agent_id": "HS", "owner": "Hermes", "description": "PM & QA" } }
+```
+
+Registration is idempotent. Every registered agent is immediately addressable by everyone — including a human `boss` id you can read yourself.
+
+### 3 · Send, check, reply
+
+```json
+{ "tool": "mailbox_send", "arguments": { "to": "HS", "subject": "deploy ready", "body": "v0.1.0 is staged, please verify." } }
+{ "tool": "mailbox_check", "arguments": {} }
+{ "tool": "mailbox_reply", "arguments": { "msg_id": "20260905-…-hs", "body": "verified, marked done." } }
+```
+
+`mailbox_check` fetches pending messages and marks them `acked`. Lifecycle: `pending → acked → done`, then optionally archived. A message is one JSON file you can `cat` — the boss reads the inbox directly.
+
+### 4 · Wait instead of poll
+
+`mailbox_wait` blocks (long-poll) until a message arrives — call it as the last action of a turn:
 
 ```json
 { "tool": "mailbox_wait", "arguments": { "timeout_seconds": 25 } }
@@ -85,76 +76,88 @@ agent immediately:
 
 ## Waking a sleeping agent (one config line)
 
-If the receiving agent isn't running, `mailbox_send` itself can POST every
-new message to a webhook — no daemon, no polling, no extra process. Point it
-at your host's webhook route:
+If the receiving agent isn't even running, `mailbox_send` itself can POST every new message to a webhook the moment it lands — no daemon, no polling, no extra process:
 
 ```json
-// ~/.agent-mail/webhook.json  (chmod 600)
+// ~/.agent-mail/webhook.json   (chmod 600)
 { "url": "http://localhost:8644/webhooks/agent-mailbox", "secret": "…" }
 ```
 
-Send mail as usual; the receiving side's webhook handler wakes the agent,
-which calls `mailbox_check` on arrival. Payloads are signed
-`X-Hub-Signature-256: sha256=<hmac>` (GitHub scheme — accepted by Hermes
-gateway and most webhook consumers). Env vars `AGENT_MAIL_WEBHOOK_URL` /
-`AGENT_MAIL_WEBHOOK_SECRET` override the file. The target is pinned:
-http/https only, loopback/private addresses by default, redirects refused.
+Your host's webhook handler receives:
+
+```json
+{ "event": "agent_mailbox_new_message", "event_type": "agent_mailbox_new_message", "message": { "id": "…", "from": "ZC", "to": "HS", "subject": "…", "body": "…" } }
+```
+
+…wakes the agent, and the agent calls `mailbox_check` on arrival. That is the whole integration.
+
+- Signed `X-Hub-Signature-256: sha256=<hmac>` (GitHub scheme — accepted by Hermes gateway and most webhook consumers).
+- The target is pinned: http/https only, loopback/private addresses by default, redirects refused, system proxy bypassed.
+- Env vars `AGENT_MAIL_WEBHOOK_URL` / `AGENT_MAIL_WEBHOOK_SECRET` override the file. Unset → fully offline.
+
+## The tools
+
+| Tool | Notes |
+|------|-------|
+| `mailbox_register(agent_id, owner?, description?)` | claim a mailbox; idempotent |
+| `mailbox_send(to, subject, body, priority?)` | `to` = one id, a list, or `"all"` |
+| `mailbox_check(agent_id?, mark?)` | fetch pending (→ `acked`) |
+| `mailbox_reply(msg_id, body)` | routes back to the original sender |
+| `mailbox_list(agent_id?, status?)` | list messages, optional status filter |
+| `mailbox_done(msg_id)` | mark handled |
+| `mailbox_broadcast(subject, body)` | to every registered agent |
+| `mailbox_whoami()` | directory of agents + mail root |
+| `mailbox_wait(agent_id?, timeout_seconds?)` | long-poll for new mail |
+
+Identity: pass `agent_id` explicitly, or set `AGENT_MAIL_ID` once per agent.
 
 ## Optional: desktop notifications for humans
 
-A companion watcher prints every new message as a JSON line and fires desktop
-notifications (macOS / Linux / Windows). It is never on the wake-up path —
-agents don't need it:
+A companion watcher prints every new message as a JSON line and fires desktop notifications (macOS / Linux / Windows). It is never on the agent wake-up path — agents don't need it:
 
 ```bash
 uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox-watch --notify boss
-agent-mailbox-watch --once                     # single scan (cron-friendly)
 ```
+
+Run it as a service on your platform:
 
 | Platform | Install | Verify |
 |----------|---------|--------|
-| macOS (launchd) | `scripts/install-watch-macos.sh --notify HS` | `tail -f ~/.agent-mail/watch.log` |
+| macOS (launchd) | `scripts/install-watch-macos.sh --notify boss` | `tail -f ~/.agent-mail/watch.log` |
 | Linux (systemd user) | `scripts/install-watch-linux.sh …` | `journalctl --user -u agent-mailbox-watch -f` |
 | Windows (schtasks) | `scripts\install-watch-windows.ps1` | `schtasks /Query /TN AgentMailboxWatch /V` |
 
 ## Design
 
 - **Local-first** — plain JSON files under `~/.agent-mail/`. No SMTP, no IMAP, no domain, no cloud relay, no network by default.
-- **Register-once addressing** — `mailbox_register("WB")` is all it takes; every registered agent is immediately addressable by everyone.
+- **Register-once addressing** — `mailbox_register("HS")` is all it takes; every registered agent is immediately addressable by everyone.
 - **Zero external dependencies** — only `mcp`. The store is one Python file with `flock`-guarded atomic writes; multiple MCP host processes share one mail root safely.
-- **Human-readable** — every message is a small JSON file you can `cat`. The boss can read the inbox directly.
+- **Human-readable** — every message is a small JSON file you can `cat`. The boss reads the inbox directly.
 - **Honors existing identities** — set `AGENT_MAIL_ID` in each agent's environment and its tools become self-addressed.
-
-### When you outgrow it
-
-Local mailboxes solve same-machine and trusted-LAN coordination. The message lifecycle (`pending → acked → done`) is designed to carry over unchanged when an agent's threads need to reach other machines and organizations over real email infrastructure.
 
 ## Security notes
 
-- Mail root lives in your home directory; messages never leave the machine unless you opt into HTTP transport on a trusted network.
+- Mail root lives in your home directory; messages never leave the machine unless you opt into the webhook, which is pinned to loopback/private targets by default.
 - Agent ids are strictly validated (`[A-Za-z0-9_-]`, ≤64 chars) — no path traversal.
 - The store is append-oriented with atomic writes and file locks; a crashed writer cannot corrupt the registry.
+- Webhook payloads are HMAC-signed; verifiers should compare with a constant-time function.
 - For tamper-evidence, signed receipts (ed25519) are on the roadmap.
-
-
-## Roadmap
-
-- **v0.1.0** (current) — same-machine agent mailboxes over stdio MCP. Zero infrastructure. Includes long-poll `mailbox_wait` and a companion watcher — no polling daemons needed.
-- **v0.2.0** — federation: streamable HTTP transport for agents on other machines (Tailscale/LAN friendly).
-- **v0.3.0** — signed receipts (ed25519) for tamper-evident delivery.
-- **v1.0.0** — cross-organization bridge: local threads reach agents on other machines and organizations over standard email infrastructure, with the same mailbox lifecycle.
-
-Sister project: [dsh-devices](https://github.com/polaris-smart/dsh-devices) manages your devices; agent-mailbox manages the conversation between the agents on them.
 
 ## Development
 
 ```bash
 git clone https://github.com/polaris-smart/agent-mailbox && cd agent-mailbox
-pip install -e ".[dev]"
+uv venv && uv pip install -e ".[dev]"
 pytest
 ```
 
+## Roadmap
+
+- **v0.1.0** (current) — same-machine agent mailboxes over stdio MCP. Zero infrastructure. Long-poll `mailbox_wait`, built-in webhook wake-up on `mailbox_send`, optional watcher.
+- **v0.2.0** — federation: streamable HTTP transport for agents on other machines (Tailscale/LAN friendly).
+- **v0.3.0** — signed receipts (ed25519) for tamper-evident delivery.
+- **v1.0.0** — cross-organization bridge: local threads reach agents on other machines and organizations over standard email infrastructure, with the same mailbox lifecycle.
+
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT
