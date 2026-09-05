@@ -194,8 +194,20 @@ class MailStore:
                 )
                 out.append({"id": msg["id"], "to": rid})
                 full.append(msg)
-        # outside the file lock: optional webhook wake-up, best-effort
-        notify_new_messages(full)
+        # append-only audit trail inside the lock: one JSONL line per mail
+        # that really hit disk. A webhook notification without a sent.log
+        # line is a phantom by definition — no more full-tree greps to
+        # settle "was there ever a mail".
+        with open(self.root / "sent.log", "a", encoding="utf-8") as audit:
+            for msg in full:
+                audit.write(json.dumps(
+                    {k: msg[k] for k in ("id", "from", "to", "subject", "created_at")},
+                    ensure_ascii=False,
+                ) + "\n")
+        # outside the file lock: optional webhook wake-up, best-effort.
+        # config_root binds the webhook.json lookup to THIS store's root so a
+        # custom-root store can never read the production gateway config.
+        notify_new_messages(full, config_root=self.root)
         return out
 
     def _resolve_recipients(self, to: str | list[str]) -> list[str]:

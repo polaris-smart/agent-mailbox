@@ -127,6 +127,8 @@ Your host's webhook handler receives:
 - Signed `X-Hub-Signature-256: sha256=<hmac>` (GitHub scheme — accepted by Hermes gateway and most webhook consumers).
 - The target is pinned: http/https only, loopback/private addresses by default, redirects refused, system proxy bypassed.
 - Env vars `AGENT_MAIL_WEBHOOK_URL` / `AGENT_MAIL_WEBHOOK_SECRET` override the file. Unset → fully offline.
+- The config file is resolved **per mail root** (the store's own `webhook.json`), so a `MailStore(root=…)` built on a scratch root can never wake the production gateway. `webhook.json` in the default home still covers normal use.
+- Every delivered mail is also appended to `<mail-root>/sent.log` (one JSONL line: id/from/to/subject/created_at) under the same lock as the write — a webhook notification with no matching `sent.log` line never was a mail.
 
 ## The tools
 

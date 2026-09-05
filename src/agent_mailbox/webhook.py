@@ -17,6 +17,8 @@ import ipaddress
 import json
 import os
 import socket
+import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -24,9 +26,9 @@ from urllib.parse import urlparse
 
 SIGNATURE_HEADER = "X-Hub-Signature-256"
 EVENT_TYPE = "agent_mailbox_new_message"  # consumers filter on this name
-def _config_path() -> Path:
+def _default_config_root() -> Path:
     # resolved per call (not at import time) so AGENT_MAIL_HOME is honoured at runtime
-    return Path(os.environ.get("AGENT_MAIL_HOME", Path.home() / ".agent-mail")) / "webhook.json"
+    return Path(os.environ.get("AGENT_MAIL_HOME", Path.home() / ".agent-mail"))
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -44,13 +46,20 @@ def _sign(secret: str, body: bytes) -> str:
     return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
-def load_config() -> tuple[str, str] | None:
-    """(url, secret) from env, then config file; None when unset."""
+def load_config(config_root: str | os.PathLike[str] | None = None) -> tuple[str, str] | None:
+    """(url, secret) from env, then a webhook.json; None when unset.
+
+    ``config_root`` pins webhook.json to a specific mail root (the store's
+    own root). Without it, env ``AGENT_MAIL_HOME`` — then the default home —
+    decides, which let a ``MailStore(root=<custom>)`` store read the
+    *production* webhook.json and wake the real gateway with throw-away mail.
+    """
     url = os.environ.get("AGENT_MAIL_WEBHOOK_URL")
     secret = os.environ.get("AGENT_MAIL_WEBHOOK_SECRET", "")
     if not url:
+        base = Path(config_root) if config_root is not None else _default_config_root()
         try:
-            cfg = json.loads(_config_path().read_text(encoding="utf-8"))
+            cfg = json.loads((base / "webhook.json").read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return None
         url = cfg.get("url") or None
@@ -91,14 +100,28 @@ def post_message(url: str, secret: str, message: dict, timeout: float = 3.0) -> 
         headers={
             "Content-Type": "application/json",
             SIGNATURE_HEADER: _sign(secret, payload),
+            # X-Request-ID is the gateway's idempotency key: a retry of the
+            # same message is deduped instead of waking the agent again.
+            "X-Request-ID": str(message.get("id", "")),
         },
     )
-    try:
-        with _OPENER.open(req, timeout=timeout) as resp:
-            resp.read()
-            return 200 <= resp.status < 300
-    except (OSError, urllib.error.URLError):
-        return False
+    last_error: Exception | None = None
+    for attempt in range(2):  # one retry: 429 means a burst, back off once
+        try:
+            with _OPENER.open(req, timeout=timeout) as resp:
+                resp.read()
+                return 200 <= resp.status < 300
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code == 429 and attempt == 0:
+                time.sleep(2.0)
+                continue
+            break
+        except (OSError, urllib.error.URLError) as exc:
+            last_error = exc
+            break
+    print(f"[agent-mailbox] webhook post failed: {last_error}", file=sys.stderr, flush=True)
+    return False
 
 
 def notify_new_messages(
@@ -106,12 +129,13 @@ def notify_new_messages(
     *,
     url: str | None = None,
     secret: str = "",
+    config_root: str | os.PathLike[str] | None = None,
 ) -> None:
     """Fire-and-forget webhook for freshly persisted mail. Never raises."""
     if not messages:
         return
     if url is None:
-        cfg = load_config()
+        cfg = load_config(config_root=config_root)
         if not cfg:
             return
         url, secret = cfg

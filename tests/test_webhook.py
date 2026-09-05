@@ -148,3 +148,54 @@ def test_validate_rejects_public_target_without_opt_in():
 def test_validate_allows_loopback():
     _validate_url("http://localhost:8644/webhooks/agent-mailbox")
     _validate_url("http://127.0.0.1:9999/")
+
+
+# ------------------------------------------------------- config/root binding
+
+def test_custom_root_store_does_not_read_other_home_webhook(sink, tmp_path, monkeypatch):
+    """Regression (2026-09-06 phantom-notification incident): a store built on
+    a custom root must not pick up the ambient home's webhook.json and wake
+    the production gateway with throw-away mail."""
+    url, received = sink
+    monkeypatch.delenv("AGENT_MAIL_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("AGENT_MAIL_WEBHOOK_SECRET", raising=False)
+    # a "production" home whose webhook.json points at the sink
+    prod = tmp_path / "prod-home"
+    prod.mkdir()
+    (prod / "webhook.json").write_text(json.dumps({"url": url, "secret": "s3cret"}))
+    monkeypatch.setenv("AGENT_MAIL_HOME", str(prod))
+
+    st = MailStore(root=tmp_path / "scratch-root")  # explicit root != prod home
+    st.register("HS")
+    st.send(from_id="ZC", to="HS", subject="m3-1", body="burst test")
+
+    time.sleep(0.3)  # would have landed by now if the leak were still there
+    assert not received, "custom-root store leaked a notification to the production webhook"
+
+
+def test_store_root_webhook_config_is_used(sink, tmp_path, monkeypatch):
+    """Positive side of the binding: webhook.json inside the store's own root
+    is honoured even when AGENT_MAIL_HOME points elsewhere."""
+    url, received = sink
+    monkeypatch.delenv("AGENT_MAIL_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("AGENT_MAIL_WEBHOOK_SECRET", raising=False)
+    root = tmp_path / "mail"
+    root.mkdir()
+    (root / "webhook.json").write_text(json.dumps({"url": url, "secret": "s3cret"}))
+    monkeypatch.setenv("AGENT_MAIL_HOME", str(tmp_path / "unrelated"))
+
+    st = MailStore(root=root)
+    st.register("HS")
+    st.send(from_id="ZC", to="HS", subject="wake up", body="ping")
+    assert _wait_for(lambda: len(received) == 1), "webhook.json in store root was ignored"
+
+
+def test_send_appends_sent_log_audit(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENT_MAIL_WEBHOOK_URL", raising=False)
+    st = MailStore(root=tmp_path / "mail")
+    st.register("HS")
+    st.send(from_id="ZC", to="HS", subject="audited", body="x")
+    lines = (tmp_path / "mail" / "sent.log").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["subject"] == "audited" and entry["to"] == "HS"
