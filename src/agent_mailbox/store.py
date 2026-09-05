@@ -31,6 +31,8 @@ else:
 from pathlib import Path
 from typing import Any
 
+from .webhook import notify_new_messages
+
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MSG_STATUSES = ("pending", "acked", "done")
 RESERVED_IDS = {"boss"}
@@ -170,6 +172,7 @@ class MailStore:
         if not recipients:
             raise MailboxError("no recipients resolved")
         out = []
+        full: list[dict[str, Any]] = []
         with self._locked():
             mid_base = _msg_id()
             for rid in recipients:
@@ -190,6 +193,9 @@ class MailStore:
                     json.dumps(msg, ensure_ascii=False, indent=1), encoding="utf-8"
                 )
                 out.append({"id": msg["id"], "to": rid})
+                full.append(msg)
+        # outside the file lock: optional webhook wake-up, best-effort
+        notify_new_messages(full)
         return out
 
     def _resolve_recipients(self, to: str | list[str]) -> list[str]:

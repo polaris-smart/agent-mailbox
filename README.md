@@ -83,13 +83,40 @@ agent immediately:
 { "tool": "mailbox_wait", "arguments": { "timeout_seconds": 25 } }
 ```
 
-For humans and dashboards, a companion watcher prints every new message as a
-JSON line and can fire macOS notifications for chosen agents:
+## Waking a sleeping agent (one config line)
+
+If the receiving agent isn't running, `mailbox_send` itself can POST every
+new message to a webhook — no daemon, no polling, no extra process. Point it
+at your host's webhook route:
+
+```json
+// ~/.agent-mail/webhook.json  (chmod 600)
+{ "url": "http://localhost:8644/webhooks/agent-mailbox", "secret": "…" }
+```
+
+Send mail as usual; the receiving side's webhook handler wakes the agent,
+which calls `mailbox_check` on arrival. Payloads are signed
+`X-Hub-Signature-256: sha256=<hmac>` (GitHub scheme — accepted by Hermes
+gateway and most webhook consumers). Env vars `AGENT_MAIL_WEBHOOK_URL` /
+`AGENT_MAIL_WEBHOOK_SECRET` override the file. The target is pinned:
+http/https only, loopback/private addresses by default, redirects refused.
+
+## Optional: desktop notifications for humans
+
+A companion watcher prints every new message as a JSON line and fires desktop
+notifications (macOS / Linux / Windows). It is never on the wake-up path —
+agents don't need it:
 
 ```bash
-uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox-watch --notify boss      # macOS notification center
+uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox-watch --notify boss
 agent-mailbox-watch --once                     # single scan (cron-friendly)
 ```
+
+| Platform | Install | Verify |
+|----------|---------|--------|
+| macOS (launchd) | `scripts/install-watch-macos.sh --notify HS` | `tail -f ~/.agent-mail/watch.log` |
+| Linux (systemd user) | `scripts/install-watch-linux.sh …` | `journalctl --user -u agent-mailbox-watch -f` |
+| Windows (schtasks) | `scripts\install-watch-windows.ps1` | `schtasks /Query /TN AgentMailboxWatch /V` |
 
 ## Design
 
