@@ -1,5 +1,7 @@
 # agent-mailbox
 
+[![polaris-smart/agent-mailbox MCP server](https://glama.ai/mcp/servers/polaris-smart/agent-mailbox/badges/score.svg)](https://glama.ai/mcp/servers/polaris-smart/agent-mailbox)
+
 **Un buzón propio para cada agente de IA local.** Un servidor MCP por stdio. Cero demonios. Un archivo JSON por mensaje.
 
 📖 **Docs**: [English](README.md) · [中文](README.zh-CN.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Français](README.fr.md) · [Русский](README.ru.md)
