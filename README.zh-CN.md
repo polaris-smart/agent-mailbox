@@ -6,6 +6,8 @@
 
 📖 **文档**: [English](README.md) · [中文](README.zh-CN.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Français](README.fr.md) · [Русский](README.ru.md)
 
+> 🆕 **v0.3.0 —— 任务看板**：agent 们在同一个邮件根上共享一块任务面板。新增 3 个 MCP 工具（共 12 个）、零依赖拖拽看板（`--web`），每次挪卡都会给负责人发信。⚠️ **升级提示**：请重启 agent 会话以加载新工具。→ [任务看板](#任务看板)
+
 ---
 
 ## 问题
@@ -81,6 +83,12 @@ claude mcp add agent-mailbox -- uvx --from git+https://github.com/polaris-smart/
 { "tool": "mailbox_wait", "arguments": { "timeout_seconds": 25 } }
 ```
 
+## 任务看板
+
+任务卡存于 `<邮件根>/tasks.json`（纯 JSON，与信件共用同一把文件锁）。状态机严格：`todo→doing→review→done`，非相邻移动被拒（除非 `force=True`）；`done` 为终态。建卡或挪卡都会给负责人发一封普通信箱消息（`[task#t-12 → review] …`）——看板动作经由既有信箱唤醒对应 agent，零轮询、零 webhook。自己挪自己的卡不发信，`notify=False` 可关闭。
+
+**Web 看板（给人类）。** `agent-mailbox --web 8643` 在 `127.0.0.1` 上提供一个零依赖看板（stdlib `http.server` + 单个内嵌 HTML，无框架）：四条泳道对应状态机，拖卡到相邻列即移动，表单可直接建卡；一键切换深浅主题。鉴权用 bearer token——设 `AGENT_MAIL_WEB_TOKEN` 固定之，否则每次启动生成新 token 并打印（打开 `http://127.0.0.1:8643/?token=…`）。看板身份为 `boss`：人类拖卡/建卡同样自动给负责人发信唤醒。页面每 5 秒自动刷新。
+
 ## 唤醒离线的 agent（一行配置）
 
 如果收信 agent 根本没在运行，`mailbox_send` 可以在新信落盘的瞬间 POST 一个 webhook——无需守护进程、无需轮询、无需额外进程：
@@ -123,10 +131,6 @@ claude mcp add agent-mailbox -- uvx --from git+https://github.com/polaris-smart/
 
 身份：显式传 `agent_id`，或每个 agent 设一次 `AGENT_MAIL_ID`。
 
-**任务看板。** 任务卡存于 `<邮件根>/tasks.json`（纯 JSON，与信件共用同一把文件锁）。状态机严格：`todo→doing→review→done`，非相邻移动被拒（除非 `force=True`）；`done` 为终态。建卡或挪卡都会给负责人发一封普通信箱消息（`[task#t-12 → review] …`）——看板动作经由既有信箱唤醒对应 agent，零轮询、零 webhook。自己挪自己的卡不发信，`notify=False` 可关闭。
-
-**Web 看板（给人类）。** `agent-mailbox --web 8643` 在 `127.0.0.1` 上提供一个零依赖看板（stdlib `http.server` + 单个内嵌 HTML，无框架）：泳道对应状态机，拖卡到相邻列即移动，表单可直接建卡。鉴权用 bearer token——设 `AGENT_MAIL_WEB_TOKEN` 固定之，否则每次启动生成新 token 并打印（打开 `http://127.0.0.1:8643/?token=…`）。看板身份为 `boss`：人类拖卡/建卡同样自动给负责人发信唤醒。页面每 5 秒自动刷新。
-
 ## 可选：给人类看的桌面通知
 
 配套 watcher 把每封新信打印成 JSON 行并弹出桌面通知（macOS / Linux / Windows）。它从不在 agent 唤醒路径上——agent 不需要它：
@@ -166,6 +170,12 @@ git clone https://github.com/polaris-smart/agent-mailbox && cd agent-mailbox
 uv venv && uv pip install -e ".[dev]"
 pytest
 ```
+
+## 升级
+
+用 `uv tool upgrade agent-mailbox` 升级（或按你原有的安装方式重新拉取）。
+
+⚠️ **升级后请重启 agent 会话（或重连 MCP 客户端）**——MCP 工具列表在会话启动时枚举，因此新工具（现在是 12 个，原来是 9 个）只有在重启后才会出现。无需改任何配置；`tasks.json` 在首次使用时自动创建。
 
 ## Roadmap
 

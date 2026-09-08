@@ -2,9 +2,11 @@
 
 [![polaris-smart/agent-mailbox MCP server](https://glama.ai/mcp/servers/polaris-smart/agent-mailbox/badges/score.svg)](https://glama.ai/mcp/servers/polaris-smart/agent-mailbox)
 
-**Un buzón propio para cada agente de IA local.** Un servidor MCP por stdio. Cero demonios. Un archivo JSON por mensaje.
+**Un buzón propio para cada agente de IA local.** Un servidor MCP por stdio. Cero demonios. Un archivo JSON por mensaje. Más un tablero de tareas integrado: las tarjetas despiertan a su responsable al moverse, y un kanban web sin dependencias para el humano.
 
 📖 **Docs**: [English](README.md) · [中文](README.zh-CN.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Français](README.fr.md) · [Русский](README.ru.md)
+
+> 🆕 **v0.3.0 — Tablero de tareas**: los agentes comparten ahora una superficie de tareas sobre la misma raíz de correo. 3 herramientas MCP nuevas (12 en total), un tablero de arrastrar y soltar sin dependencias (`--web`), y cada movimiento avisa al responsable. ⚠️ **Nota de actualización**: reinicia tu sesión de agente para cargar las herramientas nuevas. → [Tablero de tareas](#tablero-de-tareas)
 
 ---
 
@@ -21,6 +23,7 @@ Un buzón es un directorio de archivos JSON simples:
   registry.json                agent_id → {owner, description, created_at}
   inbox/HS/20260905-….json     un archivo por mensaje
   archive/HS/…
+  tasks.json                   el tablero de tareas ({"next_id", "tasks": {id: tarjeta}})
 ```
 
 Los agentes lo leen y escriben a través de un pequeño servidor MCP por stdio. Sin proceso intermediario, sin puertos, sin base de datos, sin red por defecto. Cualquier número de hosts MCP comparten una misma raíz de correo de forma segura (con bloqueo de archivos).
@@ -78,6 +81,12 @@ El registro es idempotente. Todo agente registrado es direccionable de inmediato
 { "tool": "mailbox_wait", "arguments": { "timeout_seconds": 25 } }
 ```
 
+## Tablero de tareas
+
+Las tarjetas viven en `<raíz de correo>/tasks.json` (JSON plano, el mismo bloqueo de archivos que el correo). La máquina de estados es estricta: `todo→doing→review→done`; los saltos no adyacentes se rechazan salvo `force=True`, y `done` es terminal. Crear o mover una tarjeta envía al responsable un mensaje normal del buzón (`[task#t-12 → review] …`) — el movimiento del tablero despierta al agente por la bandeja existente, sin sondeos ni webhooks. Los movimientos que uno se hace a sí mismo permanecen en silencio, y `notify=False` los desactiva.
+
+**Tablero web (para el humano).** `agent-mailbox --web 8643` sirve un kanban sin dependencias (`http.server` de stdlib + una sola página HTML embebida, sin frameworks) en `127.0.0.1`. Cuatro columnas reflejan la máquina de estados; arrastra una tarjeta entre columnas adyacentes para moverla, o crea tarjetas desde el formulario, con una sola alternancia entre tema claro y oscuro. La autenticación es un token bearer — define `AGENT_MAIL_WEB_TOKEN` para uno fijo, o se genera e imprime uno nuevo en cada arranque (abre `http://127.0.0.1:8643/?token=…`). El tablero actúa como agente `boss`: cada tarjeta que crees o arrastres sigue avisando al responsable — cada movimiento le envía un mensaje. La página se refresca cada 5 segundos.
+
 ## Despertar a un agente dormido (una línea de configuración)
 
 Si el agente receptor ni siquiera está en ejecución, `mailbox_send` puede hacer POST de cada mensaje nuevo a un webhook en el instante en que aterriza — sin demonios, sin sondeo, sin procesos extra:
@@ -114,6 +123,9 @@ El manejador de webhooks del host recibe:
 | `mailbox_broadcast(subject, body)` | a todos los agentes registrados |
 | `mailbox_whoami()` | directorio de agentes + raíz de correo |
 | `mailbox_wait(agent_id?, timeout_seconds?)` | long-poll de correo nuevo |
+| `task_create(title, assignee, due?)` | crea una tarjeta de tarea (arranca en `todo`); avisa al responsable |
+| `task_move(task_id, status, assignee?, note?, force?)` | avanza por `todo→doing→review→done` (los saltos requieren `force`); mover una tarjeta avisa a su responsable |
+| `task_list(assignee?, status?)` | lista tarjetas de tarea, filtros opcionales |
 
 ## Opcional: notificaciones de escritorio para humanos
 
@@ -153,11 +165,17 @@ uv venv && uv pip install -e ".[dev]"
 pytest
 ```
 
+## Actualización
+
+Actualiza con `uv tool upgrade agent-mailbox` (o vuelve a instalar según tu método original).
+
+⚠️ **Tras actualizar, reinicia tu sesión de agente (o reconecta el cliente MCP)** — la lista de herramientas MCP se enumera al iniciar la sesión, así que las herramientas nuevas (12 ahora, antes 9) solo aparecen tras un reinicio. No hay que cambiar ninguna configuración; `tasks.json` se crea automáticamente al primer uso.
+
 ## Roadmap
 
-- **v0.1.0** (actual) — buzones para agentes en la misma máquina vía stdio MCP. Infraestructura cero. Long-poll `mailbox_wait`, webhook de despertar integrado en `mailbox_send`, watcher opcional.
-- **v0.2.0** — federación: transporte HTTP streamable para agentes en otras máquinas (amigable con Tailscale/LAN).
-- **v0.3.0** — recibos firmados (ed25519).
+- **v0.3.0** (actual) — tablero de tareas + kanban web: `task_create` / `task_move` / `task_list` con una estricta máquina de estados todo→doing→review→done; crear o mover una tarjeta avisa automáticamente al responsable, así el movimiento del tablero despierta agentes sin ningún sondeo. `--web 8643` sirve una interfaz kanban sin dependencias protegida por token donde el arrastre humano pasa por la misma ruta de despertar. Mensajes + tareas + despertar + tablero, cero dependencias.
+- **v0.4.0** — quizá: integraciones kanban más profundas (Kaneo como referencia/competidor). En discusión.
+- **Siguiente** — federación: transporte HTTP streamable para agentes en otras máquinas (amigable con Tailscale/LAN); recibos firmados (ed25519) para entrega a prueba de manipulación.
 - **v1.0.0** — puente entre organizaciones: los hilos locales alcanzan agentes en otras máquinas y organizaciones sobre infraestructura de email estándar, con el mismo ciclo de vida del buzón.
 
 ## Licencia

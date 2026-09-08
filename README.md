@@ -6,6 +6,8 @@
 
 Other docs: [中文](README.zh-CN.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Français](README.fr.md) · [Русский](README.ru.md)
 
+> 🆕 **v0.3.0 — Task board**: agents now share a task surface on the same mail root. 3 new MCP tools (12 total), a zero-dependency drag-and-drop board (`--web`), and every move messages the assignee. ⚠️ **Upgrade note:** restart your agent session to pick up the new tools. → [Task board](#task-board)
+
 ---
 
 ## The problem
@@ -81,6 +83,12 @@ Registration is idempotent. Every registered agent is immediately addressable by
 { "tool": "mailbox_wait", "arguments": { "timeout_seconds": 25 } }
 ```
 
+## Task board
+
+Task cards live in `<mail-root>/tasks.json` (plain JSON, same file lock as the mail). The state machine is strict: `todo→doing→review→done`, non-adjacent moves rejected unless `force=True`; `done` is terminal. Creating or moving a card sends the assignee a normal mailbox message (`[task#t-12 → review] …`) — so board motion wakes the owning agent through the existing inbox, no polling, no webhooks. Self-assigned moves stay silent, and `notify=False` opts out.
+
+**Web board (for the human).** `agent-mailbox --web 8643` serves a zero-dependency kanban (stdlib `http.server` + one embedded HTML page, no framework) on `127.0.0.1`. Four lanes mirror the state machine; drag a card between adjacent lanes to move it, or create cards from the form; one toggle switches light/dark themes. Auth is a bearer token — set `AGENT_MAIL_WEB_TOKEN` for a stable one, or a fresh token is printed at boot (open `http://127.0.0.1:8643/?token=…`). The board acts as agent `boss`: every card you create or drag still auto-messages the assignee, so even human drag-and-drop wakes the right agent. The page auto-refreshes every 5 seconds.
+
 ## For AI agents (hand this section to your agent)
 
 If you are an AI agent reading this because your user said "install agent-mailbox": do exactly this, no questions needed.
@@ -152,10 +160,6 @@ Your host's webhook handler receives:
 
 Identity: pass `agent_id` explicitly, or set `AGENT_MAIL_ID` once per agent.
 
-**Task board.** Task cards live in `<mail-root>/tasks.json` (plain JSON, same file lock as the mail). The state machine is strict: `todo→doing→review→done`, non-adjacent moves rejected unless `force=True`; `done` is terminal. Creating or moving a card sends the assignee a normal mailbox message (`[task#t-12 → review] …`) — so board motion wakes the owning agent through the existing inbox, no polling, no webhooks. Self-assigned moves stay silent, and `notify=False` opts out.
-
-**Web board (for the human).** `agent-mailbox --web 8643` serves a zero-dependency kanban (stdlib `http.server` + one embedded HTML page, no framework) on `127.0.0.1`. Lanes mirror the state machine; drag a card between adjacent lanes to move it, or create cards from the form. Auth is a bearer token — set `AGENT_MAIL_WEB_TOKEN` for a stable one, or a fresh token is printed at boot (open `http://127.0.0.1:8643/?token=…`). The board acts as agent `boss`: every card you create or drag still auto-messages the assignee, so even human drag-and-drop wakes the right agent. The page auto-refreshes every 5 seconds.
-
 ## Optional: desktop notifications for humans
 
 A companion watcher prints every new message as a JSON line and fires desktop notifications (macOS / Linux / Windows). It is never on the agent wake-up path — agents don't need it:
@@ -195,6 +199,12 @@ git clone https://github.com/polaris-smart/agent-mailbox && cd agent-mailbox
 uv venv && uv pip install -e ".[dev]"
 pytest
 ```
+
+## Upgrading
+
+Upgrade with `uv tool upgrade agent-mailbox` (or re-pull however you installed it).
+
+⚠️ **Restart your agent session (or reconnect the MCP client) after upgrading** — MCP tool lists are enumerated at session start, so new tools (12 now, was 9) only appear after a restart. No config changes needed; `tasks.json` is created automatically on first use.
 
 ## Roadmap
 

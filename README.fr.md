@@ -2,9 +2,11 @@
 
 [![polaris-smart/agent-mailbox MCP server](https://glama.ai/mcp/servers/polaris-smart/agent-mailbox/badges/score.svg)](https://glama.ai/mcp/servers/polaris-smart/agent-mailbox)
 
-**Une boîte aux lettres propre à chaque agent IA local.** Un serveur MCP stdio. Zéro démon. Un fichier JSON par message.
+**Une boîte aux lettres propre à chaque agent IA local.** Un serveur MCP stdio. Zéro démon. Un fichier JSON par message. Plus un tableau de tâches intégré : les cartes réveillent leur responsable dès qu'elles bougent, et un kanban web sans dépendance pour l'humain.
 
 📖 **Docs** : [English](README.md) · [中文](README.zh-CN.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Français](README.fr.md) · [Русский](README.ru.md)
+
+> 🆕 **v0.3.0 — Tableau de tâches** : les agents partagent désormais une surface de tâches sur la même racine de courrier. 3 nouveaux outils MCP (12 au total), un tableau en glisser-déposer sans dépendance (`--web`), et chaque mouvement prévient le responsable. ⚠️ **Note de mise à niveau** : redémarrez votre session d'agent pour charger les nouveaux outils. → [Tableau de tâches](#tableau-de-tâches)
 
 ---
 
@@ -21,6 +23,7 @@ Une boîte aux lettres est un répertoire de fichiers JSON simples :
   registry.json                agent_id → {owner, description, created_at}
   inbox/HS/20260905-….json     un fichier par message
   archive/HS/…
+  tasks.json                   le tableau de tâches ({"next_id", "tasks": {id: carte}})
 ```
 
 Les agents la lisent et l'écrivent via un petit serveur MCP stdio. Aucun processus broker, aucun port, aucune base de données, aucun réseau par défaut. Autant de processus hôtes MCP que vous voulez partagent une même racine de courrier en toute sécurité (verrou de fichier).
@@ -78,6 +81,12 @@ L'enregistrement est idempotent. Tout agent enregistré est immédiatement adres
 { "tool": "mailbox_wait", "arguments": { "timeout_seconds": 25 } }
 ```
 
+## Tableau de tâches
+
+Les cartes vivent dans `<racine du courrier>/tasks.json` (JSON brut, le même verrou de fichier que le courrier). La machine à états est stricte : `todo→doing→review→done`, les sauts non adjacents sont refusés sauf `force=True`, et `done` est terminal. Créer ou déplacer une carte envoie au responsable un message ordinaire du courrier (`[task#t-12 → review] …`) — le mouvement du tableau réveille l'agent par la boîte existante, sans sondage ni webhook. Les déplacements que l'on se fait à soi-même restent silencieux, et `notify=False` les désactive.
+
+**Tableau web (pour l'humain).** `agent-mailbox --web 8643` sert un kanban sans dépendance (`http.server` de la stdlib + une seule page HTML intégrée, pas de framework) sur `127.0.0.1`. Quatre colonnes reflètent la machine à états ; faites glisser une carte entre colonnes adjacentes pour la déplacer, ou créez des cartes via le formulaire, avec une bascule entre thème clair et sombre. L'authentification est un token bearer — définissez `AGENT_MAIL_WEB_TOKEN` pour un token fixe, sinon un nouveau token est généré et affiché à chaque démarrage (ouvrez `http://127.0.0.1:8643/?token=…`). Le tableau agit comme agent `boss` : chaque carte que vous créez ou faites glisser prévient toujours le responsable — chaque mouvement lui envoie un message. La page se rafraîchit toutes les 5 secondes.
+
 ## Réveiller un agent endormi (une ligne de config)
 
 Si l'agent destinataire n'est même pas en cours d'exécution, `mailbox_send` peut lui-même POSTer chaque nouveau message vers un webhook dès qu'il atterrit — pas de démon, pas de sondage, pas de processus supplémentaire :
@@ -114,6 +123,9 @@ Le gestionnaire de webhooks de l'hôte reçoit :
 | `mailbox_broadcast(subject, body)` | à tous les agents enregistrés |
 | `mailbox_whoami()` | annuaire des agents + racine du courrier |
 | `mailbox_wait(agent_id?, timeout_seconds?)` | long-poll du courrier nouveau |
+| `task_create(title, assignee, due?)` | crée une carte de tâche (démarre en `todo`) ; prévient le responsable |
+| `task_move(task_id, status, assignee?, note?, force?)` | avance le long de `todo→doing→review→done` (les sauts exigent `force`) ; déplacer une carte prévient son responsable |
+| `task_list(assignee?, status?)` | liste les cartes de tâche, filtres optionnels |
 
 ## Optionnel : notifications de bureau pour les humains
 
@@ -153,11 +165,17 @@ uv venv && uv pip install -e ".[dev]"
 pytest
 ```
 
+## Mise à niveau
+
+Mettez à niveau avec `uv tool upgrade agent-mailbox` (ou réinstallez selon votre méthode d'origine).
+
+⚠️ **Après la mise à niveau, redémarrez votre session d'agent (ou reconnectez le client MCP)** — la liste des outils MCP est énumérée au démarrage de la session ; les nouveaux outils (12 désormais, contre 9 avant) n'apparaissent qu'après un redémarrage. Aucun changement de configuration ; `tasks.json` est créé automatiquement au premier usage.
+
 ## Feuille de route
 
-- **v0.1.0** (actuelle) — boîtes aux lettres pour agents sur une même machine via stdio MCP. Zéro infrastructure. Long-poll `mailbox_wait`, webhook de réveil intégré à `mailbox_send`, watcher optionnel.
-- **v0.2.0** — fédération : transport HTTP streamable pour les agents sur d'autres machines (Tailscale/LAN friendly).
-- **v0.3.0** — reçus signés (ed25519).
+- **v0.3.0** (actuelle) — tableau de tâches + kanban web : `task_create` / `task_move` / `task_list` avec une machine à états stricte todo→doing→review→done ; créer ou déplacer une carte prévient automatiquement le responsable, le mouvement du tableau réveille donc les agents sans aucun sondage. `--web 8643` sert une interface kanban sans dépendance protégée par token où le glisser-déposer humain passe par le même chemin de réveil. Messages + tâches + réveil + tableau, toujours zéro dépendance.
+- **v0.4.0** — peut-être : intégrations kanban plus poussées (Kaneo comme référence/concurrent). En discussion.
+- **Ensuite** — fédération : transport HTTP streamable pour les agents sur d'autres machines (Tailscale/LAN friendly) ; reçus signés (ed25519) pour une livraison infalsifiable.
 - **v1.0.0** — pont inter-organisations : les fils locaux joignent des agents sur d'autres machines et organisations via l'infrastructure e-mail standard, avec le même cycle de vie.
 
 ## Licence
