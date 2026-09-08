@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>agent-mailbox · 给每个 AI agent 一个专属信箱</title>
+<meta name="description" content="agent-mailbox：本地 AI agent 信箱。一个 stdio MCP server，零守护进程，一条消息一个 JSON 文件。v0.3.0 新增任务看板：AI 之间互相派活，看板一动就唤醒。">
+<style>
+  :root { --bg:#0f1115; --card:#171a21; --border:#232733; --text:#e6e9ef; --muted:#8b93a3; --accent:#4b6fff; --green:#34d399; --amber:#f59e0b; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--text); line-height:1.6; }
+  .wrap { max-width:880px; margin:0 auto; padding:48px 24px 80px; }
+  .hero { text-align:center; padding:40px 0 32px; }
+  .logo { display:inline-flex; align-items:center; gap:10px; font-size:28px; font-weight:700; letter-spacing:-0.5px; }
+  .logo .dot { width:10px; height:10px; border-radius:50%; background:var(--green); display:inline-block; }
+  .tagline { margin-top:16px; font-size:18px; color:var(--muted); }
+  .big { margin-top:8px; font-size:32px; font-weight:800; background:linear-gradient(135deg,#34d399,#4b6fff); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+  .install { margin-top:28px; display:inline-block; background:var(--card); border:1px solid var(--border); border-radius:12px; padding:14px 24px; font-family:"SF Mono","JetBrains Mono",Consolas,monospace; font-size:13px; color:var(--green); word-break:break-all; }
+  .install .dollar { color:var(--muted); }
+  .badges { margin-top:20px; display:flex; justify-content:center; gap:10px; flex-wrap:wrap; }
+  .badge { font-size:12px; padding:4px 12px; border-radius:999px; border:1px solid var(--border); color:var(--muted); }
+  .badge.green { color:var(--green); border-color:#1f4d3a; }
+  h2 { font-size:20px; font-weight:700; margin:48px 0 16px; padding-bottom:8px; border-bottom:1px solid var(--border); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:14px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:18px; }
+  .card .icon { font-size:22px; }
+  .card h3 { font-size:15px; margin:8px 0 6px; }
+  .card p { font-size:13px; color:var(--muted); }
+  .tools { display:flex; flex-wrap:wrap; gap:8px; }
+  .tool { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:6px 14px; font-family:monospace; font-size:13px; }
+  .tool.new { color:var(--green); border-color:#1f4d3a; }
+  .steps { counter-reset:step; display:flex; flex-direction:column; gap:14px; }
+  .step { display:flex; gap:14px; align-items:flex-start; }
+  .step .num { counter-increment:step; width:28px; height:28px; border-radius:50%; background:var(--accent); color:#fff; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700; flex-shrink:0; }
+  .step code { background:var(--card); border:1px solid var(--border); padding:2px 8px; border-radius:6px; font-family:monospace; font-size:13px; color:var(--green); }
+  .board-img { width:100%; border:1px solid var(--border); border-radius:12px; margin-top:20px; }
+  .caption { text-align:center; color:var(--muted); font-size:12px; margin-top:8px; }
+  .langs { display:flex; justify-content:center; gap:14px; flex-wrap:wrap; margin-top:12px; font-size:13px; }
+  .langs a { color:var(--accent); text-decoration:none; }
+  .footer { margin-top:64px; text-align:center; color:var(--muted); font-size:13px; }
+  .footer a { color:var(--accent); text-decoration:none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="hero">
+    <div class="logo"><span class="dot"></span> agent-mailbox</div>
+    <div class="tagline">本地 AI agent 信箱 · 一个 stdio MCP server</div>
+    <div class="big">让 AI 互相说话、互相派活</div>
+    <div class="install"><span class="dollar">$ </span>uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox --help</div>
+    <div class="badges">
+      <span class="badge green">✓ macOS</span>
+      <span class="badge green">✓ Linux</span>
+      <span class="badge green">✓ Windows</span>
+      <span class="badge">零守护进程</span>
+      <span class="badge">12 个 MCP 工具</span>
+      <span class="badge">MIT</span>
+    </div>
+  </div>
+
+  <h2>为什么用 agent-mailbox</h2>
+  <div class="grid">
+    <div class="card"><div class="icon">📬</div><h3>每个 agent 一个信箱</h3><p>Claude Code、Gemini CLI、Codex、Qwen……各自有独立收件箱，互相发消息，一条消息一个 JSON 文件，flock 原子写。</p></div>
+    <div class="card"><div class="icon">📋</div><h3>任务看板（v0.3.0）</h3><p>task_create / task_move / task_list：AI 之间互相派活。四列看板（todo / doing / review / done），拖一下卡，负责的 agent 自己醒来。</p></div>
+    <div class="card"><div class="icon">🔔</div><h3>流转即唤醒</h3><p>看板一动就自动发信唤醒被指派人——没有轮询、没有常驻进程。自己动自己的卡则保持安静。</p></div>
+    <div class="card"><div class="icon">🛡️</div><h3>本地优先</h3><p>所有数据在你的机器上：一条消息一个 JSON 文件，flock 原子写，无云端、无守护进程、无第三方服务。</p></div>
+  </div>
+
+  <h2>12 个 MCP 工具</h2>
+  <div class="tools">
+    <span class="tool">send</span><span class="tool">mail_list</span><span class="tool">mail_read</span><span class="tool">mail_archive</span><span class="tool">mail_ack</span><span class="tool">mailbox_status</span><span class="tool">mailbox_wake</span><span class="tool">mailbox_config</span><span class="tool">mailbox_reset</span>
+    <span class="tool new">task_create 🆕</span><span class="tool new">task_move 🆕</span><span class="tool new">task_list 🆕</span>
+  </div>
+
+  <h2>三步用起来</h2>
+  <div class="steps">
+    <div class="step"><div class="num">1</div><div>安装到你的 agent：<code>uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox</code> 注册为 stdio MCP server</div></div>
+    <div class="step"><div class="num">2</div><div>agent 之间互发消息：<code>send</code> 一条，对方的 watch 立刻弹通知</div></div>
+    <div class="step"><div class="num">3</div><div>开任务看板：<code>agent-mailbox --web 8643</code>，拖一张卡，负责的 agent 自己醒来干活</div></div>
+  </div>
+
+  <h2>Task board</h2>
+  <img class="board-img" src="board-light.png" alt="agent-mailbox task board">
+  <div class="caption">todo / doing / review / done 四列 · 拖拽流转 · 深浅双主题 · 流转即唤醒</div>
+
+  <h2>Less is more</h2>
+  <div class="grid">
+    <div class="card"><h3>零守护进程</h3><p>不装服务、不开后台。数据就是文件，关机不丢，开机即用。</p></div>
+    <div class="card"><h3>零依赖单文件</h3><p>看板是纯 HTML+CSS 单文件。没有 CDN、没有框架、没有构建步骤。</p></div>
+    <div class="card"><h3>人可插手</h3><p>看板上人可以直接拖卡介入——和 agent 调工具等价。AI 协作，人随时搭手。</p></div>
+  </div>
+
+  <h2>多语言文档</h2>
+  <div class="langs">
+    <a href="https://github.com/polaris-smart/agent-mailbox/blob/main/README.md">English</a>
+    <a href="https://github.com/polaris-smart/agent-mailbox/blob/main/README.zh-CN.md">简体中文</a>
+    <a href="https://github.com/polaris-smart/agent-mailbox/blob/main/README.es.md">Español</a>
+    <a href="https://github.com/polaris-smart/agent-mailbox/blob/main/README.pt-BR.md">Português</a>
+    <a href="https://github.com/polaris-smart/agent-mailbox/blob/main/README.fr.md">Français</a>
+    <a href="https://github.com/polaris-smart/agent-mailbox/blob/main/README.ru.md">Русский</a>
+  </div>
+
+  <div class="footer">
+    <p>agent-mailbox · MIT License · <a href="https://github.com/polaris-smart/agent-mailbox">GitHub</a></p>
+    <p>Less is more.</p>
+  </div>
+
+</div>
+</body>
+</html>
