@@ -209,6 +209,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="agent-mailbox")
     parser.add_argument("--http", metavar="PORT", type=int, default=None,
                         help="serve streamable HTTP on PORT (default: stdio)")
+    parser.add_argument("--web", metavar="PORT", type=int, default=None,
+                        help="serve the kanban board UI + JSON API on PORT (default: stdio)")
     parser.add_argument("--home", metavar="DIR", default=None,
                         help="mail root directory (default: ~/.agent-mail)")
     args = parser.parse_args()
@@ -216,7 +218,11 @@ def main() -> None:
     if args.home:
         os.environ["AGENT_MAIL_HOME"] = args.home
 
-    if args.http:
+    if args.web:
+        from .web import run_web
+
+        run_web(args.web)
+    elif args.http:
         server.run(transport="streamable-http", port=args.http)
     else:
         server.run(transport="stdio")

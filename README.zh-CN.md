@@ -2,7 +2,7 @@
 
 [![polaris-smart/agent-mailbox MCP server](https://glama.ai/mcp/servers/polaris-smart/agent-mailbox/badges/score.svg)](https://glama.ai/mcp/servers/polaris-smart/agent-mailbox)
 
-**给每一个本地 AI Agent 一个专属信箱。** 一个 stdio MCP server，零守护进程，每封信一个 JSON 文件。
+**给每一个本地 AI Agent 一个专属信箱。** 一个 stdio MCP server，零守护进程，每封信一个 JSON 文件。外加内建任务看板：卡片移动即唤醒负责人，还有给人类用的零依赖 Web 看板。
 
 📖 **文档**: [English](README.md) · [中文](README.zh-CN.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Français](README.fr.md) · [Русский](README.ru.md)
 
@@ -21,6 +21,7 @@
   registry.json                agent_id → {owner, description, created_at}
   inbox/HS/20260905-….json     每封信一个文件
   archive/HS/…
+  tasks.json                   任务看板（{"next_id", "tasks": {id: 卡片}}）
 ```
 
 Agent 通过一个小型 stdio MCP server 读写它。没有 broker 进程、不开端口、没有数据库、默认零网络。任意多个 MCP 宿主进程共享同一个邮件根目录（文件锁保护）。
@@ -124,6 +125,8 @@ claude mcp add agent-mailbox -- uvx --from git+https://github.com/polaris-smart/
 
 **任务看板。** 任务卡存于 `<邮件根>/tasks.json`（纯 JSON，与信件共用同一把文件锁）。状态机严格：`todo→doing→review→done`，非相邻移动被拒（除非 `force=True`）；`done` 为终态。建卡或挪卡都会给负责人发一封普通信箱消息（`[task#t-12 → review] …`）——看板动作经由既有信箱唤醒对应 agent，零轮询、零 webhook。自己挪自己的卡不发信，`notify=False` 可关闭。
 
+**Web 看板（给人类）。** `agent-mailbox --web 8643` 在 `127.0.0.1` 上提供一个零依赖看板（stdlib `http.server` + 单个内嵌 HTML，无框架）：泳道对应状态机，拖卡到相邻列即移动，表单可直接建卡。鉴权用 bearer token——设 `AGENT_MAIL_WEB_TOKEN` 固定之，否则每次启动生成新 token 并打印（打开 `http://127.0.0.1:8643/?token=…`）。看板身份为 `boss`：人类拖卡/建卡同样自动给负责人发信唤醒。页面每 5 秒自动刷新。
+
 ## 可选：给人类看的桌面通知
 
 配套 watcher 把每封新信打印成 JSON 行并弹出桌面通知（macOS / Linux / Windows）。它从不在 agent 唤醒路径上——agent 不需要它：
@@ -166,8 +169,8 @@ pytest
 
 ## Roadmap
 
-- **v0.3.0**（当前）—— 任务看板：`task_create` / `task_move` / `task_list`，严格 todo→doing→review→done 状态机；建卡/挪卡自动给负责人发信，看板动作零轮询唤醒 agent。
-- **v0.4.0** —— 可能：看板桥接（Kaneo）双向同步卡。届时再议。
+- **v0.3.0**（当前）—— 任务看板 + Web 看板：`task_create` / `task_move` / `task_list`，严格 todo→doing→review→done 状态机；建卡/挪卡自动给负责人发信，看板动作零轮询唤醒 agent。`--web 8643` 提供 token 保护的零依赖看板 UI，人类拖卡走同一唤醒链路。消息 + 任务 + 唤醒 + 看板，依旧零依赖。
+- **v0.4.0** —— 可能：更深的看板集成（Kaneo 作为参考/竞品）。届时再议。
 - **后续** —— 联邦：streamable HTTP transport 让其他机器上的 agent 接入（Tailscale/LAN 友好）；签名回执（ed25519）防篡改投递。
 - **v1.0.0** —— 跨组织桥：本地会话经标准邮件基础设施触达其他机器与组织的 agent，信箱生命周期不变。
 

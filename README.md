@@ -2,7 +2,7 @@
 
 [![polaris-smart/agent-mailbox MCP server](https://glama.ai/mcp/servers/polaris-smart/agent-mailbox/badges/score.svg)](https://glama.ai/mcp/servers/polaris-smart/agent-mailbox)
 
-**Give every AI agent its own mailbox.** One stdio MCP server. Zero daemons. One JSON file per message.
+**Give every AI agent its own mailbox.** One stdio MCP server. Zero daemons. One JSON file per message. Plus a built-in task board: cards wake their assignee when they move, and a zero-dependency web kanban for the human.
 
 Other docs: [中文](README.zh-CN.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Français](README.fr.md) · [Русский](README.ru.md)
 
@@ -21,6 +21,7 @@ A mailbox is a directory of plain JSON files:
   registry.json                agent_id → {owner, description, created_at}
   inbox/HS/20260905-….json     one file per message
   archive/HS/…
+  tasks.json                   the task board ({"next_id", "tasks": {id: card}})
 ```
 
 Agents read and write it through a small stdio MCP server. No broker process, no ports, no database, no network by default. Any number of MCP host processes share one mail root safely (file-lock guarded).
@@ -153,6 +154,8 @@ Identity: pass `agent_id` explicitly, or set `AGENT_MAIL_ID` once per agent.
 
 **Task board.** Task cards live in `<mail-root>/tasks.json` (plain JSON, same file lock as the mail). The state machine is strict: `todo→doing→review→done`, non-adjacent moves rejected unless `force=True`; `done` is terminal. Creating or moving a card sends the assignee a normal mailbox message (`[task#t-12 → review] …`) — so board motion wakes the owning agent through the existing inbox, no polling, no webhooks. Self-assigned moves stay silent, and `notify=False` opts out.
 
+**Web board (for the human).** `agent-mailbox --web 8643` serves a zero-dependency kanban (stdlib `http.server` + one embedded HTML page, no framework) on `127.0.0.1`. Lanes mirror the state machine; drag a card between adjacent lanes to move it, or create cards from the form. Auth is a bearer token — set `AGENT_MAIL_WEB_TOKEN` for a stable one, or a fresh token is printed at boot (open `http://127.0.0.1:8643/?token=…`). The board acts as agent `boss`: every card you create or drag still auto-messages the assignee, so even human drag-and-drop wakes the right agent. The page auto-refreshes every 5 seconds.
+
 ## Optional: desktop notifications for humans
 
 A companion watcher prints every new message as a JSON line and fires desktop notifications (macOS / Linux / Windows). It is never on the agent wake-up path — agents don't need it:
@@ -195,8 +198,8 @@ pytest
 
 ## Roadmap
 
-- **v0.3.0** (current) — task board: `task_create` / `task_move` / `task_list` with a strict todo→doing→review→done state machine; moving (or assigning) a card auto-messages the assignee, so kanban motion wakes agents with zero polling.
-- **v0.4.0** — maybe: Kanban bridge (Kaneo) — two-way card sync. Under discussion.
+- **v0.3.0** (current) — task board + web kanban: `task_create` / `task_move` / `task_list` with a strict todo→doing→review→done state machine; creating or moving a card auto-messages the assignee, so board motion wakes agents with zero polling. `--web 8643` serves a token-protected zero-dependency kanban UI where human drag-and-drop goes through the same wake-up path. Messages + tasks + wake-up + board, still zero dependencies.
+- **v0.4.0** — maybe: deeper kanban integrations (Kaneo as reference/competitor). Under discussion.
 - **Next** — federation: streamable HTTP transport for agents on other machines (Tailscale/LAN friendly); signed receipts (ed25519) for tamper-evident delivery.
 - **v1.0.0** — cross-organization bridge: local threads reach agents on other machines and organizations over standard email infrastructure, with the same mailbox lifecycle.
 
