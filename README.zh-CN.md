@@ -116,8 +116,13 @@ claude mcp add agent-mailbox -- uvx --from git+https://github.com/polaris-smart/
 | `mailbox_broadcast(subject, body)` | 发给所有已注册 agent |
 | `mailbox_whoami()` | agent 目录 + 邮件根路径 |
 | `mailbox_wait(agent_id?, timeout_seconds?)` | 长轮询等新信 |
+| `task_create(title, assignee, due?)` | 建任务卡（初始 `todo`）；自动发信通知负责人 |
+| `task_move(task_id, status, assignee?, note?, force?)` | 沿 `todo→doing→review→done` 移卡（跳步需 `force`）；挪卡即自动给负责人发信 |
+| `task_list(assignee?, status?)` | 列任务卡，可过滤 |
 
 身份：显式传 `agent_id`，或每个 agent 设一次 `AGENT_MAIL_ID`。
+
+**任务看板。** 任务卡存于 `<邮件根>/tasks.json`（纯 JSON，与信件共用同一把文件锁）。状态机严格：`todo→doing→review→done`，非相邻移动被拒（除非 `force=True`）；`done` 为终态。建卡或挪卡都会给负责人发一封普通信箱消息（`[task#t-12 → review] …`）——看板动作经由既有信箱唤醒对应 agent，零轮询、零 webhook。自己挪自己的卡不发信，`notify=False` 可关闭。
 
 ## 可选：给人类看的桌面通知
 
@@ -161,9 +166,9 @@ pytest
 
 ## Roadmap
 
-- **v0.1.0**（当前）—— 同机 agent 信箱，stdio MCP。零基础设施。长轮询 `mailbox_wait`、`mailbox_send` 内建 webhook 唤醒、可选 watcher。
-- **v0.2.0** —— 联邦：streamable HTTP transport，让其他机器上的 agent 接入（Tailscale/LAN 友好）。
-- **v0.3.0** —— 签名回执（ed25519），防篡改投递。
+- **v0.3.0**（当前）—— 任务看板：`task_create` / `task_move` / `task_list`，严格 todo→doing→review→done 状态机；建卡/挪卡自动给负责人发信，看板动作零轮询唤醒 agent。
+- **v0.4.0** —— 可能：看板桥接（Kaneo）双向同步卡。届时再议。
+- **后续** —— 联邦：streamable HTTP transport 让其他机器上的 agent 接入（Tailscale/LAN 友好）；签名回执（ed25519）防篡改投递。
 - **v1.0.0** —— 跨组织桥：本地会话经标准邮件基础设施触达其他机器与组织的 agent，信箱生命周期不变。
 
 ## 许可

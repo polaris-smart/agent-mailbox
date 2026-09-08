@@ -24,7 +24,10 @@ server = MCPServer(
         "A global mailbox for local AI agents. Register once with mailbox_register, "
         "then use mailbox_send / mailbox_check / mailbox_reply / mailbox_list / "
         "mailbox_done / mailbox_broadcast. Check your inbox when you start a session "
-        "and after finishing a task — messages wait here even when the recipient is offline."
+        "and after finishing a task — messages wait here even when the recipient is offline. "
+        "Task cards: task_create / task_move / task_list manage a shared task board; "
+        "creating or moving a card auto-messages the assignee, so board motion wakes "
+        "agents without polling."
     ),
 )
 
@@ -155,6 +158,51 @@ def mailbox_wait(agent_id: str = "", timeout_seconds: float = 25.0) -> dict:
         if time.time() >= deadline:
             return {"agent_id": me, "received": 0, "messages": [], "timeout": True}
         time.sleep(0.5)
+
+
+# ---------------------------------------------------------------- task tools
+
+@server.tool()
+def task_create(
+    title: str, assignee: str, due: str = "", from_id: str = "", notify: bool = True
+) -> dict:
+    """Create a task card (starts at todo). The assignee is auto-messaged —
+    skip with notify=False."""
+    me = from_id or os.environ.get("AGENT_MAIL_ID", "")
+    if not me:
+        raise MailboxError("from_id required (or set AGENT_MAIL_ID env)")
+    task = _store_instance().task_create(title, assignee, me, due, notify=notify)
+    return {"task": task}
+
+
+@server.tool()
+def task_move(
+    task_id: str,
+    status: str,
+    assignee: str | None = None,
+    note: str = "",
+    force: bool = False,
+    notify: bool = True,
+    from_id: str = "",
+) -> dict:
+    """Move a task along todo→doing→review→done. Skips need force=True;
+    done is terminal. Pass assignee to reassign. The (new) assignee is
+    auto-messaged — moving a card wakes its owner."""
+    me = from_id or os.environ.get("AGENT_MAIL_ID", "")
+    if not me:
+        raise MailboxError("from_id required (or set AGENT_MAIL_ID env)")
+    task = _store_instance().task_move(
+        task_id, status, moved_by=me, assignee=assignee,
+        force=force, notify=notify, note=note,
+    )
+    return {"task": task}
+
+
+@server.tool()
+def task_list(assignee: str | None = None, status: str | None = None) -> dict:
+    """List task cards, optionally filtered by assignee and/or status."""
+    tasks = _store_instance().task_list(assignee=assignee, status=status)
+    return {"count": len(tasks), "tasks": tasks}
 
 
 def main() -> None:

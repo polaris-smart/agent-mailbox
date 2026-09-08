@@ -37,6 +37,14 @@ AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MSG_STATUSES = ("pending", "acked", "done")
 RESERVED_IDS = {"boss"}
 
+TASK_STATUSES = ("todo", "doing", "review", "done")
+TASK_TRANSITIONS: dict[str, set[str]] = {
+    "todo": {"doing"},
+    "doing": {"review"},
+    "review": {"done"},
+    "done": set(),  # terminal — no move out of done, even with force
+}
+
 
 _thread_lock = threading.Lock()
 
@@ -279,3 +287,159 @@ class MailStore:
                     os.replace(p, arch / p.name)
                     n += 1
         return n
+
+    # ================================================================= tasks
+    #
+    # Task cards live in <root>/tasks.json ({"next_id": n, "tasks": {id: card}}),
+    # guarded by the same mail-root file lock as everything else. Moving a
+    # card auto-messages the assignee through the normal send() path — kanban
+    # motion becomes a wake-up, no webhooks or polling required.
+
+    def _read_tasks(self) -> dict[str, Any]:
+        path = self.root / "tasks.json"
+        if not path.exists():
+            return {"next_id": 1, "tasks": {}}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            raise MailboxError(f"corrupt tasks.json: {e}") from e
+        if not isinstance(data.get("tasks"), dict):
+            raise MailboxError("corrupt tasks.json: tasks must be an object")
+        data.setdefault("next_id", len(data["tasks"]) + 1)
+        return data
+
+    def _write_tasks(self, data: dict[str, Any]) -> None:
+        fd, tmp = tempfile.mkstemp(dir=self.root, suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, self.root / "tasks.json")
+
+    def task_create(
+        self,
+        title: str,
+        assignee: str,
+        created_by: str,
+        due: str = "",
+        *,
+        notify: bool = True,
+    ) -> dict[str, Any]:
+        """Create a task card (status ``todo``). Returns the card."""
+        title = (title or "").strip()
+        if not title:
+            raise MailboxError("task title required")
+        self._validate_id(assignee)
+        self._validate_id(created_by)
+        with self._locked():
+            data = self._read_tasks()
+            tid = f"t-{data['next_id']}"
+            data["next_id"] += 1
+            now = _now_iso()
+            task = {
+                "id": tid,
+                "title": title,
+                "assignee": assignee,
+                "status": "todo",
+                "due": due or "",
+                "created_by": created_by,
+                "created_at": now,
+                "updated_at": now,
+                "history": [],
+            }
+            data["tasks"][tid] = task
+            self._write_tasks(data)
+        if notify and assignee != created_by:
+            self.send(
+                created_by,
+                assignee,
+                f"[task#{tid} → todo] {title}",
+                f"新任务 {tid}「{title}」已分派给你（创建人 {created_by}）。"
+                + (f"截止: {due}。" if due else "")
+                + "用 task_list 查看详情。",
+            )
+        return task
+
+    def task_move(
+        self,
+        task_id: str,
+        status: str,
+        *,
+        moved_by: str = "",
+        assignee: str | None = None,
+        force: bool = False,
+        notify: bool = True,
+        note: str = "",
+    ) -> dict[str, Any]:
+        """Move a task along todo→doing→review→done.
+
+        Non-adjacent transitions (and any move out of ``done``) are rejected;
+        skips need ``force=True`` — except ``done``, which is terminal. Pass
+        ``assignee`` to reassign the card on the same move.
+        """
+        if status not in TASK_STATUSES:
+            raise MailboxError(f"status must be one of {TASK_STATUSES}")
+        if moved_by:
+            self._validate_id(moved_by)
+        if assignee is not None:
+            self._validate_id(assignee)
+        old_assignee = ""
+        with self._locked():
+            data = self._read_tasks()
+            task = data["tasks"].get(task_id)
+            if task is None:
+                raise MailboxError(f"task {task_id!r} not found")
+            cur = task["status"]
+            if cur == "done":
+                raise MailboxError(
+                    f"task {task_id} is done (terminal) — create a new task instead"
+                )
+            if status == cur:
+                raise MailboxError(f"task {task_id} already in {cur}")
+            if status not in TASK_TRANSITIONS[cur] and not force:
+                raise MailboxError(
+                    f"illegal transition {cur}→{status} for {task_id}; "
+                    f"allowed from {cur}: {sorted(TASK_TRANSITIONS[cur])} "
+                    "(pass force=True to skip ahead)"
+                )
+            old_assignee = task["assignee"]
+            if assignee is not None and assignee != old_assignee:
+                task["assignee"] = assignee
+            task["status"] = status
+            task["updated_at"] = _now_iso()
+            entry: dict[str, Any] = {"at": task["updated_at"], "from": cur, "to": status, "by": moved_by}
+            if note:
+                entry["note"] = note
+            task["history"].append(entry)
+            self._write_tasks(data)
+        if notify and task["assignee"] != moved_by:
+            lines = [f"任务 {task_id}「{task['title']}」已由 {moved_by or task['created_by']} 移至 {status}。"]
+            if task["assignee"] != old_assignee:
+                lines.append(f"负责人已从 {old_assignee} 转派给 {task['assignee']}。")
+            if note:
+                lines.append(f"说明: {note}")
+            if task["due"]:
+                lines.append(f"截止: {task['due']}")
+            lines.append("用 task_list 查看任务详情。")
+            self.send(
+                moved_by or task["created_by"],
+                task["assignee"],
+                f"[task#{task_id} → {status}] {task['title']}",
+                "\n".join(lines),
+            )
+        return task
+
+    def task_list(
+        self, assignee: str | None = None, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        """List task cards, optionally filtered by assignee and/or status."""
+        if status is not None and status not in TASK_STATUSES:
+            raise MailboxError(f"status must be one of {TASK_STATUSES}")
+        if assignee is not None:
+            self._validate_id(assignee)
+        with self._locked():
+            tasks = list(self._read_tasks()["tasks"].values())
+        if assignee is not None:
+            tasks = [t for t in tasks if t["assignee"] == assignee]
+        if status is not None:
+            tasks = [t for t in tasks if t["status"] == status]
+        tasks.sort(key=lambda t: int(t["id"].rsplit("-", 1)[1]))
+        return tasks

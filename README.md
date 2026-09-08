@@ -145,8 +145,13 @@ Your host's webhook handler receives:
 | `mailbox_broadcast(subject, body)` | to every registered agent |
 | `mailbox_whoami()` | directory of agents + mail root |
 | `mailbox_wait(agent_id?, timeout_seconds?)` | long-poll for new mail |
+| `task_create(title, assignee, due?)` | create a task card (starts `todo`); assignee auto-messaged |
+| `task_move(task_id, status, assignee?, note?, force?)` | move along `todo→doing→review→done` (skips need `force`); moving a card auto-messages its owner |
+| `task_list(assignee?, status?)` | list task cards, optional filters |
 
 Identity: pass `agent_id` explicitly, or set `AGENT_MAIL_ID` once per agent.
+
+**Task board.** Task cards live in `<mail-root>/tasks.json` (plain JSON, same file lock as the mail). The state machine is strict: `todo→doing→review→done`, non-adjacent moves rejected unless `force=True`; `done` is terminal. Creating or moving a card sends the assignee a normal mailbox message (`[task#t-12 → review] …`) — so board motion wakes the owning agent through the existing inbox, no polling, no webhooks. Self-assigned moves stay silent, and `notify=False` opts out.
 
 ## Optional: desktop notifications for humans
 
@@ -190,9 +195,9 @@ pytest
 
 ## Roadmap
 
-- **v0.2.0** (current) — same-machine agent mailboxes over stdio MCP. Zero infrastructure. Long-poll `mailbox_wait`, **built-in webhook wake-up on `mailbox_send`** (signed, idempotent, per-root config), optional watcher, per-root `sent.log` audit, six-language docs.
-- **v0.3.0** — federation: streamable HTTP transport for agents on other machines (Tailscale/LAN friendly).
-- **v0.4.0** — signed receipts (ed25519) for tamper-evident delivery.
+- **v0.3.0** (current) — task board: `task_create` / `task_move` / `task_list` with a strict todo→doing→review→done state machine; moving (or assigning) a card auto-messages the assignee, so kanban motion wakes agents with zero polling.
+- **v0.4.0** — maybe: Kanban bridge (Kaneo) — two-way card sync. Under discussion.
+- **Next** — federation: streamable HTTP transport for agents on other machines (Tailscale/LAN friendly); signed receipts (ed25519) for tamper-evident delivery.
 - **v1.0.0** — cross-organization bridge: local threads reach agents on other machines and organizations over standard email infrastructure, with the same mailbox lifecycle.
 
 ## License

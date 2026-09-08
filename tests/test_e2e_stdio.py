@@ -70,6 +70,44 @@ def main():
             "name": "mailbox_broadcast", "arguments": {"from_id": "boss", "subject": "hi", "body": "all"}}})
         read_resp()
         print("broadcast ok")
+
+        send({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {
+            "name": "task_create", "arguments": {
+                "from_id": "HS", "title": "ship v0.3.0", "assignee": "WB",
+                "due": "2026-09-10"}}})
+        resp = read_resp()
+        task = json.loads(resp["result"]["content"][0]["text"])["task"]
+        assert task["status"] == "todo"
+        tid = task["id"]
+        print(f"task_create ok ({tid})")
+
+        send({"jsonrpc": "2.0", "id": 8, "method": "tools/call", "params": {
+            "name": "task_move", "arguments": {"from_id": "HS", "task_id": tid, "status": "review"}}})
+        resp = read_resp()
+        assert resp["result"].get("isError") is True
+        print("task_move illegal skip rejected ok")
+
+        send({"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {
+            "name": "task_move", "arguments": {"from_id": "HS", "task_id": tid, "status": "doing"}}})
+        read_resp()
+        send({"jsonrpc": "2.0", "id": 10, "method": "tools/call", "params": {
+            "name": "task_move", "arguments": {"from_id": "HS", "task_id": tid, "status": "review", "note": "please verify"}}})
+        read_resp()
+        print("task_move todo→doing→review ok")
+
+        send({"jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": {
+            "name": "mailbox_check", "arguments": {"agent_id": "WB"}}})
+        resp = read_resp()
+        text = resp["result"]["content"][0]["text"]
+        assert f"[task#{tid} → review] ship v0.3.0" in text
+        assert "please verify" in text
+        print("auto-notification delivered over MCP stdio ok")
+
+        send({"jsonrpc": "2.0", "id": 12, "method": "tools/call", "params": {
+            "name": "task_list", "arguments": {"assignee": "WB", "status": "review"}}})
+        resp = read_resp()
+        assert tid in resp["result"]["content"][0]["text"]
+        print("task_list filter ok")
         print("E2E PASS")
     finally:
         proc.kill()
