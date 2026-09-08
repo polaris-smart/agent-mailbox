@@ -27,46 +27,111 @@ PAGE = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>agent-mailbox · board</title>
 <style>
-  :root { --bg:#0f1115; --panel:#171a21; --card:#1f242e; --line:#2a303c;
-          --text:#e6e9ef; --dim:#8b93a3; --accent:#4f8cff; }
-  * { box-sizing: border-box; margin: 0; }
+  /* Less is more: one neutral surface + a status dot per lane.
+     Three type sizes only — 15px titles, 13px body, 12px auxiliary.
+     Every space is a multiple of 4 on an 8px grid.                    */
+  :root {
+    --bg:#f4f5f7; --panel:#ffffff; --card:#ffffff; --card-hover:#ffffff;
+    --line:#e3e6ec; --line-soft:#eceef2; --text:#1d2026; --dim:#6e7585;
+    --accent:#4a6fa5; --accent-ink:#ffffff;
+    --shadow:0 2px 8px rgba(29,32,38,.08);
+    --shadow-lift:0 4px 14px rgba(29,32,38,.12);
+    /* status dots — low saturation, tuned per theme */
+    --st-todo:#9aa1af; --st-doing:#5d81b8; --st-review:#b8904f; --st-done:#629c72;
+    --over-bg:#f3f6fb;
+    --badge-bg:#eef0f4; --badge-ink:#5a6172;
+    --danger:#b4524e; --danger-bg:#faf1f0; --danger-line:#e6cfcd;
+  }
+  html[data-theme="dark"] {
+    --bg:#101216; --panel:#171a20; --card:#1d2129; --card-hover:#222630;
+    --line:#282d38; --line-soft:#21252e; --text:#e3e6ee; --dim:#8a91a4;
+    --accent:#7195cd; --accent-ink:#101216;
+    --shadow:0 2px 8px rgba(0,0,0,.35);
+    --shadow-lift:0 4px 16px rgba(0,0,0,.5);
+    --st-todo:#828a9c; --st-doing:#7f9fda; --st-review:#c7a266; --st-done:#7db389;
+    --over-bg:#1a2029;
+    --badge-bg:#242935; --badge-ink:#98a0b2;
+    --danger:#d4807c; --danger-bg:#2a2021; --danger-line:#4a3234;
+  }
+  * { box-sizing:border-box; margin:0; }
   body { background:var(--bg); color:var(--text);
-         font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
-         min-height:100vh; display:flex; flex-direction:column; }
-  header { display:flex; gap:12px; align-items:center; padding:12px 20px;
+         font:13px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+         min-height:100vh; display:flex; flex-direction:column;
+         -webkit-font-smoothing:antialiased; }
+  h1, .card b { font-size:15px; font-weight:600; }
+  .aux { font-size:12px; color:var(--dim); }
+
+  header { display:flex; gap:8px 16px; align-items:baseline; padding:16px 24px;
            border-bottom:1px solid var(--line); flex-wrap:wrap; }
-  header h1 { font-size:16px; font-weight:600; }
+  header h1 { letter-spacing:-.01em; }
   header .dim { color:var(--dim); font-size:12px; }
-  header button { margin-left:auto; }
-  form { display:flex; gap:8px; padding:10px 20px; flex-wrap:wrap; }
+  header .spacer { flex:1; }
+  form { display:flex; gap:8px; padding:16px 24px; flex-wrap:wrap; }
   input { background:var(--panel); color:var(--text); border:1px solid var(--line);
-          border-radius:6px; padding:6px 10px; font:inherit; }
+          border-radius:6px; padding:6px 12px; font:inherit; }
   input::placeholder { color:var(--dim); }
-  #board { display:grid; grid-template-columns:repeat(4,1fr); gap:12px;
-           padding:12px 20px 24px; flex:1; align-items:start; }
-  .lane { background:var(--panel); border:1px solid var(--line); border-radius:10px;
-          padding:10px; min-height:160px; }
-  .lane h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em;
-             color:var(--dim); padding:2px 4px 10px; display:flex; justify-content:space-between; }
-  .lane.over { outline:2px dashed var(--accent); }
+  input:focus { outline:none; border-color:var(--accent); }
+
+  #board { display:grid; grid-template-columns:repeat(4,1fr); gap:16px;
+           padding:16px 24px 32px; flex:1; align-items:start; }
+  .lane { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+          padding:8px; min-height:180px;
+          transition:background-color .12s, border-color .12s; }
+  .lane h2 { font-size:12px; font-weight:600; text-transform:uppercase;
+             letter-spacing:.06em; color:var(--dim);
+             padding:8px 8px 12px; display:flex; align-items:center; gap:8px; }
+  .lane h2 .dot { width:8px; height:8px; border-radius:50%; flex:none; }
+  .lane[data-status="todo"]   .dot { background:var(--st-todo); }
+  .lane[data-status="doing"]  .dot { background:var(--st-doing); }
+  .lane[data-status="review"] .dot { background:var(--st-review); }
+  .lane[data-status="done"]   .dot { background:var(--st-done); }
+  .lane h2 .n { margin-left:auto; font-size:12px; font-weight:500;
+                color:var(--badge-ink); background:var(--badge-bg);
+                border-radius:10px; padding:0 8px; line-height:20px;
+                letter-spacing:0; min-width:12px; text-align:center; }
+  .lane .empty { color:var(--dim); font-size:12px; text-align:center;
+                 padding:16px 0; opacity:.6; }
+  .lane.over { border-color:var(--accent); background:var(--over-bg); }
+  .lane.over h2 { color:var(--accent); }
+
   .card { background:var(--card); border:1px solid var(--line); border-radius:8px;
-          padding:10px; margin-bottom:8px; cursor:grab; }
-  .card b { display:block; font-weight:600; word-break:break-word; }
-  .card .meta { color:var(--dim); font-size:12px; margin-top:6px;
-                display:flex; justify-content:space-between; gap:6px; }
-  .card .due.late { color:#ff7a7a; }
-  button { background:var(--accent); color:#fff; border:0; border-radius:6px;
-           padding:6px 14px; font:inherit; cursor:pointer; }
-  #toast { position:fixed; left:50%; bottom:22px; transform:translateX(-50%);
-           background:#3a1d1d; color:#ffb4b4; border:1px solid #6b2c2c;
-           border-radius:8px; padding:8px 16px; display:none; max-width:80vw; }
+          padding:12px 16px; margin-bottom:8px; cursor:grab;
+          transition:box-shadow .15s ease, transform .15s ease, border-color .15s ease; }
+  .card:hover { transform:translateY(-1px); border-color:var(--dim);
+                box-shadow:var(--shadow); background:var(--card-hover); }
+  .card.dragging { opacity:.5; transform:rotate(1deg) scale(1.01);
+                   box-shadow:var(--shadow-lift); cursor:grabbing; }
+  .card b { display:block; word-break:break-word; }
+  .card .meta { font-size:12px; color:var(--dim); margin-top:8px;
+                display:flex; align-items:center; gap:8px; }
+  .card .who { width:20px; height:20px; border-radius:50%; flex:none;
+               background:var(--badge-bg); color:var(--badge-ink);
+               font-size:12px; line-height:20px; text-align:center;
+               font-weight:600; letter-spacing:.02em; }
+  .card .due { margin-left:auto; }
+  .card .due.late { color:var(--danger); }
+
+  button { background:var(--accent); color:var(--accent-ink); border:0;
+           border-radius:6px; padding:6px 14px; font:inherit; cursor:pointer; }
+  button:hover { filter:brightness(1.06); }
+  button.ghost { background:transparent; color:var(--dim);
+                 border:1px solid var(--line); }
+  button.ghost:hover { color:var(--text); border-color:var(--dim); filter:none; }
+
+  #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
+           background:var(--danger-bg); color:var(--danger);
+           border:1px solid var(--danger-line);
+           border-radius:8px; padding:8px 16px; font-size:13px; display:none;
+           max-width:80vw; box-shadow:var(--shadow); }
 </style>
 </head>
 <body>
 <header>
   <h1>agent-mailbox · board</h1>
   <span class="dim">drag between adjacent lanes · every move messages the assignee</span>
-  <button id="refresh">refresh</button>
+  <span class="spacer"></span>
+  <button id="theme" class="ghost" title="toggle light / dark">◐</button>
+  <button id="refresh" class="ghost">refresh</button>
 </header>
 <form id="new">
   <input name="title" placeholder="task title" required size="32">
@@ -75,16 +140,29 @@ PAGE = """<!doctype html>
   <button>create</button>
 </form>
 <div id="board">
-  <div class="lane" data-status="todo"><h2>todo <span class="n"></span></h2></div>
-  <div class="lane" data-status="doing"><h2>doing <span class="n"></span></h2></div>
-  <div class="lane" data-status="review"><h2>review <span class="n"></span></h2></div>
-  <div class="lane" data-status="done"><h2>done <span class="n"></span></h2></div>
+  <div class="lane" data-status="todo"><h2><span class="dot"></span>todo <span class="n"></span></h2></div>
+  <div class="lane" data-status="doing"><h2><span class="dot"></span>doing <span class="n"></span></h2></div>
+  <div class="lane" data-status="review"><h2><span class="dot"></span>review <span class="n"></span></h2></div>
+  <div class="lane" data-status="done"><h2><span class="dot"></span>done <span class="n"></span></h2></div>
 </div>
 <div id="toast"></div>
 <script>
 const token = new URLSearchParams(location.search).get("token") || localStorage.getItem("mb_token") || "";
 localStorage.setItem("mb_token", token);
 const hdr = { "Authorization": "Bearer " + token, "Content-Type": "application/json" };
+
+/* theme: ?theme=… wins (no persistence), then the toggle's saved choice,
+   then the OS preference. Light and dark tokens are tuned separately. */
+const rootEl = document.documentElement;
+const qTheme = new URLSearchParams(location.search).get("theme");
+const savedTheme = localStorage.getItem("mb_theme");
+rootEl.dataset.theme = qTheme || savedTheme
+  || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+document.getElementById("theme").addEventListener("click", () => {
+  const next = rootEl.dataset.theme === "dark" ? "light" : "dark";
+  rootEl.dataset.theme = next;
+  localStorage.setItem("mb_theme", next);
+});
 
 function toast(msg) {
   const t = document.getElementById("toast");
@@ -108,10 +186,15 @@ function cardEl(t) {
   const el = document.createElement("div");
   el.className = "card"; el.draggable = true; el.dataset.id = t.id;
   const late = t.due && t.status !== "done" && t.due < new Date().toISOString().slice(0, 10);
+  const initials = esc((t.assignee || "?").slice(0, 2).toUpperCase());
   el.innerHTML = `<b>${esc(t.title)}</b>
-    <div class="meta"><span>@${esc(t.assignee)}</span>
+    <div class="meta"><span class="who" title="@${esc(t.assignee)}">${initials}</span>
+    <span>#${esc(t.id)}</span>
     ${t.due ? `<span class="due${late ? " late" : ""}">${esc(t.due)}</span>` : ""}</div>`;
-  el.addEventListener("dragstart", e => e.dataTransfer.setData("text/plain", t.id));
+  el.addEventListener("dragstart", e => {
+    e.dataTransfer.setData("text/plain", t.id); el.classList.add("dragging");
+  });
+  el.addEventListener("dragend", () => el.classList.remove("dragging"));
   return el;
 }
 
@@ -119,10 +202,15 @@ function esc(s) { const d = document.createElement("div"); d.textContent = s ?? 
 
 function render(tasks) {
   const lanes = {};
-  document.querySelectorAll(".lane").forEach(l => { lanes[l.dataset.status] = l; l.querySelectorAll(".card").forEach(c => c.remove()); });
+  document.querySelectorAll(".lane").forEach(l => {
+    lanes[l.dataset.status] = l;
+    l.querySelectorAll(".card, .empty").forEach(c => c.remove());
+  });
   for (const t of tasks) (lanes[t.status] || lanes.todo).appendChild(cardEl(t));
   document.querySelectorAll(".lane").forEach(l => {
-    l.querySelector(".n").textContent = l.querySelectorAll(".card").length;
+    const n = l.querySelectorAll(".card").length;
+    l.querySelector(".n").textContent = n;
+    if (!n) { const e = document.createElement("div"); e.className = "empty"; e.textContent = "—"; l.appendChild(e); }
   });
 }
 
