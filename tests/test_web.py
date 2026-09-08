@@ -6,32 +6,14 @@ Requests go through http.client straight to the fixture's loopback server
 
 import http.client
 import json
-import socketserver
 import threading
-from http.server import ThreadingHTTPServer
 
 import pytest
 
 from agent_mailbox.store import MailStore
-from agent_mailbox.web import PAGE, _BoardHandler
+from agent_mailbox.web import PAGE, LoopbackServer, _BoardHandler
 
 TOKEN = "test-token-123"
-
-
-class _LoopbackServer(ThreadingHTTPServer):
-    """ThreadingHTTPServer without the reverse-DNS in HTTPServer.server_bind().
-
-    The stock server_bind() runs socket.getfqdn("127.0.0.1") — a blocking PTR
-    lookup that can blackhole >30 s on CI macOS runners and trip the 30 s
-    pytest timeout during fixture setup. Nothing in _BoardHandler reads
-    server_name, so bind plainly and skip the lookup.
-    """
-
-    def server_bind(self) -> None:
-        socketserver.TCPServer.server_bind(self)
-        host, port = self.server_address[:2]
-        self.server_name = host
-        self.server_port = port
 
 
 @pytest.fixture()
@@ -39,7 +21,7 @@ def board(tmp_path):
     store = MailStore(root=tmp_path / "mail")
     store.register("HS")
     handler = type("H", (_BoardHandler,), {"store": store, "token": TOKEN})
-    srv = _LoopbackServer(("127.0.0.1", 0), handler)
+    srv = LoopbackServer(("127.0.0.1", 0), handler)
     port = srv.server_address[1]
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()

@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import socketserver
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -317,6 +318,22 @@ class _BoardHandler(BaseHTTPRequestHandler):
         self._json(404, {"error": f"no such endpoint: {path}"})
 
 
+class LoopbackServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer without the reverse-DNS in HTTPServer.server_bind().
+
+    The stock server_bind() runs socket.getfqdn("127.0.0.1") — a blocking PTR
+    lookup that can blackhole >30 s on some hosts (macOS CI runners, VMs with
+    slow resolvers), stalling startup for that long. Nothing in _BoardHandler
+    reads server_name, so bind plainly and skip the lookup.
+    """
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
+
 def run_web(port: int = 8643, store: MailStore | None = None) -> None:
     """Serve the board on 127.0.0.1:port until interrupted."""
     token = os.environ.get("AGENT_MAIL_WEB_TOKEN") or secrets.token_urlsafe(16)
@@ -324,7 +341,7 @@ def run_web(port: int = 8643, store: MailStore | None = None) -> None:
         "store": store or MailStore(),
         "token": token,
     })
-    srv = ThreadingHTTPServer(("127.0.0.1", port), handler)
+    srv = LoopbackServer(("127.0.0.1", port), handler)
     print(f"[agent-mailbox] board: http://127.0.0.1:{port}/?token={token}", flush=True)
     try:
         srv.serve_forever()
