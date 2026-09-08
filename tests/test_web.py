@@ -6,7 +6,9 @@ Requests go through http.client straight to the fixture's loopback server
 
 import http.client
 import json
+import socketserver
 import threading
+from http.server import ThreadingHTTPServer
 
 import pytest
 
@@ -16,13 +18,28 @@ from agent_mailbox.web import PAGE, _BoardHandler
 TOKEN = "test-token-123"
 
 
+class _LoopbackServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer without the reverse-DNS in HTTPServer.server_bind().
+
+    The stock server_bind() runs socket.getfqdn("127.0.0.1") — a blocking PTR
+    lookup that can blackhole >30 s on CI macOS runners and trip the 30 s
+    pytest timeout during fixture setup. Nothing in _BoardHandler reads
+    server_name, so bind plainly and skip the lookup.
+    """
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
+
 @pytest.fixture()
 def board(tmp_path):
     store = MailStore(root=tmp_path / "mail")
     store.register("HS")
     handler = type("H", (_BoardHandler,), {"store": store, "token": TOKEN})
-    srv = __import__("http.server", fromlist=["ThreadingHTTPServer"]).ThreadingHTTPServer(
-        ("127.0.0.1", 0), handler)
+    srv = _LoopbackServer(("127.0.0.1", 0), handler)
     port = srv.server_address[1]
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
@@ -31,8 +48,9 @@ def board(tmp_path):
     srv.server_close()
 
 
-def _req(port: int, path: str, *, token: str | None = None,
-         method: str = "GET", body: dict | None = None):
+def _req(
+    port: int, path: str, *, token: str | None = None, method: str = "GET", body: dict | None = None
+):
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     payload = json.dumps(body) if body is not None else None
     if payload:
@@ -72,8 +90,13 @@ def test_api_tasks_lists(board):
 
 def test_web_create_task_notifies_assignee(board):
     port, store = board
-    status, body = _req(port, "/api/tasks", token=TOKEN, method="POST",
-                        body={"title": "from board", "assignee": "HS", "due": "2026-09-10"})
+    status, body = _req(
+        port,
+        "/api/tasks",
+        token=TOKEN,
+        method="POST",
+        body={"title": "from board", "assignee": "HS", "due": "2026-09-10"},
+    )
     assert status == 200
     task = json.loads(body)["task"]
     assert task["id"] == "t-1" and task["created_by"] == "boss"
@@ -87,12 +110,18 @@ def test_web_create_task_notifies_assignee(board):
 def test_web_move_happy_path_and_illegal_rejected(board):
     port, store = board
     store.task_create("t", "HS", "HS", notify=False)
-    status, body = _req(port, "/api/tasks/t-1/move", token=TOKEN, method="POST",
-                        body={"status": "doing", "note": "started"})
+    status, body = _req(
+        port,
+        "/api/tasks/t-1/move",
+        token=TOKEN,
+        method="POST",
+        body={"status": "doing", "note": "started"},
+    )
     assert status == 200
     assert json.loads(body)["task"]["status"] == "doing"
-    status, body = _req(port, "/api/tasks/t-1/move", token=TOKEN, method="POST",
-                        body={"status": "done"})
+    status, body = _req(
+        port, "/api/tasks/t-1/move", token=TOKEN, method="POST", body={"status": "done"}
+    )
     assert status == 400
     assert "illegal transition" in json.loads(body)["error"]
     # state unchanged after the rejected call
@@ -102,8 +131,9 @@ def test_web_move_happy_path_and_illegal_rejected(board):
 def test_web_move_wakes_assignee(board):
     port, store = board
     store.task_create("review me", "HS", "boss", notify=False)
-    status, _ = _req(port, "/api/tasks/t-1/move", token=TOKEN, method="POST",
-                     body={"status": "doing"})
+    status, _ = _req(
+        port, "/api/tasks/t-1/move", token=TOKEN, method="POST", body={"status": "doing"}
+    )
     assert status == 200
     assert "[task#t-1 → doing]" in store.check("HS")[0]["subject"]
 
