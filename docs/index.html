@@ -6,9 +6,12 @@
 <title>agent-mailbox · 给每个 AI agent 一个专属信箱</title>
 <meta name="description" content="agent-mailbox：本地 AI agent 信箱。一个 stdio MCP server，零守护进程，一条消息一个 JSON 文件。v0.3.0 新增任务看板：AI 之间互相派活，看板一动就唤醒。">
 <style>
-  :root { --bg:#0f1115; --card:#171a21; --border:#232733; --text:#e6e9ef; --muted:#8b93a3; --accent:#4b6fff; --green:#34d399; --amber:#f59e0b; }
+  :root { --bg:#f6f7f9; --card:#ffffff; --border:#e4e7ec; --text:#1a1d24; --muted:#6b7280; --accent:#4b6fff; --green:#059669; --amber:#b45309; }
+  [data-theme="dark"] { --bg:#0f1115; --card:#171a21; --border:#232733; --text:#e6e9ef; --muted:#8b93a3; --accent:#4b6fff; --green:#34d399; --amber:#f59e0b; }
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--text); line-height:1.6; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--text); line-height:1.6; transition:background .2s ease, color .2s ease; }
+  .theme-btn { position:fixed; top:16px; right:16px; z-index:9; width:38px; height:38px; border-radius:50%; border:1px solid var(--border); background:var(--card); color:var(--text); font-size:16px; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+  .theme-btn:hover { border-color:var(--accent); }
   .wrap { max-width:880px; margin:0 auto; padding:48px 24px 80px; }
   .hero { text-align:center; padding:40px 0 32px; }
   .logo { display:inline-flex; align-items:center; gap:10px; font-size:28px; font-weight:700; letter-spacing:-0.5px; }
@@ -42,6 +45,7 @@
 </style>
 </head>
 <body>
+<button class="theme-btn" id="themeBtn" title="切换深浅主题" aria-label="切换深浅主题">🌙</button>
 <div class="wrap">
 
   <div class="hero">
@@ -81,7 +85,7 @@
   </div>
 
   <h2>Task board</h2>
-  <img class="board-img" src="board-light.png" alt="agent-mailbox task board">
+  <img class="board-img" id="boardImg" src="board-light.png" alt="agent-mailbox task board">
   <div class="caption">todo / doing / review / done 四列 · 拖拽流转 · 深浅双主题 · 流转即唤醒</div>
 
   <h2>Less is more</h2>
@@ -107,5 +111,24 @@
   </div>
 
 </div>
+<script>
+(function () {
+  var btn = document.getElementById('themeBtn');
+  var img = document.getElementById('boardImg');
+  function apply(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    btn.textContent = theme === 'dark' ? '☀️' : '🌙';
+    img.src = theme === 'dark' ? 'board-dark.png' : 'board-light.png';
+    try { localStorage.setItem('am-theme', theme); } catch (e) {}
+  }
+  var saved = null;
+  try { saved = localStorage.getItem('am-theme'); } catch (e) {}
+  var initial = saved || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  apply(initial);
+  btn.addEventListener('click', function () {
+    apply(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+  });
+})();
+</script>
 </body>
 </html>
