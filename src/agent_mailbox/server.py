@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import time
 
 from mcp.server.mcpserver import MCPServer
@@ -206,6 +207,16 @@ def task_list(assignee: str | None = None, status: str | None = None) -> dict:
 
 
 def main() -> None:
+    # MCP stdio speaks UTF-8; on Windows/macOS CI the default console codec
+    # (cp1252 etc.) cannot encode arrows/CJK in tool output and crashes the
+    # child process before the handshake completes.
+    for _stream in (sys.stdout, sys.stderr):
+        if _stream is not None and hasattr(_stream, "reconfigure"):
+            try:
+                _stream.reconfigure(encoding="utf-8")
+            except (OSError, ValueError):
+                pass
+
     parser = argparse.ArgumentParser(prog="agent-mailbox")
     parser.add_argument("--http", metavar="PORT", type=int, default=None,
                         help="serve streamable HTTP on PORT (default: stdio)")
