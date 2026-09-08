@@ -257,6 +257,18 @@ class MailStore:
                     out.append(m)
         return out
 
+    def list_archived(self, agent_id: str, status: str | None = None) -> list[dict[str, Any]]:
+        arch = self.root / "archive" / agent_id
+        out = []
+        if not arch.is_dir():
+            return out
+        with self._locked():
+            for p in sorted(arch.glob("*.json")):
+                m = self._read_msg(p)
+                if status is None or m.get("status") == status:
+                    out.append(m)
+        return out
+
     def set_status(self, agent_id: str, msg_id: str, status: str) -> dict[str, Any]:
         if status not in MSG_STATUSES:
             raise MailboxError(f"status must be one of {MSG_STATUSES}")
@@ -265,7 +277,13 @@ class MailStore:
             pass  # msg_id is a bare id; validate below
         path = self._inbox_dir(agent_id) / f"{Path(msg_id).name}.json"
         if not path.exists():
-            raise MailboxError(f"message {msg_id!r} not found in {agent_id}'s inbox")
+            arch = self.root / "archive" / agent_id / f"{Path(msg_id).name}.json"
+            if arch.exists():
+                path = arch  # already archived: update in place (idempotent re-done)
+            else:
+                raise MailboxError(
+                    f"message {msg_id!r} not found in {agent_id}'s inbox or archive"
+                )
         with self._locked():
             m = self._read_msg(path)
             m["status"] = status

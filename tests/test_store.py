@@ -113,6 +113,31 @@ def test_done_requires_existing_message(store):
         store.set_status("HS", "nope", "done")
 
 
+def test_set_status_falls_back_to_archive(store):
+    store.register("HS")
+    store.register("WB")
+    mid = store.send("HS", "WB", "task", "do it")[0]["id"]
+    store.set_status("WB", mid, "done")
+    store.archive_done("WB")
+    m = store.set_status("WB", mid, "done")  # idempotent re-done on archived msg
+    assert m["status"] == "done"
+
+
+def test_list_archived_supports_reply_lookup(store):
+    store.register("HS")
+    store.register("WB")
+    mid = store.send("HS", "WB", "task", "do it")[0]["id"]
+    store.set_status("WB", mid, "done")
+    store.archive_done("WB")
+    assert [m["id"] for m in store.list_archived("WB")] == [mid]
+    assert store.list_archived("ZC") == []
+    # reply lookup must still find the original after archiving
+    arch = store.list_archived("WB")
+    assert arch[0]["from"] == "HS"
+    back = store.send("WB", arch[0]["from"], "Re: task", "done", reply_to=mid)
+    assert back[0]["to"] == "HS"
+
+
 # ------------------------------------------------------------------ safety
 
 def test_path_traversal_blocked_on_check(store):

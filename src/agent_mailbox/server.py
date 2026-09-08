@@ -85,8 +85,14 @@ def mailbox_reply(msg_id: str, body: str, agent_id: str = "") -> dict:
         raise MailboxError("agent_id required (or set AGENT_MAIL_ID env)")
     st = _store_instance()
     mine = [m for m in st.list_messages(me) if m["id"] == msg_id]
+    from_archive = False
     if not mine:
-        raise MailboxError(f"message {msg_id!r} not in your inbox")
+        mine = [m for m in st.list_archived(me) if m["id"] == msg_id]
+        from_archive = True
+    if not mine:
+        raise MailboxError(
+            f"message {msg_id!r} not found in inbox or archive for {me!r}"
+        )
     original = mine[0]
     sent = st.send(
         me,
@@ -95,6 +101,9 @@ def mailbox_reply(msg_id: str, body: str, agent_id: str = "") -> dict:
         body,
         reply_to=msg_id,
     )
+    if from_archive:
+        # Original is already done + archived; nothing left to close.
+        return {"replied": sent[0], "closed": None, "archived_original": msg_id}
     st.set_status(me, msg_id, "done")
     return {"replied": sent[0], "closed": msg_id}
 
