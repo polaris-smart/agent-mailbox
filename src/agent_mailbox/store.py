@@ -35,6 +35,22 @@ from .webhook import notify_new_messages
 
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MSG_STATUSES = ("pending", "acked", "done")
+
+
+def _handled_session(agent_id: str) -> str:
+    """Return the session identifier for handled-log entries.
+
+    ``AGENT_MAIL_SESSION`` is set per-process by the MCP host when multiple
+    sessions share one agent id; when absent we fall back to the agent id so
+    single-session setups keep working without extra configuration.
+    """
+    return os.environ.get("AGENT_MAIL_SESSION", agent_id)
+
+
+def _append_handled(msg: dict[str, Any], agent_id: str, action: str) -> None:
+    """Append an entry to the message's ``handled_log`` (in-place, append-only)."""
+    log = msg.setdefault("handled_log", [])
+    log.append({"by": _handled_session(agent_id), "at": _now_iso(), "action": action})
 RESERVED_IDS = {"boss"}
 
 TASK_STATUSES = ("todo", "doing", "review", "done")
@@ -232,7 +248,14 @@ class MailStore:
         return seen
 
     def check(self, agent_id: str, *, mark: bool = True) -> list[dict[str, Any]]:
-        """Fetch pending messages; by default they become ``acked``."""
+        """Fetch pending messages; by default they become ``acked``.
+
+        Every status transition appends a ``handled_log`` entry recording
+        *which session* handled the message (via ``AGENT_MAIL_SESSION`` when
+        set, falling back to the agent id). This makes multi-session
+        parallel handling visible: session A can see that session B already
+        acked/done'd a message without re-reading the raw file.
+        """
         inbox = self._inbox_dir(agent_id)
         msgs = []
         with self._locked():
@@ -243,6 +266,7 @@ class MailStore:
                     if mark:
                         m["status"] = "acked"
                         m["acked_at"] = _now_iso()
+                        _append_handled(m, agent_id, "acked")
                         p.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
         msgs.sort(key=lambda m: ({"high": 0, "normal": 1, "low": 2}.get(m.get("priority", "normal"), 1), m["id"]))
         return msgs
@@ -289,6 +313,7 @@ class MailStore:
             m["status"] = status
             if status == "done":
                 m["done_at"] = _now_iso()
+            _append_handled(m, agent_id, status)
             path.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
         return m
 
