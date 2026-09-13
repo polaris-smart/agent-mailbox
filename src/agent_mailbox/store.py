@@ -28,6 +28,7 @@ if sys.platform == "win32":
     import msvcrt
 else:
     import fcntl
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -330,6 +331,51 @@ class MailStore:
                         p.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
         msgs.sort(key=lambda m: ({"high": 0, "normal": 1, "low": 2}.get(m.get("priority", "normal"), 1), m["id"]))
         return msgs
+
+    def reap_stale_acked(
+        self,
+        agent_id: str,
+        ttl_seconds: float = 3600.0,
+        *,
+        now: float | None = None,
+    ) -> list[str]:
+        """Reclaim ``acked`` mail whose handling never completed.
+
+        ``check()`` reserves mail: pending -> acked, handed to the caller. If
+        that caller dies, is cancelled, or the check ran under a foreign
+        identity, the letter is orphaned — a drain that scans only ``pending``
+        never sees it again (2026-09-13 acked-state incident, task t-6). Mail
+        acked longer ago than ``ttl_seconds`` goes back to ``pending``, the
+        stale ``acked_at`` is dropped, and a ``reclaimed`` entry lands in
+        ``handled_log`` so the round trip stays auditable. A missing
+        ``acked_at`` (pre-handled_log writers) falls back to the file mtime.
+        Returns the reclaimed message ids, sorted by scan order.
+        """
+        self._validate_id(agent_id)
+        cutoff = (time.time() if now is None else now) - ttl_seconds
+        inbox = self._inbox_dir(agent_id)
+        reaped: list[str] = []
+        with self._locked():
+            for p in sorted(inbox.glob("*.json")):
+                m = self._read_msg(p)
+                if m.get("status") != "acked":
+                    continue
+                stamp = m.get("acked_at")
+                if stamp:
+                    try:
+                        acked = datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp()
+                    except ValueError:
+                        acked = p.stat().st_mtime
+                else:
+                    acked = p.stat().st_mtime
+                if acked > cutoff:
+                    continue
+                m["status"] = "pending"
+                m.pop("acked_at", None)
+                _append_handled(m, agent_id, "reclaimed")
+                p.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
+                reaped.append(m["id"])
+        return reaped
 
     def list_messages(self, agent_id: str, status: str | None = None) -> list[dict[str, Any]]:
         inbox = self._inbox_dir(agent_id)
