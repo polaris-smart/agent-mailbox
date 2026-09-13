@@ -6,6 +6,7 @@ Requests go through http.client straight to the fixture's loopback server
 
 import http.client
 import json
+import os
 import stat
 import threading
 
@@ -138,7 +139,8 @@ def test_web_token_persists_across_boots(tmp_path, monkeypatch):
     assert t1 == t2 and t1
     token_file = root / "web_token"
     assert token_file.read_text(encoding="utf-8").strip() == t1
-    assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+    if os.name != "nt":  # Windows chmod only implements the read-only bit
+        assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
 
 
 def test_web_token_env_wins(tmp_path, monkeypatch):
