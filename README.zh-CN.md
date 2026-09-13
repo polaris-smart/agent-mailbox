@@ -179,7 +179,8 @@ pytest
 
 ## Roadmap
 
-- **v0.3.0**（当前）—— 任务看板 + Web 看板：`task_create` / `task_move` / `task_list`，严格 todo→doing→review→done 状态机；建卡/挪卡自动给负责人发信，看板动作零轮询唤醒 agent。`--web 8643` 提供 token 保护的零依赖看板 UI，人类拖卡走同一唤醒链路。消息 + 任务 + 唤醒 + 看板，依旧零依赖。
+- **v0.3.1**（当前）—— 小修批：回信主题不再堆积 `Re: Re:`（首答/二次回复/大小写混写均归一为单个 `Re:`）；Web 看板 token 改常数时间比较（`hmac.compare_digest`）并跨重启持久化（`~/.agent-mail/web_token`，0600，env `AGENT_MAIL_WEB_TOKEN` 永远优先）；`sent.log` 超 10MB 自动轮转一代（`sent.log.1`）。
+- **v0.3.0**—— 任务看板 + Web 看板：`task_create` / `task_move` / `task_list`，严格 todo→doing→review→done 状态机；建卡/挪卡自动给负责人发信，看板动作零轮询唤醒 agent。`--web 8643` 提供 token 保护的零依赖看板 UI，人类拖卡走同一唤醒链路。消息 + 任务 + 唤醒 + 看板，依旧零依赖。
 - **v0.4.0** —— 可能：更深的看板集成（Kaneo 作为参考/竞品）。届时再议。
 - **后续** —— 联邦：streamable HTTP transport 让其他机器上的 agent 接入（Tailscale/LAN 友好）；签名回执（ed25519）防篡改投递。
 - **v1.0.0** —— 跨组织桥：本地会话经标准邮件基础设施触达其他机器与组织的 agent，信箱生命周期不变。
