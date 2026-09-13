@@ -136,10 +136,15 @@ Your host's webhook handler receives:
 …wakes the agent, and the agent calls `mailbox_check` on arrival. That is the whole integration.
 
 - Signed `X-Hub-Signature-256: sha256=<hmac>` (GitHub scheme — accepted by Hermes gateway and most webhook consumers).
+- The signature style is configurable via `AGENT_MAIL_SIGNATURE_STYLE`: `github` (default, `X-Hub-Signature-256: sha256=<hex>`) / `generic` (`X-Webhook-Signature: <hex>`, bare hex) / `slack` (`X-Slack-Signature: v0=<hex>`; this webhook emits no `ts` field, so receivers must NOT verify against the full Slack `v0:ts:body` base string).
 - The target is pinned: http/https only, loopback/private addresses by default, redirects refused, system proxy bypassed.
 - Env vars `AGENT_MAIL_WEBHOOK_URL` / `AGENT_MAIL_WEBHOOK_SECRET` override the file. Unset → fully offline.
 - The config file is resolved **per mail root** (the store's own `webhook.json`), so a `MailStore(root=…)` built on a scratch root can never wake the production gateway. `webhook.json` in the default home still covers normal use.
 - Every delivered mail is also appended to `<mail-root>/sent.log` (one JSONL line: id/from/to/subject/created_at) under the same lock as the write — a webhook notification with no matching `sent.log` line never was a mail.
+
+### Self-echo protection (on by default)
+
+A notification whose sender equals its target (self-echo, e.g. an agent messaging itself or copying itself in a broadcast) is **not delivered** by default: the letter still lands on disk, `mailbox_list` / `mailbox_check` are unaffected — the sender just isn't woken by its own send. The drop is audited in `sent.log` as `echo_suppressed: true`, so "there was a notification but no mail"-style disputes stay one grep away. Set `notify_self_echo: true` in the mail root's `config.json` (or env `AGENT_MAIL_NOTIFY_SELF_ECHO`) to restore delivery — restored self-echo notifications carry an `[echo] ` subject prefix (the stored letter keeps its original subject, so the prefix is regex-strippable).
 
 ## The tools
 
@@ -176,6 +181,16 @@ Run it as a service on your platform:
 | Linux (systemd user) | `scripts/install-watch-linux.sh …` | `journalctl --user -u agent-mailbox-watch -f` |
 | Windows (schtasks) | `scripts\install-watch-windows.ps1` | `schtasks /Query /TN AgentMailboxWatch /V` |
 
+## Maintenance: cleaning up test residue (cleanup)
+
+```bash
+python -m agent_mailbox.cleanup --dry-run              # list only (the default behaviour)
+python -m agent_mailbox.cleanup --dry-run --root ~/.agent-mail
+python -m agent_mailbox.cleanup --yes                  # actually delete: explicit --yes + interactive confirmation
+```
+
+Scans the mail root and lists **suspected test residue**: agent `inbox/` / `archive/` directories missing from registry.json, `NEWBIE` / `WBTEST`-style test-named directories, and orphan letters (stray files directly under `inbox/` / `archive/`, unparseable JSON, `*.tmp` left by an interrupted atomic write). Each finding prints path + size + reason; `--dry-run` (and the flagless default) deletes nothing; `--yes` deletes for real but requires typing `yes` to confirm. Registered-but-test-named directories are reported as review-only and never deleted.
+
 ## Design
 
 - **Local-first** — plain JSON files under `~/.agent-mail/`. No SMTP, no IMAP, no domain, no cloud relay, no network by default.
@@ -208,9 +223,10 @@ Upgrade with `uv tool upgrade agent-mailbox` (or re-pull however you installed i
 
 ## Roadmap
 
-- **v0.3.1** (current) — patch batch: reply subjects no longer pile up `Re: Re:` (first reply, re-replies, and mixed-case prefixes all normalize to a single `Re:`); web board tokens use constant-time comparison (`hmac.compare_digest`) and persist across reboots (`~/.agent-mail/web_token`, mode 0600, `AGENT_MAIL_WEB_TOKEN` env always wins); `sent.log` auto-rotates one generation past 10 MB (to `sent.log.1`).
+- **v0.4.0** (current) — feature batch: configurable webhook signature style (`AGENT_MAIL_SIGNATURE_STYLE`: github default / generic / slack); self-echo protection (notifications where sender == target are dropped by default, audited as `echo_suppressed` in `sent.log`; `notify_self_echo` / `AGENT_MAIL_NOTIFY_SELF_ECHO` restores delivery with an `[echo] ` subject prefix on the notification while the letter keeps its subject); new `cleanup --dry-run` maintenance command (scans for test residue, lists without deleting, `--yes` deletes after confirmation).
+- **v0.3.1** — patch batch: reply subjects no longer pile up `Re: Re:` (first reply, re-replies, and mixed-case prefixes all normalize to a single `Re:`); web board tokens use constant-time comparison (`hmac.compare_digest`) and persist across reboots (`~/.agent-mail/web_token`, mode 0600, `AGENT_MAIL_WEB_TOKEN` env always wins); `sent.log` auto-rotates one generation past 10 MB (to `sent.log.1`).
 - **v0.3.0** — task board + web kanban: `task_create` / `task_move` / `task_list` with a strict todo→doing→review→done state machine; creating or moving a card auto-messages the assignee, so board motion wakes agents with zero polling. `--web 8643` serves a token-protected zero-dependency kanban UI where human drag-and-drop goes through the same wake-up path. Messages + tasks + wake-up + board, still zero dependencies.
-- **v0.4.0** — maybe: deeper kanban integrations (Kaneo as reference/competitor). Under discussion.
+- **v0.5.0+** — maybe: deeper kanban integrations (Kaneo as reference/competitor). Under discussion.
 - **Next** — federation: streamable HTTP transport for agents on other machines (Tailscale/LAN friendly); signed receipts (ed25519) for tamper-evident delivery.
 - **v1.0.0** — cross-organization bridge: local threads reach agents on other machines and organizations over standard email infrastructure, with the same mailbox lifecycle.
 

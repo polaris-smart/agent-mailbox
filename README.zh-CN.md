@@ -109,8 +109,13 @@ claude mcp add agent-mailbox -- uvx --from git+https://github.com/polaris-smart/
 ……然后唤醒该 agent，agent 到达后调用 `mailbox_check`。集成到此为止。
 
 - 签名 `X-Hub-Signature-256: sha256=<hmac>`（GitHub 格式——Hermes gateway 和多数 webhook 消费方都认）。
+- 签名风格可用环境变量 `AGENT_MAIL_SIGNATURE_STYLE` 切换：`github`（默认，`X-Hub-Signature-256: sha256=<hex>`）/ `generic`（`X-Webhook-Signature: <hex>`，无前缀）/ `slack`（`X-Slack-Signature: v0=<hex>`；本实现不发送 ts 字段，接收方请勿按 Slack 完整基串 `v0:ts:body` 校验）。
 - 目标被锁定：仅 http/https、默认只允许环回/私网地址、拒绝重定向、绕过系统代理。
 - 环境变量 `AGENT_MAIL_WEBHOOK_URL` / `AGENT_MAIL_WEBHOOK_SECRET` 优先于配置文件。不配置 = 完全离线。
+
+### 自回声防护（默认开启）
+
+`send` 产生「发件人 = 收通知人」的通知（自回声）**默认不投递**：信件照常落盘，`mailbox_list` / `mailbox_check` 不受影响，只是不再唤醒发件人自己；丢弃动作在 `sent.log` 里记 `echo_suppressed: true` 留痕，可一行 grep 定谳。设 `notify_self_echo: true`（邮件根 `~/.agent-mail/config.json`）或环境变量 `AGENT_MAIL_NOTIFY_SELF_ECHO` 恢复投递——恢复后自回声**通知**的主题带 `[echo] ` 前缀（信件原文主题不变，便于正则剥离）。
 
 ## 工具一览
 
@@ -147,6 +152,16 @@ uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox-watc
 | Linux (systemd user) | `scripts/install-watch-linux.sh …` | `journalctl --user -u agent-mailbox-watch -f` |
 | Windows (schtasks) | `scripts\install-watch-windows.ps1` | `schtasks /Query /TN AgentMailboxWatch /V` |
 
+## 维护：清理测试残留（cleanup）
+
+```bash
+python -m agent_mailbox.cleanup --dry-run              # 只列不删（默认行为即是 dry-run）
+python -m agent_mailbox.cleanup --dry-run --root ~/.agent-mail
+python -m agent_mailbox.cleanup --yes                  # 真删：需显式 --yes，且要求交互二次确认
+```
+
+扫描邮件根，列出**疑似测试残留**：registry 外 agent 的 `inbox/` / `archive/` 目录、`NEWBIE` / `WBTEST` 等测试命名目录、孤儿信件（散落在 `inbox/` / `archive/` 顶层的文件、解析失败的 JSON、中断原子写遗留的 `*.tmp`）。每条输出路径 + 大小 + 判定理由；`--dry-run`（及不带旗标的默认行为）零删除；`--yes` 才真删并要求输入 `yes` 确认。已注册但测试命名的目录仅提示（review only），不随 `--yes` 删除。
+
 ## 设计原则
 
 - **本地优先** —— `~/.agent-mail/` 下的纯 JSON 文件。无 SMTP、无 IMAP、无域名、无云端中继、默认零网络。
@@ -179,9 +194,10 @@ pytest
 
 ## Roadmap
 
-- **v0.3.1**（当前）—— 小修批：回信主题不再堆积 `Re: Re:`（首答/二次回复/大小写混写均归一为单个 `Re:`）；Web 看板 token 改常数时间比较（`hmac.compare_digest`）并跨重启持久化（`~/.agent-mail/web_token`，0600，env `AGENT_MAIL_WEB_TOKEN` 永远优先）；`sent.log` 超 10MB 自动轮转一代（`sent.log.1`）。
+- **v0.4.0**（当前）—— 功能批：webhook 签名风格可配（`AGENT_MAIL_SIGNATURE_STYLE`：github 默认 / generic / slack）；自回声防护（`from == 收通知人` 的通知默认不投递，`sent.log` 记 `echo_suppressed` 留痕，`notify_self_echo` / `AGENT_MAIL_NOTIFY_SELF_ECHO` 恢复投递并给通知主题加 `[echo] ` 前缀，信件原文主题不变）；新增 `cleanup --dry-run` 维护命令（扫描测试残留只列不删，`--yes` 真删需二次确认）。
+- **v0.3.1** —— 小修批：回信主题不再堆积 `Re: Re:`（首答/二次回复/大小写混写均归一为单个 `Re:`）；Web 看板 token 改常数时间比较（`hmac.compare_digest`）并跨重启持久化（`~/.agent-mail/web_token`，0600，env `AGENT_MAIL_WEB_TOKEN` 永远优先）；`sent.log` 超 10MB 自动轮转一代（`sent.log.1`）。
 - **v0.3.0**—— 任务看板 + Web 看板：`task_create` / `task_move` / `task_list`，严格 todo→doing→review→done 状态机；建卡/挪卡自动给负责人发信，看板动作零轮询唤醒 agent。`--web 8643` 提供 token 保护的零依赖看板 UI，人类拖卡走同一唤醒链路。消息 + 任务 + 唤醒 + 看板，依旧零依赖。
-- **v0.4.0** —— 可能：更深的看板集成（Kaneo 作为参考/竞品）。届时再议。
+- **v0.5.0+** —— 可能：更深的看板集成（Kaneo 作为参考/竞品）。届时再议。
 - **后续** —— 联邦：streamable HTTP transport 让其他机器上的 agent 接入（Tailscale/LAN 友好）；签名回执（ed25519）防篡改投递。
 - **v1.0.0** —— 跨组织桥：本地会话经标准邮件基础设施触达其他机器与组织的 agent，信箱生命周期不变。
 
