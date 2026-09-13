@@ -12,11 +12,13 @@ the assignee.
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import secrets
 import socketserver
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .store import MailStore
@@ -258,10 +260,10 @@ class _BoardHandler(BaseHTTPRequestHandler):
 
     def _authorized(self) -> bool:
         header = self.headers.get("Authorization", "")
-        if header == f"Bearer {self.token}":
+        if hmac.compare_digest(header.encode(), f"Bearer {self.token}".encode()):
             return True
         q = parse_qs(urlparse(self.path).query)
-        return q.get("token", [""])[0] == self.token
+        return hmac.compare_digest(q.get("token", [""])[0].encode(), self.token.encode())
 
     def _send(self, code: int, body: bytes, ctype: str) -> None:
         self.send_response(code)
@@ -334,11 +336,41 @@ class LoopbackServer(ThreadingHTTPServer):
         self.server_port = port
 
 
+def _web_token(root: str | os.PathLike[str]) -> str:
+    """Bearer token for the board: ``AGENT_MAIL_WEB_TOKEN`` wins; otherwise
+    load (or create, 0600) ``<root>/web_token`` so the token survives reboots
+    instead of being regenerated every boot."""
+    env = os.environ.get("AGENT_MAIL_WEB_TOKEN")
+    if env:
+        return env
+    path = Path(root) / "web_token"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        token = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        token = ""
+    if token:
+        return token
+    token = secrets.token_urlsafe(16)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        fd = os.open(path, os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(token)
+    try:
+        os.chmod(path, 0o600)  # mode arg only applies at creation; re-assert
+    except OSError:
+        pass
+    return token
+
+
 def run_web(port: int = 8643, store: MailStore | None = None) -> None:
     """Serve the board on 127.0.0.1:port until interrupted."""
-    token = os.environ.get("AGENT_MAIL_WEB_TOKEN") or secrets.token_urlsafe(16)
+    store = store or MailStore()
+    token = _web_token(store.root)
     handler = type("BoardHandler", (_BoardHandler,), {
-        "store": store or MailStore(),
+        "store": store,
         "token": token,
     })
     srv = LoopbackServer(("127.0.0.1", port), handler)

@@ -6,10 +6,12 @@ Requests go through http.client straight to the fixture's loopback server
 
 import http.client
 import json
+import stat
 import threading
 
 import pytest
 
+from agent_mailbox import web
 from agent_mailbox.store import MailStore
 from agent_mailbox.web import PAGE, LoopbackServer, _BoardHandler
 
@@ -123,3 +125,35 @@ def test_web_move_wakes_assignee(board):
 def test_unknown_endpoint_404(board):
     port, _ = board
     assert _req(port, "/api/nope", token=TOKEN, method="POST", body={})[0] == 404
+
+
+# ------------------------------------------------------------- token lifecycle
+
+def test_web_token_persists_across_boots(tmp_path, monkeypatch):
+    # two boots with no env → same token, persisted with 0600
+    monkeypatch.delenv("AGENT_MAIL_WEB_TOKEN", raising=False)
+    root = tmp_path / "mail"
+    t1 = web._web_token(root)
+    t2 = web._web_token(root)
+    assert t1 == t2 and t1
+    token_file = root / "web_token"
+    assert token_file.read_text(encoding="utf-8").strip() == t1
+    assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+
+
+def test_web_token_env_wins(tmp_path, monkeypatch):
+    root = tmp_path / "mail"
+    monkeypatch.delenv("AGENT_MAIL_WEB_TOKEN", raising=False)
+    persisted = web._web_token(root)  # create a persisted token first
+    monkeypatch.setenv("AGENT_MAIL_WEB_TOKEN", "env-token")
+    # env wins over the persisted token, and the file is left untouched
+    assert web._web_token(root) == "env-token"
+    assert (root / "web_token").read_text(encoding="utf-8").strip() == persisted
+
+
+def test_web_token_recovers_from_empty_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENT_MAIL_WEB_TOKEN", raising=False)
+    (tmp_path / "web_token").write_text("  \n", encoding="utf-8")
+    token = web._web_token(tmp_path)
+    assert token
+    assert (tmp_path / "web_token").read_text(encoding="utf-8").strip() == token
