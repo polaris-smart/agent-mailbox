@@ -35,6 +35,15 @@ from .webhook import notify_new_messages
 
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MSG_STATUSES = ("pending", "acked", "done")
+SENT_LOG_MAX_BYTES = 10 * 1024 * 1024  # rotate sent.log one generation past this
+
+# replies collapse stacked "Re:" prefixes to one, like a mail client does:
+# "Re: Re: X" and "rE: x" both become "Re: X"; a bare subject gains one.
+_STACKED_RE_PREFIX = re.compile(r"^(?:\s*re\s*:\s*)+", re.IGNORECASE)
+
+
+def _reply_subject(subject: str) -> str:
+    return "Re: " + _STACKED_RE_PREFIX.sub("", subject or "").strip()
 
 
 def _handled_session(agent_id: str) -> str:
@@ -195,6 +204,8 @@ class MailStore:
         recipients = self._resolve_recipients(to)
         if not recipients:
             raise MailboxError("no recipients resolved")
+        if reply_to:
+            subject = _reply_subject(subject)
         out = []
         full: list[dict[str, Any]] = []
         with self._locked():
@@ -222,7 +233,15 @@ class MailStore:
         # that really hit disk. A webhook notification without a sent.log
         # line is a phantom by definition — no more full-tree greps to
         # settle "was there ever a mail".
-        with open(self.root / "sent.log", "a", encoding="utf-8") as audit:
+        sent_log = self.root / "sent.log"
+        try:
+            if sent_log.stat().st_size > SENT_LOG_MAX_BYTES:
+                # rotate one generation: sent.log becomes sent.log.1 (any old
+                # .1 is overwritten) and the fresh log starts empty.
+                os.replace(sent_log, self.root / "sent.log.1")
+        except FileNotFoundError:
+            pass
+        with open(sent_log, "a", encoding="utf-8") as audit:
             for msg in full:
                 audit.write(json.dumps(
                     {k: msg[k] for k in ("id", "from", "to", "subject", "created_at")},

@@ -93,6 +93,55 @@ def test_reply_chain(store):
     assert got[0]["reply_to"] == msg_id
 
 
+@pytest.mark.parametrize(
+    ("subject", "expected"),
+    [
+        ("review this", "Re: review this"),  # fresh subject gains one Re:
+        ("Re: review this", "Re: review this"),  # second reply stays single-prefixed
+        ("Re: Re: Re: review this", "Re: review this"),  # already-stacked collapses
+        ("rE: Review This", "Re: Review This"),  # case-insensitive, body preserved
+    ],
+)
+def test_reply_subject_normalization(store, subject, expected):
+    store.register("HS")
+    store.register("WB")
+    out = store.send("HS", "WB", subject, "body", reply_to="whatever")
+    assert out[0]["id"].endswith("-wb")
+    assert store.check("WB")[0]["subject"] == expected
+
+
+def test_plain_send_keeps_subject_verbatim(store):
+    # normalization only applies to replies — a normal send never mutates subject
+    store.register("HS")
+    store.register("WB")
+    store.send("HS", "WB", "Re: Re: not actually a reply", "body")
+    assert store.check("WB")[0]["subject"] == "Re: Re: not actually a reply"
+
+
+# ------------------------------------------------------------- sent.log rotate
+
+def test_sent_log_rotates_when_over_limit(store):
+    store.register("HS")
+    store.register("WB")
+    big = store.root / "sent.log"
+    big.write_text("x" * (11 * 1024 * 1024), encoding="utf-8")
+    store.send("HS", "WB", "after rotation", "body")
+    rotated = store.root / "sent.log.1"
+    assert rotated.exists()
+    assert rotated.read_text(encoding="utf-8") == "x" * (11 * 1024 * 1024)
+    fresh = big.read_text(encoding="utf-8")
+    assert fresh.startswith("{") and "after rotation" in fresh
+    assert len(fresh.splitlines()) == 1  # new log starts empty, one line only
+
+
+def test_sent_log_not_rotated_under_limit(store):
+    store.register("HS")
+    store.register("WB")
+    store.send("HS", "WB", "small", "body")
+    assert not (store.root / "sent.log.1").exists()
+    assert len((store.root / "sent.log").read_text(encoding="utf-8").splitlines()) == 1
+
+
 # ------------------------------------------------------------------- status
 
 def test_set_status_and_archive(store):
