@@ -108,6 +108,28 @@ def main():
         resp = read_resp()
         assert tid in resp["result"]["content"][0]["text"]
         print("task_list filter ok")
+
+        # B4 self-echo (2026-09-09 requirement): WB sends to itself — the
+        # letter lands (mailbox_list sees it) but the wake-up notification is
+        # suppressed by default and audited in sent.log as echo_suppressed.
+        send({"jsonrpc": "2.0", "id": 13, "method": "tools/call", "params": {
+            "name": "mailbox_send", "arguments": {
+                "from_id": "WB", "to": "WB", "subject": "self echo probe", "body": "b4"}}})
+        read_resp()
+        send({"jsonrpc": "2.0", "id": 14, "method": "tools/call", "params": {
+            "name": "mailbox_list", "arguments": {"agent_id": "WB"}}})
+        resp = read_resp()
+        assert "self echo probe" in resp["result"]["content"][0]["text"]
+        sent_log = os.path.join(ROOT, ".test-mail", "sent.log")
+        last = None
+        with open(sent_log, encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    last = line
+        entry = json.loads(last)
+        assert entry["subject"] == "self echo probe"
+        assert entry.get("echo_suppressed") is True
+        print("self-echo suppressed ok (letter on disk, wake-up dropped, audited)")
         print("E2E PASS")
     finally:
         proc.kill()

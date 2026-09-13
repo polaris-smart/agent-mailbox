@@ -37,6 +37,31 @@ AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MSG_STATUSES = ("pending", "acked", "done")
 SENT_LOG_MAX_BYTES = 10 * 1024 * 1024  # rotate sent.log one generation past this
 
+# Self-echo (from == notification target): suppressed by default (R1 of the
+# 2026-09-09 requirement); opt-in delivery marks the *notification* subject so
+# receivers can tell echo from real mail — the stored letter keeps its subject.
+ECHO_SUBJECT_PREFIX = "[echo] "
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def notify_self_echo_enabled(root: Path) -> bool:
+    """Whether self-addressed notifications (from == to) are delivered.
+
+    Default ``false``: the sender is never woken by its own send echo — the
+    letter itself still lands and ``mailbox_list``/``check`` are unaffected.
+    Resolves env ``AGENT_MAIL_NOTIFY_SELF_ECHO`` first, then the
+    ``notify_self_echo`` key of ``config.json`` in the mail root, then the
+    default. Per-root binding, like webhook.json.
+    """
+    env = os.environ.get("AGENT_MAIL_NOTIFY_SELF_ECHO")
+    if env is not None:
+        return env.strip().lower() in _TRUTHY
+    try:
+        cfg = json.loads((root / "config.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(cfg.get("notify_self_echo", False))
+
 # replies collapse stacked "Re:" prefixes to one, like a mail client does:
 # "Re: Re: X" and "rE: x" both become "Re: X"; a bare subject gains one.
 _STACKED_RE_PREFIX = re.compile(r"^(?:\s*re\s*:\s*)+", re.IGNORECASE)
@@ -234,6 +259,8 @@ class MailStore:
         # line is a phantom by definition — no more full-tree greps to
         # settle "was there ever a mail".
         sent_log = self.root / "sent.log"
+        echo_on = notify_self_echo_enabled(self.root)
+        notify_msgs: list[dict[str, Any]] = []
         try:
             if sent_log.stat().st_size > SENT_LOG_MAX_BYTES:
                 # rotate one generation: sent.log becomes sent.log.1 (any old
@@ -243,14 +270,28 @@ class MailStore:
             pass
         with open(sent_log, "a", encoding="utf-8") as audit:
             for msg in full:
-                audit.write(json.dumps(
-                    {k: msg[k] for k in ("id", "from", "to", "subject", "created_at")},
-                    ensure_ascii=False,
-                ) + "\n")
+                line = {k: msg[k] for k in ("id", "from", "to", "subject", "created_at")}
+                if msg["from"] == msg["to"]:
+                    if echo_on:
+                        # opt-in: deliver the self-echo, but prefix the
+                        # *notification* subject so receivers can strip it
+                        # back; the stored letter keeps the original subject.
+                        echo = dict(msg)
+                        echo["subject"] = ECHO_SUBJECT_PREFIX + msg["subject"]
+                        notify_msgs.append(echo)
+                    else:
+                        # default: drop the self-notification. The letter is
+                        # already on disk; the audit line below carries
+                        # echo_suppressed so "notification dropped" stays
+                        # greppable when someone asks why no wake-up came.
+                        line["echo_suppressed"] = True
+                else:
+                    notify_msgs.append(msg)
+                audit.write(json.dumps(line, ensure_ascii=False) + "\n")
         # outside the file lock: optional webhook wake-up, best-effort.
         # config_root binds the webhook.json lookup to THIS store's root so a
         # custom-root store can never read the production gateway config.
-        notify_new_messages(full, config_root=self.root)
+        notify_new_messages(notify_msgs, config_root=self.root)
         return out
 
     def _resolve_recipients(self, to: str | list[str]) -> list[str]:
