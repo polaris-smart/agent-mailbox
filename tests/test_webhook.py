@@ -20,6 +20,7 @@ from agent_mailbox.webhook import (
     _validate_url,
     load_config,
     post_message,
+    signature_style,
 )
 
 
@@ -72,6 +73,42 @@ def _wait_for(predicate, timeout=5.0):
 def test_signature_is_hmac_sha256_hex():
     expected = "sha256=" + hmac.new(b"s3cret", b"payload", hashlib.sha256).hexdigest()
     assert _sign("s3cret", b"payload") == expected
+
+
+# ------------------------------------------------------------------ signature styles (B1)
+
+def test_sign_styles_github_generic_slack():
+    hexd = hmac.new(b"s3cret", b"payload", hashlib.sha256).hexdigest()
+    assert _sign("s3cret", b"payload", "github") == "sha256=" + hexd
+    assert _sign("s3cret", b"payload", "generic") == hexd  # bare hex, no prefix
+    assert _sign("s3cret", b"payload", "slack") == "v0=" + hexd
+
+
+def test_signature_style_env(monkeypatch):
+    monkeypatch.delenv("AGENT_MAIL_SIGNATURE_STYLE", raising=False)
+    assert signature_style() == "github"  # unset = github (backward compatible)
+    for value, want in (("generic", "generic"), ("SLACK", "slack"), ("github", "github")):
+        monkeypatch.setenv("AGENT_MAIL_SIGNATURE_STYLE", value)
+        assert signature_style() == want
+    monkeypatch.setenv("AGENT_MAIL_SIGNATURE_STYLE", "bogus")
+    assert signature_style() == "github"  # unknown falls back, never raises
+
+
+@pytest.mark.parametrize(
+    ("style", "header", "prefix"),
+    [
+        ("github", "X-Hub-Signature-256", "sha256="),
+        ("generic", "X-Webhook-Signature", ""),
+        ("slack", "X-Slack-Signature", "v0="),
+    ],
+)
+def test_post_message_uses_style_header(sink, monkeypatch, style, header, prefix):
+    url, received = sink
+    monkeypatch.setenv("AGENT_MAIL_SIGNATURE_STYLE", style)
+    post_message(url, "s3cret", {"id": f"m-{style}"})
+    headers, body = received[0]
+    expected = prefix + hmac.new(b"s3cret", body, hashlib.sha256).hexdigest()
+    assert headers.get(header) == expected
 
 
 # ------------------------------------------------------------------ config
