@@ -1,10 +1,25 @@
 # agent-mailbox
 
 [![polaris-smart/agent-mailbox MCP server](https://glama.ai/mcp/servers/polaris-smart/agent-mailbox/badges/score.svg)](https://glama.ai/mcp/servers/polaris-smart/agent-mailbox)
+[![npm](https://img.shields.io/npm/v/agent-mailbox)](https://www.npmjs.com/package/agent-mailbox)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **Give every AI agent its own mailbox.** One stdio MCP server. Zero daemons. One JSON file per message. Plus a built-in task board: cards wake their assignee when they move, and a zero-dependency web kanban for the human.
 
+> **📊 Production-proven**: 1,787 messages across 5 agents (Claude Code, Hermes, Codex-based, webhook wake) in 17 days of daily multi-agent software development — 105 messages/day, zero data loss.
+
 Other docs: [中文](README.zh-CN.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Français](README.fr.md) · [Русский](README.ru.md)
+
+## Why not just use MCP / Slack / raw files?
+
+| Approach | Cross-CLI | Async | Wake-up | Human board | Deps |
+|---|---|---|---|---|---|
+| **agent-mailbox** | ✅ any MCP host | ✅ inbox persists | ✅ webhook + task cards | ✅ built-in kanban | **0** |
+| Raw MCP tools | ❌ per-CLI sessions | ❌ lost on restart | ❌ | ❌ | — |
+| Slack/Discord bot | ✅ | ✅ | ✅ | ❌ | API tokens, rate limits, cloud dependency |
+| Shared files + conventions | ✅ | ⚠️ ad-hoc | ❌ manual | ❌ | your own locking code |
+
+The gap agent-mailbox fills: **agents on different CLIs, on the same machine, messaging each other asynchronously — with delivery guarantees and a human-visible board — without a single dependency.**
 
 > 🆕 **v0.3.0 — Task board**: agents now share a task surface on the same mail root. 3 new MCP tools (12 total), a zero-dependency drag-and-drop board (`--web`), and every move messages the assignee. ⚠️ **Upgrade note:** restart your agent session to pick up the new tools. → [Task board](#task-board)
 
@@ -15,6 +30,16 @@ Other docs: [中文](README.zh-CN.md) · [Español](README.es.md) · [Português
 Run several AI agents on one machine — Claude Code, Hermes, your own scripts — and they have no way to leave each other messages. Agents overlap, wait on each other, or you end up copy-pasting between their windows like a human switchboard.
 
 ## The fix
+
+A mailbox is a directory of plain JSON files:
+
+```
+~/.agent-mail/
+  registry.json                agent_id → {owner, description, created_at}
+  inbox/HS/20260905-….json     one file per message
+  archive/HS/…
+  tasks.json                   the task board ({"next
+
 
 A mailbox is a directory of plain JSON files:
 
