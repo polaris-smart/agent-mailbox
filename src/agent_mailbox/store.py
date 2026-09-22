@@ -169,6 +169,41 @@ def _reply_subject(subject: str) -> str:
     return "Re: " + _STACKED_RE_PREFIX.sub("", subject or "").strip()
 
 
+# v0.6.0 threads: a first-class thread_id on every letter. New sends mint one;
+# replies inherit the original's. Legacy letters carry no thread_id (None) —
+# they are back-filled heuristically by subject key (剥 Re:/Fwd: 前缀), and a
+# letter that cannot be grouped stays null so the gap stays visible.
+_THREAD_PREFIXES = re.compile(r"^(?:\s*(?:re|fwd?|fw)\s*:\s*)+", re.IGNORECASE)
+
+
+def thread_key(subject: str) -> str:
+    """Normalize a subject for thread grouping: strip stacked Re:/Fwd:/Fw:
+    prefixes (any case), NFKC-fold, lowercase, collapse whitespace.
+
+    ``"Re: Re: 发票确认"`` and ``"发票确认"`` collapse to the same key; an
+    empty key (``""``) never groups with anything — callers must treat it as
+    unmatchable rather than a shared bucket.
+    """
+    stripped = _THREAD_PREFIXES.sub("", subject or "").strip()
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", stripped)).lower()
+
+
+def _thread_id() -> str:
+    return "th-" + hashlib.sha1(
+        f"{time.time_ns()}-{os.urandom(8).hex()}".encode()
+    ).hexdigest()[:12]
+
+
+def ghost_open_limit() -> int:
+    """Open (non-done) letters per thread before mailbox_check warns. Reads
+    env ``AGENT_MAIL_GHOST_LIMIT`` then defaults to 5 (v0.6 幽灵信防护)."""
+    raw = os.environ.get("AGENT_MAIL_GHOST_LIMIT", "")
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 5
+
+
 def _handled_session(agent_id: str) -> str:
     """Return the session identifier for handled-log entries.
 
@@ -328,6 +363,7 @@ class MailStore:
         reply_to: str | None = None,
         priority: str = "normal",
         dedupe: bool = True,
+        thread_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Deliver a message to one agent, many agents, or ``"all"``.
 
@@ -343,6 +379,12 @@ class MailStore:
         archive (缺口2). After the dedup window (default 24h) a same-hash
         re-send is allowed through, so the queue may then legitimately hold
         two same-hash non-terminal letters (微点2: expected, not a bug).
+
+        Threads (v0.6): every letter carries a ``thread_id``. ``thread_id=``
+        pins one explicitly; otherwise a reply (``reply_to``) inherits the
+        original's thread (a legacy original without one is back-filled with
+        the freshly minted id so the pair stays linked), and a fresh send
+        mints a new id shared by every recipient of this call.
         """
         if status not in MSG_STATUSES:
             raise MailboxError(f"status must be one of {MSG_STATUSES}")
@@ -351,11 +393,26 @@ class MailStore:
             raise MailboxError("no recipients resolved")
         if reply_to:
             subject = _reply_subject(subject)
+        original_path: Path | None = None
+        original_tid: str | None = None
+        if reply_to:
+            original_path, original_tid = self._original_thread(from_id, reply_to)
+        tid = thread_id or original_tid or _thread_id()
         out = []
         full: list[dict[str, Any]] = []
         windows = load_window_config(self.root)  # 铁1 gate: loud failure on bad config
         msg_hash = semantic_hash(subject, body)
         with self._locked():
+            if original_path is not None and original_tid is None:
+                # legacy original without a thread: back-fill it under the
+                # lock with the id the reply is carrying (re-read first —
+                # another process may have back-filled it meanwhile).
+                m = self._read_msg(original_path)
+                if not m.get("thread_id"):
+                    m["thread_id"] = tid
+                    original_path.write_text(
+                        json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8"
+                    )
             now = time.time()
             mid_base = _msg_id()
             for rid in recipients:
@@ -375,13 +432,14 @@ class MailStore:
                     "priority": priority,
                     "status": status,
                     "reply_to": reply_to,
+                    "thread_id": tid,
                     "created_at": _now_iso(),
                     "semantic_hash": msg_hash,
                 }
                 (inbox / f"{msg['id']}.json").write_text(
                     json.dumps(msg, ensure_ascii=False, indent=1), encoding="utf-8"
                 )
-                out.append({"id": msg["id"], "to": rid})
+                out.append({"id": msg["id"], "to": rid, "thread_id": tid})
                 full.append(msg)
         if not full:
             # every recipient deduped: zero side effects — no audit line, no
@@ -482,6 +540,143 @@ class MailStore:
                 continue  # TTL 放行 (微点2: two same-hash letters may then coexist)
             return str(m["id"])
         return None
+
+    # --------------------------------------------------------------- threads
+    #
+    # v0.6: thread_id is a first-class field. The lookup side accepts either
+    # a thread_id or any message id on the thread (resolving through the
+    # letter itself), spans every agent's inbox AND archive (cross-agent
+    # view), and falls back to the subject-key heuristic for legacy letters
+    # that never carried a thread_id.
+
+    def _original_thread(self, from_id: str, reply_to: str) -> tuple[Path | None, str | None]:
+        """Locate the reply target and return ``(path, thread_id)``.
+
+        ``path`` is None when the original cannot be found (the reply still
+        goes out, minting its own thread); ``thread_id`` is None when the
+        original is a legacy letter without one — send() back-fills it.
+        """
+        try:
+            path, m = self._locate_msg(from_id, reply_to)
+        except MailboxError:
+            return None, None
+        return path, m.get("thread_id")
+
+    def _iter_all_letters(self) -> Any:
+        """Yield ``(path, msg)`` for every letter under the root (inboxes and
+        archives of all agents). Tolerates corrupt files (skips them)."""
+        for sub in ("inbox", "archive"):
+            base = self.root / sub
+            if not base.is_dir():
+                continue
+            for box in sorted(base.iterdir()):
+                if not box.is_dir():
+                    continue
+                for p in sorted(box.glob("*.json")):
+                    try:
+                        yield p, self._read_msg(p)
+                    except MailboxError:
+                        continue
+
+    def thread_messages(self, thread_ref: str) -> dict[str, Any]:
+        """All letters on a thread, oldest first, across every agent.
+
+        ``thread_ref`` may be a ``thread_id`` or any message id on the thread
+        (resolves through the letter). Legacy letters without a thread_id are
+        matched by ``thread_key`` of the resolved thread's subjects — the
+        heuristic is allowed to be imperfect; a letter that matches nothing
+        simply stays out. Returns ``{"thread_id", "matched_by", "count",
+        "messages"}`` where ``matched_by`` is ``thread_id`` or ``subject_key``.
+        """
+        resolved: str | None = None
+        skey: str | None = None
+        for _, m in self._iter_all_letters():
+            if m.get("id") == thread_ref:
+                resolved = m.get("thread_id")
+                skey = thread_key(m.get("subject", ""))
+                break
+            if m.get("thread_id") == thread_ref:
+                resolved = thread_ref
+        if resolved is None:
+            raise MailboxError(f"unknown thread or message id {thread_ref!r}")
+        matched: list[dict[str, Any]] = []
+        for p, m in self._iter_all_letters():
+            if (resolved and m.get("thread_id") == resolved) or (
+                skey and thread_key(m.get("subject", "")) == skey
+            ):
+                matched.append((p, m))
+        # created_at is second-granular and several letters can share one
+        # second, so file mtime (write order, kept across os.replace into the
+        # archive) breaks ties before the id does.
+        def _order(item: tuple[Path, dict[str, Any]]) -> tuple:
+            p, m = item
+            try:
+                mtime = p.stat().st_mtime_ns
+            except OSError:
+                mtime = 0
+            return (m.get("created_at", ""), mtime, m.get("id", ""))
+
+        matched.sort(key=_order)
+        messages = [m for _, m in matched]
+        return {
+            "thread_id": resolved,
+            "matched_by": "thread_id" if not skey else "thread_id+subject_key",
+            "count": len(messages),
+            "messages": messages,
+        }
+
+    def backfill_threads(self) -> dict[str, Any]:
+        """Heuristic back-fill for legacy letters missing ``thread_id``.
+
+        Groups thread-less letters (inbox + archive, every agent) by their
+        ``thread_key``; any group with two or more letters gets one shared
+        freshly-minted thread_id written back. Singleton groups stay null so
+        the gap remains visible. Returns ``{"groups": <grouped count>,
+        "backfilled": <letters written>}``.
+        """
+        by_key: dict[str, list[tuple[Path, dict[str, Any]]]] = {}
+        for p, m in self._iter_all_letters():
+            if m.get("thread_id"):
+                continue
+            k = thread_key(m.get("subject", ""))
+            if k:
+                by_key.setdefault(k, []).append((p, m))
+        backfilled = 0
+        grouped = 0
+        with self._locked():
+            for members in by_key.values():
+                if len(members) < 2:
+                    continue
+                grouped += 1
+                tid = _thread_id()
+                for p, m in members:
+                    m2 = self._read_msg(p)  # re-read under the lock
+                    if not m2.get("thread_id"):
+                        m2["thread_id"] = tid
+                        p.write_text(
+                            json.dumps(m2, ensure_ascii=False, indent=1), encoding="utf-8"
+                        )
+                        backfilled += 1
+        return {"groups": grouped, "backfilled": backfilled}
+
+    def ghost_threads(self, threshold: int | None = None) -> list[dict[str, Any]]:
+        """Threads holding more than ``threshold`` open (non-done) letters.
+
+        The v0.6 幽灵信防护: a thread that keeps accreting unread mail is the
+        acked-sinking failure mode resurfacing — mailbox_check surfaces this
+        list so the warning reaches the agent, not just the log.
+        """
+        limit = ghost_open_limit() if threshold is None else max(1, threshold)
+        open_by_thread: dict[str, int] = {}
+        for _, m in self._iter_all_letters():
+            tid = m.get("thread_id")
+            if tid and m.get("status") in ("pending", "acked"):
+                open_by_thread[tid] = open_by_thread.get(tid, 0) + 1
+        return [
+            {"thread_id": t, "open_count": n}
+            for t, n in sorted(open_by_thread.items())
+            if n > limit
+        ]
 
     def _resolve_recipients(self, to: str | list[str]) -> list[str]:
         if to == "all":
@@ -676,15 +871,39 @@ class MailStore:
             "resume": resume,
         }
 
-    def list_messages(self, agent_id: str, status: str | None = None) -> list[dict[str, Any]]:
+    def list_messages(
+        self,
+        agent_id: str,
+        status: str | None = None,
+        thread: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List inbox letters, optionally filtered by status and/or thread.
+
+        ``thread`` matches a letter's ``thread_id`` exactly, or — for legacy
+        letters without one — the ``thread_key`` of the given reference is
+        compared against the letter's own subject key.
+        """
         inbox = self._inbox_dir(agent_id)
         out = []
         with self._locked():
             for p in sorted(inbox.glob("*.json")):
                 m = self._read_msg(p)
-                if status is None or m.get("status") == status:
-                    out.append(m)
+                if status is not None and m.get("status") != status:
+                    continue
+                if thread is not None and not self._thread_match(m, thread):
+                    continue
+                out.append(m)
         return out
+
+    @staticmethod
+    def _thread_match(m: dict[str, Any], thread: str) -> bool:
+        if m.get("thread_id") == thread:
+            return True
+        if m.get("thread_id"):
+            return False  # carries a real thread_id; the exact match above failed
+        # legacy letter without a thread_id: fall back to the subject key
+        want = thread_key(thread)
+        return bool(want) and thread_key(m.get("subject", "")) == want
 
     def list_archived(self, agent_id: str, status: str | None = None) -> list[dict[str, Any]]:
         arch = self.root / "archive" / agent_id
