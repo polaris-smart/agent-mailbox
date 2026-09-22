@@ -58,13 +58,25 @@ def mailbox_send(
     priority: str = "normal",
     reply_to: str | None = None,
     from_id: str = "",
+    dedupe: bool = True,
 ) -> dict:
-    """Send a message to one agent, a list of agents, or \"all\" for broadcast."""
+    """Send a message to one agent, a list of agents, or \"all\" for broadcast.
+
+    dedupe=True (default) suppresses a re-send of semantically identical
+    mail to a recipient whose inbox still holds it non-terminal (pending /
+    acked) within the 24h dedup window: that recipient's entry comes back as
+    {\"to\", \"deduped\": true, \"existing_id\"} with zero side effects — no
+    letter, no sent.log line, no webhook. Pass dedupe=False to exempt
+    periodic jobs. \"count\" counts only letters that actually landed.
+    """
     frm = from_id or os.environ.get("AGENT_MAIL_ID", "")
     if not frm:
         raise MailboxError("from_id required (or set AGENT_MAIL_ID env)")
-    sent = _store_instance().send(frm, to, subject, body, reply_to=reply_to, priority=priority)
-    return {"delivered": sent, "count": len(sent)}
+    sent = _store_instance().send(
+        frm, to, subject, body, reply_to=reply_to, priority=priority, dedupe=dedupe
+    )
+    delivered = sum(1 for e in sent if not e.get("deduped"))
+    return {"delivered": sent, "count": delivered}
 
 
 @server.tool()
@@ -100,6 +112,7 @@ def mailbox_reply(msg_id: str, body: str, agent_id: str = "") -> dict:
         f"Re: {original['subject']}",
         body,
         reply_to=msg_id,
+        dedupe=False,  # replies are thread-addressed; keep the legacy contract
     )
     if from_archive:
         # Original is already done + archived; nothing left to close.
@@ -130,13 +143,16 @@ def mailbox_done(msg_id: str, agent_id: str = "") -> dict:
 
 
 @server.tool()
-def mailbox_broadcast(subject: str, body: str, from_id: str = "") -> dict:
-    """Broadcast to every registered agent (including boss)."""
+def mailbox_broadcast(subject: str, body: str, from_id: str = "", dedupe: bool = True) -> dict:
+    """Broadcast to every registered agent (including boss). dedupe=True
+    (default) suppresses semantically identical re-broadcasts per recipient
+    within the dedup window — see mailbox_send."""
     frm = from_id or os.environ.get("AGENT_MAIL_ID", "")
     if not frm:
         raise MailboxError("from_id required (or set AGENT_MAIL_ID env)")
-    sent = _store_instance().send(frm, "all", subject, body, priority="high")
-    return {"delivered": sent, "count": len(sent)}
+    sent = _store_instance().send(frm, "all", subject, body, priority="high", dedupe=dedupe)
+    delivered = sum(1 for e in sent if not e.get("deduped"))
+    return {"delivered": sent, "count": delivered}
 
 
 @server.tool()

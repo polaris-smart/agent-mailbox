@@ -1,14 +1,21 @@
-"""End-to-end test: MCP stdio handshake -> register -> send -> check -> broadcast."""
+"""End-to-end test: MCP stdio handshake -> register -> send -> check -> broadcast,
+plus the v0.5 delivery-side dedup contract on the MCP tool surface.
+
+Each run gets a FRESH temporary mail root: the run always sends the same
+content, and v0.5's semantic-hash dedup would (correctly) suppress the
+repeat against a leftover acked letter from a previous run — a persistent
+scratch root made the E2E order-dependent once dedup shipped.
+"""
 
 import json
 import os
 import queue
 import subprocess
 import sys
+import tempfile
 import threading
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ENV = {**os.environ, "AGENT_MAIL_HOME": os.path.join(ROOT, ".test-mail")}
 # Use the interpreter running the tests (CI has no .venv); fall back to repo venv locally.
 PY = os.path.join(ROOT, ".venv", "bin", "python")
 if not os.path.exists(PY):
@@ -16,6 +23,8 @@ if not os.path.exists(PY):
 
 
 def main():
+    mailroot = tempfile.mkdtemp(prefix="agent-mailbox-e2e-")
+    ENV = {**os.environ, "AGENT_MAIL_HOME": mailroot}
     proc = subprocess.Popen(
         [PY, "-m", "agent_mailbox.server"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -65,6 +74,16 @@ def main():
         resp = read_resp()
         assert "fuel ready" in resp["result"]["content"][0]["text"]
         print("check ok — message delivered over MCP stdio")
+
+        # v0.5 design A on the tool surface: the same content again is
+        # deduped for that recipient — zero side effects, count excludes it.
+        send({"jsonrpc": "2.0", "id": 15, "method": "tools/call", "params": {
+            "name": "mailbox_send", "arguments": {
+                "from_id": "HS", "to": "WB", "subject": "fuel ready", "body": "1856"}}})
+        resp = json.loads(read_resp()["result"]["content"][0]["text"])
+        assert resp["count"] == 0 and resp["delivered"][0]["deduped"] is True
+        assert resp["delivered"][0]["existing_id"].endswith("-wb")
+        print("dedupe ok — repeat suppressed with deduped/existing_id, count 0")
 
         send({"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {
             "name": "mailbox_broadcast", "arguments": {"from_id": "boss", "subject": "hi", "body": "all"}}})
@@ -120,7 +139,7 @@ def main():
             "name": "mailbox_list", "arguments": {"agent_id": "WB"}}})
         resp = read_resp()
         assert "self echo probe" in resp["result"]["content"][0]["text"]
-        sent_log = os.path.join(ROOT, ".test-mail", "sent.log")
+        sent_log = os.path.join(mailroot, "sent.log")
         last = None
         with open(sent_log, encoding="utf-8") as f:
             for line in f:
@@ -133,6 +152,9 @@ def main():
         print("E2E PASS")
     finally:
         proc.kill()
+        proc.wait()
+        import shutil
+        shutil.rmtree(mailroot, ignore_errors=True)
 
 
 if __name__ == "__main__":
