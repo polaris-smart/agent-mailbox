@@ -169,19 +169,38 @@ Your host's webhook handler receives:
 
 ### Self-echo protection (on by default)
 
-A notification whose sender equals its target (self-echo, e.g. an agent messaging itself or copying itself in a broadcast) is **not delivered** by default: the letter still lands on disk, `mailbox_list` / `mailbox_check` are unaffected — the sender just isn't woken by its own send. The drop is audited in `sent.log` as `echo_suppressed: true`, so "there was a notification but no mail"-style disputes stay one grep away. Set `notify_self_echo: true` in the mail root's `config.json` (or env `AGENT_MAIL_NOTIFY_SELF_ECHO`) to restore delivery — restored self-echo notifications carry an `[echo] ` subject prefix (the stored letter keeps its original subject, so the prefix is regex-strippable).
+A notification whose sender equals its target (self-echo, from == to) is **not delivered** by default: the letter still lands on disk, `mailbox_list` / `mailbox_check` are unaffected — the sender just isn't woken by its own send. The drop is audited in `sent.log` as `echo_suppressed: true`, so "there was a notification but no mail"-style disputes stay one grep away. Set `notify_self_echo: true` in the mail root's `config.json` (or env `AGENT_MAIL_NOTIFY_SELF_ECHO`) to restore delivery — restored self-echo notifications carry an `[echo] ` subject prefix (the stored letter keeps its original subject, so the prefix is regex-strippable).
+
+### Duplicate suppression (v0.5.0, delivery-side)
+
+Every letter stores a `semantic_hash` — `sha256(norm(subject) + "\0" + norm(prose) + "\0" + code_regions.join("\0"))`. Prose is NFKC/NFC normalized with whitespace folded; fenced ` ``` ` code regions are lifted out first and hashed **raw, in their original order** (zero folding — reordering code must not collapse to one hash). Legacy letters without the field never match (old mail is never back-filled).
+
+`mailbox_send` / `mailbox_broadcast` dedupe by default: if the target inbox already holds a same-hash letter in a non-terminal state (`pending`/`acked`) inside the dedup window, no new mail is created. **How callers notice**: that recipient's entry in the result carries `"deduped": true` and `"existing_id"` — nothing lands on disk, nothing is appended to `sent.log`, and no webhook fires (zero side effects). `"count"` counts only letters that actually landed. Pass `dedupe: false` to exempt a send; replies (`mailbox_reply`) are exempt by design. Only inboxes are consulted, never archives — a same-hash letter that is `done` or archived never blocks a re-send.
+
+- **Scope boundary (by design)**: normalization keeps timestamps verbatim, so periodic jobs whose bodies embed dates naturally hash differently — A does **not** stop them. A prevents same-semantics repeat wakes; periodic-task replay protection relies on the B compensation flow (below) plus `dedupe: false`.
+- **Expected, not a bug**: once the dedup window passes, a re-send goes through, so the queue can legitimately hold two same-hash non-terminal letters (the older one is still being handled).
+- **铁1 config coupling**: the reclaim window must stay strictly below the dedup window — `reap_ttl` (default 3600s) **<** `dedup_ttl` (default 86400s = 24h), both settable in `<mail-root>/config.json`. Violating configs fail loudly (`MailboxError`) at load time instead of silently distorting the windows.
+
+### Half-done handling: compensation + reclaim (v0.5.0)
+
+An agent that claims mail (`check` → `acked`) and dies leaves it invisible to a pending-only drain. v0.5 closes the loop three ways:
+
+- **Two-phase handled_log**: the handling layer records `intent` when it starts and `outcome` when finished via `MailStore.record_handled(agent_id, msg_id, action)` — the store is the single writer (mail-root flock), so `handled_log` stays append-only and auditable across sessions. `set_status(done)` comes last.
+- **Compensation table**: `MailStore.resume_plan(agent_id, msg_id)` reads only the log ("which segment did it reach?") and returns `resume`: `process` (pending, or acked with no records at all — claimed then crashed before the intent — same treatment: handle normally from the intent), `replay` (intent without outcome: idempotently redo the handling body), `finalize` (intent + outcome recorded but not `done` yet: only the status flip remains), `skip` (terminal).
+- **Stale-`acked` reclaim**: `python -m agent_mailbox.reap --agent ID --ttl 7200` flips `acked` mail older than the TTL back to `pending` with a `reclaimed` entry in `handled_log` (acked → reclaimed → done stays auditable end to end). Defaults: TTL 3600s in the store, 7200s in the wake script. A letter whose newest `intent` is fresher than 30 minutes is deferred — someone is actively on it. Reclaim is a manual maintenance operation: nothing in the library calls it automatically; the deployed wake script is the only wired caller.
+- **Wake wiring**: `scripts/wake-zc.sh` reaps **before** counting pending on every loop iteration (fail-open with an explicit log line) and carries a **circuit breaker**: after N consecutive no-progress drain rounds it latches (`~/.agent-mail/wake-zc.breaker`, auto-expires after 6h) and stops launching drain turns — backoff stretches the interval, the breaker stops the bleeding.
 
 ## The tools
 
 | Tool | Notes |
 |------|-------|
 | `mailbox_register(agent_id, owner?, description?)` | claim a mailbox; idempotent |
-| `mailbox_send(to, subject, body, priority?)` | `to` = one id, a list, or `"all"` |
+| `mailbox_send(to, subject, body, priority?)` | `to` = one id, a list, or `"all"`; `dedupe?` (default true) suppresses same-hash repeats (see above) |
 | `mailbox_check(agent_id?, mark?)` | fetch pending (→ `acked`) |
-| `mailbox_reply(msg_id, body)` | routes back to the original sender |
+| `mailbox_reply(msg_id, body)` | routes back to the original sender (dedupe-exempt) |
 | `mailbox_list(agent_id?, status?)` | list messages, optional status filter |
 | `mailbox_done(msg_id)` | mark handled |
-| `mailbox_broadcast(subject, body)` | to every registered agent |
+| `mailbox_broadcast(subject, body)` | to every registered agent; `dedupe?` per recipient |
 | `mailbox_whoami()` | directory of agents + mail root |
 | `mailbox_wait(agent_id?, timeout_seconds?)` | long-poll for new mail |
 | `task_create(title, assignee, due?)` | create a task card (starts `todo`); assignee auto-messaged |
@@ -214,7 +233,7 @@ python -m agent_mailbox.cleanup --dry-run --root ~/.agent-mail
 python -m agent_mailbox.cleanup --yes                  # actually delete: explicit --yes + interactive confirmation
 ```
 
-Scans the mail root and lists **suspected test residue**: agent `inbox/` / `archive/` directories missing from registry.json, `NEWBIE` / `WBTEST`-style test-named directories, and orphan letters (stray files directly under `inbox/` / `archive/`, unparseable JSON, `*.tmp` left by an interrupted atomic write). Each finding prints path + size + reason; `--dry-run` (and the flagless default) deletes nothing; `--yes` deletes for real but requires typing `yes` to confirm. Registered-but-test-named directories are reported as review-only and never deleted.
+Scans the mail root and lists **suspected test residue**: agent `inbox/` / `archive/` directories missing from registry.json, `NEWBIE` / `WBTEST`-style test-named directories, and orphan letters (stray files directly under `inbox/` / `archive/`, unparseable JSON, `*.tmp` left by an interrupted atomic write). Each finding prints path + size + reason; `--dry-run` (and the flagless default) deletes nothing; `--yes` deletes for real but requires typing `yes` to confirm. Registered-but-test-named directories are reported as review-only and never deleted. The `--yes` capability shipped with v0.4.0 — actually running it against a production mail root remains an explicit operator (boss) approval, separate from the release.
 
 ## Design
 
@@ -248,15 +267,11 @@ Upgrade with `uv tool upgrade agent-mailbox` (or re-pull however you installed i
 
 ## Roadmap
 
-- **v0.4.0** (current) — feature batch: configurable webhook signature style (`AGENT_MAIL_SIGNATURE_STYLE`: github default / generic / slack); self-echo protection (notifications where sender == target are dropped by default, audited as `echo_suppressed` in `sent.log`; `notify_self_echo` / `AGENT_MAIL_NOTIFY_SELF_ECHO` restores delivery with an `[echo] ` subject prefix on the notification while the letter keeps its subject); new `cleanup --dry-run` maintenance command (scans for test residue, lists without deleting, `--yes` deletes after confirmation).
+- **v0.5.0** (current) — lifecycle hardening from the 2026-09-13 incidents (task `t-6`): **duplicate suppression** (delivery-side `semantic_hash`, same-hash non-terminal repeats within a 24h window return `{"deduped": true, "existing_id"}` with zero side effects; `dedupe: false` exempts; code-fence-raw hashing, inbox-only scope, hash→inbox index); **half-done compensation** (`record_handled` two-phase intent/outcome API as the single `handled_log` writer + `resume_plan` four-row table: process / replay / finalize / skip); **stale-`acked` reclaim** shipped earlier as `reap_stale_acked` / `python -m agent_mailbox.reap` now wired into the wake loop (reap first, count second, fail-open) with the 铁1 coupling enforced — `reap_ttl` (3600s) must stay strictly below `dedup_ttl` (24h), violations fail loudly; **wake circuit breaker** — N consecutive no-progress drain rounds latch a breaker file and stop launching turns (backoff stretches the interval, the breaker stops the bleeding).
+- **v0.5.x (open)** — still tracked from the t-6 reviews, not in this release: `status filtering` (ask for "pending or acked" views), `identity binding` (bind MCP callers to `AGENT_MAIL_ID` against foreign checks; today's model is local trust — anyone on the machine can read any box), `wake routing` (gateway subscription `to`-filter; lives outside this repo), `unread_count` in webhook payloads, claim semantics for `mailbox_wait` (P1–P4 from the 09-13 forensics).
+- **v0.4.0** — feature batch: configurable webhook signature style (`AGENT_MAIL_SIGNATURE_STYLE`: github default / generic / slack); self-echo protection (notifications where sender == target are dropped by default, audited as `echo_suppressed` in `sent.log`; `notify_self_echo` / `AGENT_MAIL_NOTIFY_SELF_ECHO` restores delivery with an `[echo] ` subject prefix on the notification while the letter keeps its subject); new `cleanup --dry-run` maintenance command (scans for test residue, lists without deleting, `--yes` deletes after confirmation).
 - **v0.3.1** — patch batch: reply subjects no longer pile up `Re: Re:` (first reply, re-replies, and mixed-case prefixes all normalize to a single `Re:`); web board tokens use constant-time comparison (`hmac.compare_digest`) and persist across reboots (`~/.agent-mail/web_token`, mode 0600, `AGENT_MAIL_WEB_TOKEN` env always wins); `sent.log` auto-rotates one generation past 10 MB (to `sent.log.1`).
 - **v0.3.0** — task board + web kanban: `task_create` / `task_move` / `task_list` with a strict todo→doing→review→done state machine; creating or moving a card auto-messages the assignee, so board motion wakes agents with zero polling. `--web 8643` serves a token-protected zero-dependency kanban UI where human drag-and-drop goes through the same wake-up path. Messages + tasks + wake-up + board, still zero dependencies.
-- **v0.5.0** (backlog, no date) — mailbox lifecycle hardening from the 2026-09-13 incidents, tracked as task `t-6`:
-  - **drain/收尾 archive step** — the drain flips `done` but never archives, so the inbox file count only grows; wake scripts that count *files* never see zero and spin (09-13 wake-spin, one-line fix already live in `wake-zc.sh`).
-  - **status filtering** — let `mailbox_list` and the drain scan ask for "pending **or** acked" instead of pending-only.
-  - **stale-`acked` reclaim** — implemented as `MailStore.reap_stale_acked(agent_id, ttl_seconds)`: mail that `check()` reserved but nobody finished (crashed/cancelled caller) goes back to `pending` with a `reclaimed` entry in `handled_log`. Wiring it into the drain prompt is still open.
-  - **identity binding** — MCP tools accept any `agent_id` from the caller (local trust model); a foreign check can ack another agent's mail (09-13 B9 report). Bind the caller to `AGENT_MAIL_ID`, or at minimum audit it.
-  - **wake routing** — the gateway webhook subscription that wakes an agent has no `to` filter, so a letter addressed to any agent can wake a different one (09-13 t-6 report; that subscription lives outside this repo).
 - **v0.5.0+** — maybe: deeper kanban integrations (Kaneo as reference/competitor). Under discussion.
 - **Next** — federation: streamable HTTP transport for agents on other machines (Tailscale/LAN friendly); signed receipts (ed25519) for tamper-evident delivery.
 - **v1.0.0** — cross-organization bridge: local threads reach agents on other machines and organizations over standard email infrastructure, with the same mailbox lifecycle.
