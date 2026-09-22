@@ -51,7 +51,8 @@ def cfg(root, **kw):
 def test_plist_body_watches_inbox_and_runs_once(env):
     root, _ = env
     body = plist_body(cfg(root), "/usr/bin/python3", root)
-    assert f"<string>{root}/inbox/ZC</string>" in body
+    inbox = Path(root) / "inbox" / "ZC"  # str() follows platform separators
+    assert f"<string>{inbox}</string>" in body
     assert "agent_mailbox.wake" in body and "--once" in body
     assert f"{WAKE_LABEL}-ZC" in body
     assert "WatchPaths" in body and "RunAtLoad" in body
@@ -62,7 +63,7 @@ def test_systemd_units_use_pathchanged(env):
     units = systemd_unit_body(cfg(root), "/usr/bin/python3", root)
     path_unit = units[f"{WAKE_LABEL}-ZC.path"]
     service = units[f"{WAKE_LABEL}-ZC.service"]
-    assert f"PathChanged={root}/inbox/ZC" in path_unit
+    assert f"PathChanged={Path(root) / 'inbox' / 'ZC'}" in path_unit
     assert "WantedBy=default.target" in path_unit
     assert "Type=oneshot" in service and "agent_mailbox.wake" in service
 

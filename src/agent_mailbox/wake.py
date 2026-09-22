@@ -223,8 +223,12 @@ def jev_decide(cfg: WakeConfig, msg: dict[str, Any]) -> dict[str, Any] | None:
             "Authorization": f"Bearer {cfg.jev_api_key}",
         },
     )
+    # ProxyHandler({}) pins a direct connection — urllib otherwise inherits
+    # the system HTTP proxy (macOS CI runners set one) and a wake-path probe
+    # must never detour through it (same lesson as webhook.py).
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(req, timeout=cfg.jev_timeout) as resp:
+        with opener.open(req, timeout=cfg.jev_timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         return {"noul": bool(data.get("noul", False)), "score": float(data.get("score", 0))}
     except (OSError, ValueError, KeyError):
