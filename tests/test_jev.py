@@ -9,13 +9,13 @@ import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
 import pytest
-from tests.test_wake import _Recorder, cfg
 
 import agent_mailbox.wake as wake_mod
 from agent_mailbox.store import MailStore
-from agent_mailbox.wake import jev_decide, jev_gate, run_once
+from agent_mailbox.wake import WakeConfig, jev_decide, jev_gate, run_once
 
 
 @pytest.fixture()
@@ -25,6 +25,29 @@ def env(tmp_path, monkeypatch):
     st = MailStore(root=root)
     st.register("ZC")
     return root, st
+
+
+def cfg(root, **kw):
+    """Local copy of test_wake.cfg — tests must not import each other (CI
+    collects tests as top-level modules; a `tests.` import is not portable)."""
+    base = {
+        "agent_id": "ZC",
+        "adapter": "generic-webhook",
+        "webhook": {"url": "http://127.0.0.1:9/hook", "secret": "s"},
+        "retry_interval": 0,
+    }
+    base.update(kw)
+    return WakeConfig(base, Path(root))
+
+
+class _Recorder:
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = []
+
+    def deliver(self, msg):
+        self.calls.append(msg["id"])
+        return self.results.pop(0) if self.results else True
 
 
 def jev_cfg(root, **kw):
