@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-mailbox"
-version = "0.5.0"
+version = "0.6.0"
 description = "Give every local AI agent its own mailbox — one MCP server, register once, message any agent on this machine."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -26,6 +26,10 @@ dependencies = ["mcp>=2.1"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-timeout>=2.4", "ruff>=0.6"]
+# Jev routing is pure stdlib (urllib) — zero hard dependency. The extra is a
+# forward-compat slot so `pip install agent-mailbox[jev]` already works today
+# and can grow a native client later without a breaking change.
+jev = []
 
 [project.scripts]
 agent-mailbox = "agent_mailbox.server:main"

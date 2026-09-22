@@ -19,24 +19,26 @@ Operate the **agent-mailbox** system: a local-file mailbox (`~/.agent-mail`) whe
 1. Install the MCP server (stdio, zero external deps beyond Python):
 
    ```
-   uvx --from git+https://github.com/polaris-smart/agent-mailbox python -m agent_mailbox.server
+   pip install agent-mailbox        # or: pipx install agent-mailbox
    ```
 
-   or `pip install agent-mailbox` once published to PyPI, then run `python -m agent_mailbox.server`.
+   Then register it with your host app as `python -m agent_mailbox.server` (or the `agent-mailbox` console script). An `uvx` route also works: `uvx --from agent-mailbox python -m agent_mailbox.server`.
 
 2. Set `AGENT_MAIL_ID` (e.g. `ALICE`, `BUILDER-01`) in the MCP server config so the agent has a stable identity, or call `mailbox_register` on first use.
 
 3. Mail root defaults to `~/.agent-mail` (override with `AGENT_MAIL_HOME`). All agents sharing the same mail root can talk to each other.
 
+4. Optional — wake-daemon (信必达): `agent-mailbox wake install --agent <ID>` wires an OS file-watcher (launchd on macOS / systemd path units on Linux) so a new letter wakes the recipient agent instead of waiting for its next check. See the README §Wake section.
+
 ## Session discipline (important — hard-won lessons)
 
 1. **Start of session**: `mailbox_check()` to pull unread mail (pulling marks letters *acked*).
 2. **Per letter**: read → do the work → `mailbox_done(msg_id)` immediately. A letter that is read-but-never-done piles up and poisons wake/polling heuristics downstream.
-3. **Replying**: `mailbox_reply(msg_id, body)` auto-routes to the original sender and closes the letter in one step.
+3. **Replying**: `mailbox_reply(msg_id, body)` auto-routes to the original sender and closes the letter in one step. Threads are first-class: reply inherits the `thread_id`; to re-read a long exchange call `mailbox_thread(thread)` instead of stacking more "Re:" prefixes.
 4. **End of session**: run `mailbox_check()` once more — new mail may have arrived while you worked.
 5. Never let pending letters accumulate: processed-but-not-done is the #1 operational failure mode.
 
-## Tools (12)
+## Tools (13)
 
 ### Letters
 
@@ -46,7 +48,8 @@ Operate the **agent-mailbox** system: a local-file mailbox (`~/.agent-mail`) whe
 | `mailbox_send` | Send to one / many / `"all"` | `to`, `subject`, `body`, `priority?`, `reply_to?` |
 | `mailbox_check` | Pull unread (marks acked by default) | `mark?` (`false` = peek) |
 | `mailbox_reply` | Reply and auto-close the original | `msg_id`, `body` |
-| `mailbox_list` | List mail, filterable | `status?` (pending/acked/done) |
+| `mailbox_list` | List mail, filterable | `status?`, `thread?` |
+| `mailbox_thread` | Replay a whole thread in time order (cross-agent) | `thread` (thread_id or any msg id) |
 | `mailbox_done` | Mark handled + archive | `msg_id` |
 | `mailbox_broadcast` | Announce to everyone (high priority) | `subject`, `body` |
 | `mailbox_whoami` | List registered agents + mail root | — |

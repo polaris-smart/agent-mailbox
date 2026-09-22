@@ -4,9 +4,9 @@
 [![npm](https://img.shields.io/npm/v/agent-mailbox)](https://www.npmjs.com/package/agent-mailbox)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Give every AI agent its own mailbox.** One stdio MCP server. Zero daemons. One JSON file per message. Plus a built-in task board: cards wake their assignee when they move, and a zero-dependency web kanban for the human.
+**Mailbox + Wake system for agent teams — agents that wake up, route, and collaborate.** One stdio MCP server. One JSON file per message. Plus a built-in task board: cards wake their assignee when they move, and a zero-dependency web kanban for the human.
 
-> **📊 Production-proven**: 1,787 messages across 5 agents (Claude Code, Hermes, Codex-based, webhook wake) in 17 days of daily multi-agent software development — 105 messages/day, zero data loss.
+> **📊 Production-proven**: 1,676 messages across 5 agents (Claude Code, Hermes, Codex-based, webhook wake) in 18 days of daily multi-agent software development — ~93 messages/day, zero data loss.
 
 Other docs: [中文](README.zh-CN.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Français](README.fr.md) · [Русский](README.ru.md)
 
@@ -21,7 +21,7 @@ Other docs: [中文](README.zh-CN.md) · [Español](README.es.md) · [Português
 
 The gap agent-mailbox fills: **agents on different CLIs, on the same machine, messaging each other asynchronously — with delivery guarantees and a human-visible board — without a single dependency.**
 
-> 🆕 **v0.3.0 — Task board**: agents now share a task surface on the same mail root. 3 new MCP tools (12 total), a zero-dependency drag-and-drop board (`--web`), and every move messages the assignee. ⚠️ **Upgrade note:** restart your agent session to pick up the new tools. → [Task board](#task-board)
+> 🆕 **v0.6.0 — Wake daemon + threads + Jev routing**: `agent-mailbox wake install` turns "mail arrived" into "agent woken" via launchd/systemd file-watchers — retry, dedup, fail-open built in. Threads are first-class (`mailbox_thread`, auto `thread_id`, legacy Re:-chain back-fill, ghost-thread warnings). Optional default-off Jev router scores what's worth waking you for. → [Wake daemon](#wake-daemon-信必达-mail-arrived--agent-woken)
 
 ---
 
@@ -167,6 +167,29 @@ Your host's webhook handler receives:
 - The config file is resolved **per mail root** (the store's own `webhook.json`), so a `MailStore(root=…)` built on a scratch root can never wake the production gateway. `webhook.json` in the default home still covers normal use.
 - Every delivered mail is also appended to `<mail-root>/sent.log` (one JSONL line: id/from/to/subject/created_at) under the same lock as the write — a webhook notification with no matching `sent.log` line never was a mail.
 
+## Wake daemon (信必达): mail arrived → agent woken
+
+The webhook above needs a gateway that is already listening. The wake daemon closes the other half: the **recipient side**, where an agent's harness must actually be pulled into a session when mail lands. One command installs it:
+
+```bash
+agent-mailbox wake install --agent ZC            # uses webhook.json for the POST target
+agent-mailbox wake install --agent ALICE --adapter claude-code    # bell + desktop toast
+agent-mailbox wake install --agent BOB --adapter generic-webhook --webhook-url https://… --webhook-secret …
+agent-mailbox wake status / uninstall ZC
+```
+
+- **How it fires**: launchd `WatchPaths` (macOS) / systemd `PathChanged=` path units (Linux) watch `~/.agent-mail/inbox/<agent>/`; every change launches one drain round (`python -m agent_mailbox.wake run --once`).
+- **Adapters**: `hermes` (POST the gateway webhook; signature style auto-adapts github/generic/slack), `generic-webhook` (your URL + secret), `claude-code` (terminal bell + desktop notification; richer hooks reserved). Unknown values fall back to hermes — waking beats silence.
+- **Reliability trio** (2026-09-22 incident review, productized): a failed POST retries 5× at 60s inside one round, then leaves the letter unmarked so the next file-watcher trigger re-drains it — mail is never dropped by the wake side; a `wake` entry in the letter's `handled_log` makes every letter wake **at most once** (idempotent); count semantics v2 wakes on all `pending` plus `acked` letters older than 600s (a handler died mid-turn) while freshly-acked mail stays quiet.
+- **Fail-open iron law**: the daemon is a separate process that only reads letter files and appends through the store's locked APIs. If wake dies, mail still lands and the next `mailbox_check` still delivers — nothing in the send path depends on it.
+- **Jev router (optional, default OFF)**: set `"jev": {"enabled": true, "api_key": …, "endpoint": …}` in `<mail-root>/wake.json` (or `wake install --jev --jev-api-key …`). Mail is scored asynchronously (Noul: does anyone need to act now? Score: urgency 0–10, below the threshold gets batched for a daily digest) without blocking the wake path; any Jev timeout/error falls back to "wake on any mail" immediately. Decisions are logged with their scores to `<mail-root>/wake-jev.log`; the api_key never appears in logs. Pure stdlib — `pip install agent-mailbox[jev]` works today and reserves the extra for a native client later.
+
+> ⚠️ macOS install writes `~/Library/LaunchAgents/com.polaris-smart.agent-mailbox-wake-<agent>.plist` and runs `launchctl load`; Linux writes user units under `~/.config/systemd/user` and enables the path unit. Use `--no-activate` to generate files without loading them.
+
+### Threads (v0.6.0, first-class)
+
+Every letter now carries a `thread_id`: fresh sends mint one, replies inherit the original's, and `mailbox_thread(thread)` replays the whole conversation oldest-first **across every agent** (inbox + archive). `mailbox_list` accepts a `thread` filter. Legacy letters are grouped heuristically by normalized subject (stacked `Re:`/`Fwd:` stripped) — a 12-deep "Re: Re: …" chain resolves to one thread; unmatchable singles stay `null` so gaps stay visible. When a thread accumulates more than 5 open (non-done) letters, `mailbox_check` returns a `ghost_warning` — the acked-sinking failure mode, surfaced before it eats a thread.
+
 ### Self-echo protection (on by default)
 
 A notification whose sender equals its target (self-echo, from == to) is **not delivered** by default: the letter still lands on disk, `mailbox_list` / `mailbox_check` are unaffected — the sender just isn't woken by its own send. The drop is audited in `sent.log` as `echo_suppressed: true`, so "there was a notification but no mail"-style disputes stay one grep away. Set `notify_self_echo: true` in the mail root's `config.json` (or env `AGENT_MAIL_NOTIFY_SELF_ECHO`) to restore delivery — restored self-echo notifications carry an `[echo] ` subject prefix (the stored letter keeps its original subject, so the prefix is regex-strippable).
@@ -198,7 +221,8 @@ An agent that claims mail (`check` → `acked`) and dies leaves it invisible to 
 | `mailbox_send(to, subject, body, priority?)` | `to` = one id, a list, or `"all"`; `dedupe?` (default true) suppresses same-hash repeats (see above) |
 | `mailbox_check(agent_id?, mark?)` | fetch pending (→ `acked`) |
 | `mailbox_reply(msg_id, body)` | routes back to the original sender (dedupe-exempt) |
-| `mailbox_list(agent_id?, status?)` | list messages, optional status filter |
+| `mailbox_list(agent_id?, status?, thread?)` | list messages, optional status / thread filters |
+| `mailbox_thread(thread)` | replay a whole thread oldest-first across agents (thread_id or any msg id) |
 | `mailbox_done(msg_id)` | mark handled |
 | `mailbox_broadcast(subject, body)` | to every registered agent; `dedupe?` per recipient |
 | `mailbox_whoami()` | directory of agents + mail root |
@@ -263,11 +287,12 @@ pytest
 
 Upgrade with `uv tool upgrade agent-mailbox` (or re-pull however you installed it).
 
-⚠️ **Restart your agent session (or reconnect the MCP client) after upgrading** — MCP tool lists are enumerated at session start, so new tools (12 now, was 9) only appear after a restart. No config changes needed; `tasks.json` is created automatically on first use.
+⚠️ **Restart your agent session (or reconnect the MCP client) after upgrading** — MCP tool lists are enumerated at session start, so new tools (13 now, was 9) only appear after a restart. No config changes needed; `tasks.json` is created automatically on first use.
 
 ## Roadmap
 
-- **v0.5.0** (current) — lifecycle hardening from the 2026-09-13 incidents (task `t-6`): **duplicate suppression** (delivery-side `semantic_hash`, same-hash non-terminal repeats within a 24h window return `{"deduped": true, "existing_id"}` with zero side effects; `dedupe: false` exempts; code-fence-raw hashing, inbox-only scope, hash→inbox index); **half-done compensation** (`record_handled` two-phase intent/outcome API as the single `handled_log` writer + `resume_plan` four-row table: process / replay / finalize / skip); **stale-`acked` reclaim** shipped earlier as `reap_stale_acked` / `python -m agent_mailbox.reap` now wired into the wake loop (reap first, count second, fail-open) with the 铁1 coupling enforced — `reap_ttl` (3600s) must stay strictly below `dedup_ttl` (24h), violations fail loudly; **wake circuit breaker** — N consecutive no-progress drain rounds latch a breaker file and stop launching turns (backoff stretches the interval, the breaker stops the bleeding).
+- **v0.6.0** (current) — the 爆款 batch: **wake daemon** (`agent-mailbox wake install` — launchd WatchPaths / systemd PathChanged fire a drain round; hermes / generic-webhook / claude-code adapters; failed POSTs retry 5×60s then requeue on the next trigger, `handled_log` wake entries make each letter wake at most once, count semantics v2 = all pending + acked>600s; fail-open iron law end to end); **first-class threads** (`thread_id` minted on send and inherited on reply, `mailbox_thread` cross-agent time-ordered replay, `--thread` list filter, legacy Re:-chain subject-key back-fill, ghost-thread warning past 5 open letters); **Jev routing bypass** (optional default-off scoring plugin: Noul gates the wake, sub-threshold scores batch into a daily digest, any failure fails open to wake-on-any-mail, decisions logged with scores, pure stdlib behind the `[jev]` extra). 13 MCP tools.
+- **v0.5.0** — lifecycle hardening from the 2026-09-13 incidents (task `t-6`): **duplicate suppression** (delivery-side `semantic_hash`, same-hash non-terminal repeats within a 24h window return `{"deduped": true, "existing_id"}` with zero side effects; `dedupe: false` exempts; code-fence-raw hashing, inbox-only scope, hash→inbox index); **half-done compensation** (`record_handled` two-phase intent/outcome API as the single `handled_log` writer + `resume_plan` four-row table: process / replay / finalize / skip); **stale-`acked` reclaim** shipped earlier as `reap_stale_acked` / `python -m agent_mailbox.reap` now wired into the wake loop (reap first, count second, fail-open) with the 铁1 coupling enforced — `reap_ttl` (3600s) must stay strictly below `dedup_ttl` (24h), violations fail loudly; **wake circuit breaker** — N consecutive no-progress drain rounds latch a breaker file and stop launching turns (backoff stretches the interval, the breaker stops the bleeding).
 - **v0.5.x (open)** — still tracked from the t-6 reviews, not in this release: `status filtering` (ask for "pending or acked" views), `identity binding` (bind MCP callers to `AGENT_MAIL_ID` against foreign checks; today's model is local trust — anyone on the machine can read any box), `wake routing` (gateway subscription `to`-filter; lives outside this repo), `unread_count` in webhook payloads, claim semantics for `mailbox_wait` (P1–P4 from the 09-13 forensics).
 - **v0.4.0** — feature batch: configurable webhook signature style (`AGENT_MAIL_SIGNATURE_STYLE`: github default / generic / slack); self-echo protection (notifications where sender == target are dropped by default, audited as `echo_suppressed` in `sent.log`; `notify_self_echo` / `AGENT_MAIL_NOTIFY_SELF_ECHO` restores delivery with an `[echo] ` subject prefix on the notification while the letter keeps its subject); new `cleanup --dry-run` maintenance command (scans for test residue, lists without deleting, `--yes` deletes after confirmation).
 - **v0.3.1** — patch batch: reply subjects no longer pile up `Re: Re:` (first reply, re-replies, and mixed-case prefixes all normalize to a single `Re:`); web board tokens use constant-time comparison (`hmac.compare_digest`) and persist across reboots (`~/.agent-mail/web_token`, mode 0600, `AGENT_MAIL_WEB_TOKEN` env always wins); `sent.log` auto-rotates one generation past 10 MB (to `sent.log.1`).

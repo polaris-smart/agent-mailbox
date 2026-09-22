@@ -17,7 +17,7 @@ import time
 
 from mcp.server.mcpserver import MCPServer
 
-from .store import MailboxError, MailStore
+from .store import MailboxError, MailStore, ghost_open_limit
 
 server = MCPServer(
     "agent-mailbox",
@@ -26,6 +26,8 @@ server = MCPServer(
         "then use mailbox_send / mailbox_check / mailbox_reply / mailbox_list / "
         "mailbox_done / mailbox_broadcast. Check your inbox when you start a session "
         "and after finishing a task — messages wait here even when the recipient is offline. "
+        "mailbox_thread(thread) replays a whole conversation in time order across "
+        "agents — prefer it over stacking Re: prefixes. "
         "Task cards: task_create / task_move / task_list manage a shared task board; "
         "creating or moving a card auto-messages the assignee, so board motion wakes "
         "agents without polling."
@@ -81,12 +83,26 @@ def mailbox_send(
 
 @server.tool()
 def mailbox_check(agent_id: str = "", mark: bool = True) -> dict:
-    """Fetch your pending messages (they become acked). Call at session start."""
+    """Fetch your pending messages (they become acked). Call at session start.
+
+    Adds ``ghosts`` when any thread you hold more than 5 open (non-done)
+    letters in — that is the acked-sinking failure mode; drain those
+    threads before starting new work.
+    """
     me = agent_id or os.environ.get("AGENT_MAIL_ID", "")
     if not me:
         raise MailboxError("agent_id required (or set AGENT_MAIL_ID env)")
-    msgs = _store_instance().check(me, mark=mark)
-    return {"agent_id": me, "unread": len(msgs), "messages": msgs}
+    st = _store_instance()
+    msgs = st.check(me, mark=mark)
+    out: dict = {"agent_id": me, "unread": len(msgs), "messages": msgs}
+    ghosts = st.ghost_threads()
+    if ghosts:
+        out["ghosts"] = ghosts
+        out["ghost_warning"] = (
+            f"{len(ghosts)} thread(s) hold more than {ghost_open_limit()} open "
+            "letters — finish these threads before starting new work"
+        )
+    return out
 
 
 @server.tool()
@@ -122,13 +138,33 @@ def mailbox_reply(msg_id: str, body: str, agent_id: str = "") -> dict:
 
 
 @server.tool()
-def mailbox_list(agent_id: str = "", status: str | None = None) -> dict:
-    """List messages in your mailbox, optionally filtered by status."""
+def mailbox_list(
+    agent_id: str = "", status: str | None = None, thread: str | None = None
+) -> dict:
+    """List messages in your mailbox, optionally filtered by status and/or thread.
+
+    ``thread`` takes a thread_id, or any subject on the thread (legacy letters
+    without a thread_id are matched by the subject key heuristic).
+    """
     me = agent_id or os.environ.get("AGENT_MAIL_ID", "")
     if not me:
         raise MailboxError("agent_id required (or set AGENT_MAIL_ID env)")
-    msgs = _store_instance().list_messages(me, status)
+    msgs = _store_instance().list_messages(me, status, thread=thread)
     return {"agent_id": me, "count": len(msgs), "messages": msgs}
+
+
+@server.tool()
+def mailbox_thread(thread: str) -> dict:
+    """Pull one thread in time order across every agent (inbox + archive).
+
+    ``thread`` may be a thread_id or any message id on the thread. Legacy
+    letters without a thread_id are included via the subject-key heuristic
+    (Re:/Fwd: prefixes stripped), so a 12-deep "Re: Re: ..." chain resolves
+    to one thread. Letters come back oldest first with their status, so the
+    full cross-agent conversation is visible in one call.
+    """
+    st = _store_instance()
+    return st.thread_messages(thread)
 
 
 @server.tool()
@@ -241,6 +277,31 @@ def main() -> None:
                 _stream.reconfigure(encoding="utf-8")
             except (OSError, ValueError):
                 pass
+
+    argv = sys.argv[1:]
+    # `agent-mailbox wake <sub>` dispatches to the wake-daemon CLI; everything
+    # before `wake` is parsed by the server parser (so `--home DIR wake install`
+    # keeps working) and forwarded as the wake root.
+    if "wake" in argv:
+        idx = argv.index("wake")
+        pre = argv[:idx]
+        import argparse as _argparse
+
+        pre_parser = _argparse.ArgumentParser(prog="agent-mailbox", add_help=False)
+        pre_parser.add_argument("--http", type=int, default=None)
+        pre_parser.add_argument("--web", type=int, default=None)
+        pre_parser.add_argument("--home", default=None)
+        pre_args, _ = pre_parser.parse_known_args(pre)
+        from .wake import wake_main
+
+        wake_args = argv[idx + 1:]
+        subcommand = next((a for a in wake_args if not a.startswith("-")), "")
+        if pre_args.home and subcommand != "uninstall" and not any(
+            a == "--root" or a.startswith("--root=") for a in wake_args
+        ):
+            wake_args = ["--root", pre_args.home, *wake_args]
+        wake_main(wake_args)
+        return
 
     parser = argparse.ArgumentParser(prog="agent-mailbox")
     parser.add_argument("--http", metavar="PORT", type=int, default=None,
