@@ -6,6 +6,7 @@ every decision with its score (never the api_key). Pure stdlib — no deps.
 """
 
 import json
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -163,7 +164,17 @@ def test_jev_decide_parses_api_response(env):
         def log_message(self, *args):
             pass
 
-    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    # HTTPServer.server_bind() calls socket.getfqdn(), which can stall ~30s
+    # on CI runners with broken reverse DNS (same fix as test_webhook.py).
+    class _Server(HTTPServer):
+        def server_bind(self):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.socket.bind(self.server_address)
+            host, port = self.socket.getsockname()[:2]
+            self.server_address = (host, port)
+            self.server_name, self.server_port = host, port
+
+    server = _Server(("127.0.0.1", 0), _Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         c.jev_endpoint = f"http://127.0.0.1:{server.server_port}/jev"
