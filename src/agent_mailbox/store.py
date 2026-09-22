@@ -23,6 +23,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 
 if sys.platform == "win32":
     import msvcrt
@@ -37,6 +38,19 @@ from .webhook import notify_new_messages
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MSG_STATUSES = ("pending", "acked", "done")
 SENT_LOG_MAX_BYTES = 10 * 1024 * 1024  # rotate sent.log one generation past this
+
+# v0.5.0 delivery-side duplicate suppression (design A) + lifecycle windows.
+# 铁1: reap_ttl must stay strictly below dedup_ttl — a reclaim window at or
+# over the dedup window could resurrect a stale acked original right when its
+# duplicate is finally allowed through. Defaults (24h / 1h) satisfy the rule;
+# config.json overrides are validated loudly in load_window_config().
+DEDUP_TTL_DEFAULT = 24 * 3600.0  # semantic-hash dedup window: 24h
+REAP_TTL_DEFAULT = 3600.0        # stale-acked reclaim: 1h (缺口3: keep 1–2h, < dedup_ttl)
+INTENT_TTL_DEFAULT = 1800.0      # 缺口4: a fresh (<30m) handling intent defers reclaim
+DEDUP_BLOCKING = ("pending", "acked")  # non-terminal states that block a re-send
+HANDLED_INTENT = "intent"        # two-phase handled_log: intent first …
+HANDLED_OUTCOME = "outcome"      # … outcome last; set_status(done) only after both
+HASH_LOG_CHARS = 16              # store full 64-hex; logs/display truncate to 16
 
 # Self-echo (from == notification target): suppressed by default (R1 of the
 # 2026-09-09 requirement); opt-in delivery marks the *notification* subject so
@@ -63,6 +77,89 @@ def notify_self_echo_enabled(root: Path) -> bool:
         return False
     return bool(cfg.get("notify_self_echo", False))
 
+
+# ------------------------------------------------------------ semantic hash
+# v0.5.0 design A: delivery-side duplicate suppression. The hash pins the
+# exact 口径 agreed in the 2026-09-13 review (缺口1): fenced ``` regions are
+# lifted out of the body first and hashed raw (original order, zero folding —
+# differently ordered code must not collapse to one hash), everything else is
+# NFKC+NFC normalized with whitespace folded.
+
+def _split_code_regions(text: str) -> tuple[str, list[str]]:
+    """Split fenced ``` regions out of ``text``.
+
+    Returns ``(prose, regions)``. Regions keep their raw lines in original
+    order (zero folding); the fence marker lines themselves are dropped. An
+    unterminated fence runs to the end of the text.
+    """
+    prose: list[str] = []
+    regions: list[str] = []
+    buf: list[str] | None = None
+    for line in text.splitlines():
+        if buf is None:
+            if line.lstrip().startswith("```"):
+                buf = []
+            else:
+                prose.append(line)
+        elif line.lstrip().startswith("```"):
+            regions.append("\n".join(buf))
+            buf = None
+        else:
+            buf.append(line)
+    if buf is not None:
+        regions.append("\n".join(buf))
+    return "\n".join(prose), regions
+
+
+def _norm_text(text: str) -> str:
+    """NFKC then NFC, fold every whitespace run to a single space."""
+    s = unicodedata.normalize("NFKC", text or "")
+    s = unicodedata.normalize("NFC", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def semantic_hash(subject: str, body: str) -> str:
+    """Content hash for delivery-side dedup (v0.5 A, 缺口1 口径).
+
+    ``sha256(norm(subject) + "\\0" + norm(body-without-fences) + "\\0"
+    + regions.join("\\0"))`` — fenced ``` regions hashed raw in original
+    order (zero folding), prose NFKC/NFC normalized with whitespace folded.
+    Returns the full 64-hex digest; truncate to ``HASH_LOG_CHARS`` for logs.
+    """
+    prose, regions = _split_code_regions(body or "")
+    payload = "\x00".join([_norm_text(subject or ""), _norm_text(prose), *regions])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def load_window_config(root: Path) -> dict[str, float]:
+    """Read and validate the lifecycle windows from ``<root>/config.json``.
+
+    Returns ``{"dedup_ttl", "reap_ttl"}`` in seconds. Defaults: dedup 24h,
+    reap 1h. 铁1: ``reap_ttl`` must be strictly below ``dedup_ttl`` —
+    violations (and a corrupt config file) raise ``MailboxError`` loudly so
+    a bad operator edit can never silently distort the windows.
+    """
+    try:
+        cfg = json.loads((root / "config.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        cfg = {}
+    except (OSError, json.JSONDecodeError) as e:
+        raise MailboxError(f"corrupt config.json: {e}") from e
+    try:
+        dedup_ttl = float(cfg.get("dedup_ttl", DEDUP_TTL_DEFAULT))
+        reap_ttl = float(cfg.get("reap_ttl", REAP_TTL_DEFAULT))
+    except (TypeError, ValueError) as e:
+        raise MailboxError(f"config.json: dedup_ttl/reap_ttl must be numbers: {e}") from e
+    if dedup_ttl <= 0 or reap_ttl <= 0:
+        raise MailboxError("config.json: dedup_ttl and reap_ttl must be positive seconds")
+    if reap_ttl >= dedup_ttl:
+        raise MailboxError(
+            f"config.json: reap_ttl ({reap_ttl:g}s) must be < dedup_ttl ({dedup_ttl:g}s) "
+            "(铁1: a reclaim window at or over the dedup window breaks duplicate suppression)"
+        )
+    return {"dedup_ttl": dedup_ttl, "reap_ttl": reap_ttl}
+
+
 # replies collapse stacked "Re:" prefixes to one, like a mail client does:
 # "Re: Re: X" and "rE: x" both become "Re: X"; a bare subject gains one.
 _STACKED_RE_PREFIX = re.compile(r"^(?:\s*re\s*:\s*)+", re.IGNORECASE)
@@ -82,10 +179,14 @@ def _handled_session(agent_id: str) -> str:
     return os.environ.get("AGENT_MAIL_SESSION", agent_id)
 
 
-def _append_handled(msg: dict[str, Any], agent_id: str, action: str) -> None:
+def _append_handled(
+    msg: dict[str, Any], agent_id: str, action: str, **fields: Any
+) -> None:
     """Append an entry to the message's ``handled_log`` (in-place, append-only)."""
     log = msg.setdefault("handled_log", [])
-    log.append({"by": _handled_session(agent_id), "at": _now_iso(), "action": action})
+    entry: dict[str, Any] = {"by": _handled_session(agent_id), "at": _now_iso(), "action": action}
+    entry.update(fields)
+    log.append(entry)
 RESERVED_IDS = {"boss"}
 
 TASK_STATUSES = ("todo", "doing", "review", "done")
@@ -125,6 +226,9 @@ class MailStore:
         (self.root / "archive").mkdir(exist_ok=True)
         self._registry_path = self.root / "registry.json"
         self._lock_path = self.root / ".lock"
+        # semantic-hash -> letter paths, per inbox, keyed by directory mtime
+        # (缺口2: send-side dedup must not O(N)-scan the box on every send).
+        self._dedup_index: dict[str, tuple[int, dict[str, list[Path]]]] = {}
 
     # ------------------------------------------------------------------ lock
 
@@ -223,8 +327,23 @@ class MailStore:
         status: str = "pending",
         reply_to: str | None = None,
         priority: str = "normal",
+        dedupe: bool = True,
     ) -> list[dict[str, Any]]:
-        """Deliver a message to one agent, many agents, or ``"all"``."""
+        """Deliver a message to one agent, many agents, or ``"all"``.
+
+        With ``dedupe=True`` (default) a recipient whose inbox already holds
+        a letter with the same ``semantic_hash`` in a non-terminal state
+        (``pending``/``acked``) inside the dedup window gets **no** new mail:
+        the per-recipient result is ``{"to": rid, "deduped": true,
+        "existing_id": <id>}`` and the call has zero side effects for that
+        recipient — nothing lands on disk, nothing is logged to ``sent.log``,
+        no webhook fires (铁2 path ①). ``dedupe=False`` exempts the send
+        (铁2 path ②). Same hash but ``done``/archived is delivered normally
+        (铁2 path ③). Only the target inboxes are consulted, never the
+        archive (缺口2). After the dedup window (default 24h) a same-hash
+        re-send is allowed through, so the queue may then legitimately hold
+        two same-hash non-terminal letters (微点2: expected, not a bug).
+        """
         if status not in MSG_STATUSES:
             raise MailboxError(f"status must be one of {MSG_STATUSES}")
         recipients = self._resolve_recipients(to)
@@ -234,10 +353,18 @@ class MailStore:
             subject = _reply_subject(subject)
         out = []
         full: list[dict[str, Any]] = []
+        windows = load_window_config(self.root)  # 铁1 gate: loud failure on bad config
+        msg_hash = semantic_hash(subject, body)
         with self._locked():
+            now = time.time()
             mid_base = _msg_id()
             for rid in recipients:
                 self._validate_id(rid)
+                if dedupe:
+                    existing = self._find_dupe(rid, msg_hash, windows["dedup_ttl"], now)
+                    if existing is not None:
+                        out.append({"to": rid, "deduped": True, "existing_id": existing})
+                        continue
                 inbox = self._inbox_dir(rid)
                 msg = {
                     "id": f"{mid_base}-{rid.lower()}",
@@ -249,12 +376,17 @@ class MailStore:
                     "status": status,
                     "reply_to": reply_to,
                     "created_at": _now_iso(),
+                    "semantic_hash": msg_hash,
                 }
                 (inbox / f"{msg['id']}.json").write_text(
                     json.dumps(msg, ensure_ascii=False, indent=1), encoding="utf-8"
                 )
                 out.append({"id": msg["id"], "to": rid})
                 full.append(msg)
+        if not full:
+            # every recipient deduped: zero side effects — no audit line, no
+            # webhook, not even sent.log rotation bookkeeping (铁2 path ①).
+            return out
         # append-only audit trail inside the lock: one JSONL line per mail
         # that really hit disk. A webhook notification without a sent.log
         # line is a phantom by definition — no more full-tree greps to
@@ -294,6 +426,62 @@ class MailStore:
         # custom-root store can never read the production gateway config.
         notify_new_messages(notify_msgs, config_root=self.root)
         return out
+
+    def _dedup_candidates(self, agent_id: str, msg_hash: str) -> list[Path]:
+        """Same-hash letter paths in the target inbox (缺口2, indexed).
+
+        The per-inbox index is a snapshot keyed by the inbox directory's
+        mtime, so letters added or removed by any process refresh it on the
+        next send; in-place status flips are re-verified from the file on
+        every hit. Only the inbox is ever scanned — the archive never
+        participates in dedup (缺口2). Callers must re-read candidates: a
+        snapshot can go stale across processes.
+        """
+        inbox = self._inbox_dir(agent_id)
+        try:
+            mtime = inbox.stat().st_mtime_ns
+        except OSError:
+            mtime = -1
+        cached = self._dedup_index.get(agent_id)
+        if cached is None or cached[0] != mtime:
+            by_hash: dict[str, list[Path]] = {}
+            for p in inbox.glob("*.json"):
+                try:
+                    m = self._read_msg(p)
+                except MailboxError:
+                    continue  # corrupt letters never participate in dedup
+                h = m.get("semantic_hash")
+                if h:
+                    by_hash.setdefault(h, []).append(p)
+            cached = (mtime, by_hash)
+            self._dedup_index[agent_id] = cached
+        return list(cached[1].get(msg_hash, ()))
+
+    def _find_dupe(
+        self, agent_id: str, msg_hash: str, dedup_ttl: float, now: float
+    ) -> str | None:
+        """Id of a same-hash non-terminal letter inside the window, else None."""
+        for p in self._dedup_candidates(agent_id, msg_hash):
+            try:
+                m = self._read_msg(p)
+            except MailboxError:
+                continue
+            if m.get("semantic_hash") != msg_hash:
+                continue  # stale snapshot or foreign file
+            if m.get("status") not in DEDUP_BLOCKING:
+                continue  # done (or already archived away) never blocks (铁2 path ③)
+            # legacy letters without a hash can't match (null hash is never
+            # back-filled); an unparsable created_at counts as fresh-block.
+            try:
+                created = datetime.fromisoformat(
+                    str(m.get("created_at", "")).replace("Z", "+00:00")
+                ).timestamp()
+            except ValueError:
+                created = now
+            if now - created >= dedup_ttl:
+                continue  # TTL 放行 (微点2: two same-hash letters may then coexist)
+            return str(m["id"])
+        return None
 
     def _resolve_recipients(self, to: str | list[str]) -> list[str]:
         if to == "all":
@@ -335,9 +523,10 @@ class MailStore:
     def reap_stale_acked(
         self,
         agent_id: str,
-        ttl_seconds: float = 3600.0,
+        ttl_seconds: float | None = None,
         *,
         now: float | None = None,
+        intent_ttl: float = INTENT_TTL_DEFAULT,
     ) -> list[str]:
         """Reclaim ``acked`` mail whose handling never completed.
 
@@ -349,9 +538,21 @@ class MailStore:
         stale ``acked_at`` is dropped, and a ``reclaimed`` entry lands in
         ``handled_log`` so the round trip stays auditable. A missing
         ``acked_at`` (pre-handled_log writers) falls back to the file mtime.
+        ``ttl_seconds=None`` resolves the mail root's configured ``reap_ttl``
+        (default 1h; 铁1 keeps it strictly below the dedup window).
+
+        缺口4: a letter whose newest handled_log ``intent`` is fresher than
+        ``intent_ttl`` (default 30m — the assumed handling timeout) is
+        skipped this round: an agent is actively on it. Pure optimization —
+        the letter simply becomes reclaimable once the intent goes stale.
+
+        This is a manual maintenance operation: nothing in the library calls
+        it automatically (N1); the wake script is the only wired caller.
         Returns the reclaimed message ids, sorted by scan order.
         """
         self._validate_id(agent_id)
+        if ttl_seconds is None:
+            ttl_seconds = load_window_config(self.root)["reap_ttl"]
         cutoff = (time.time() if now is None else now) - ttl_seconds
         inbox = self._inbox_dir(agent_id)
         reaped: list[str] = []
@@ -360,6 +561,8 @@ class MailStore:
                 m = self._read_msg(p)
                 if m.get("status") != "acked":
                     continue
+                if self._intent_fresh(m, now, intent_ttl):
+                    continue  # 缺口4: actively being handled — defer
                 stamp = m.get("acked_at")
                 if stamp:
                     try:
@@ -376,6 +579,102 @@ class MailStore:
                 p.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
                 reaped.append(m["id"])
         return reaped
+
+    def _intent_fresh(self, m: dict[str, Any], now: float | None, intent_ttl: float) -> bool:
+        """True when the newest handled_log ``intent`` is younger than ``intent_ttl``."""
+        stamps = [
+            e.get("at")
+            for e in (m.get("handled_log") or [])
+            if e.get("action") == HANDLED_INTENT
+        ]
+        if not stamps:
+            return False
+        ref = time.time() if now is None else now
+        for stamp in stamps:
+            try:
+                t = datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                continue  # unparsable stamp can't prove freshness — keep scanning
+            if ref - t < intent_ttl:
+                return True
+        return False
+
+    # --------------------------------------------------- handled_log APIs (B)
+    #
+    # v0.5 design B: the agent handling layer records its two-phase
+    # intent/outcome through the store (唯一写入方) — never by rewriting
+    # letter files by hand — so every append shares the mail-root lock and
+    # the compensation table can be evaluated from handled_log alone.
+
+    def _locate_msg(self, agent_id: str, msg_id: str) -> tuple[Path, dict[str, Any]]:
+        """Find a letter in the inbox, falling back to the archive."""
+        self._validate_id(agent_id)
+        name = f"{Path(msg_id).name}.json"
+        path = self._inbox_dir(agent_id) / name
+        if not path.exists():
+            arch = self.root / "archive" / agent_id / name
+            if arch.exists():
+                path = arch
+            else:
+                raise MailboxError(
+                    f"message {msg_id!r} not found in {agent_id}'s inbox or archive"
+                )
+        return path, self._read_msg(path)
+
+    def record_handled(
+        self, agent_id: str, msg_id: str, action: str, **fields: Any
+    ) -> dict[str, Any]:
+        """Append a ``handled_log`` entry through the store (v0.5 B).
+
+        The handling layer calls this with ``action="intent"`` when it starts
+        working a claimed letter and ``action="outcome"`` when the work is
+        finished (before ``set_status(done)``). Every append reuses the
+        mail-root lock; extra keyword fields (e.g. ``note=``) ride along on
+        the entry. Returns the updated message.
+        """
+        path, m = self._locate_msg(agent_id, msg_id)
+        with self._locked():
+            m = self._read_msg(path)  # re-read under the lock
+            _append_handled(m, agent_id, action, **fields)
+            path.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
+        return m
+
+    def resume_plan(self, agent_id: str, msg_id: str) -> dict[str, Any]:
+        """Classify a half-handled letter per the v0.5 §3 compensation table.
+
+        Reads ``handled_log`` only ("看 log 到哪一段") and returns
+        ``{"id", "status", "intent", "outcome", "resume"}`` where ``resume``
+        is one of:
+
+        - ``"process"``  — pending with no records: normal handling, start
+          at the intent. ``acked`` with no records at all resolves here too
+          (小项1: claimed then crashed before the intent — same treatment).
+        - ``"replay"``   — intent recorded, outcome missing: idempotently
+          redo the handling body, then record the outcome.
+        - ``"finalize"`` — intent and outcome both recorded but the letter
+          is not ``done`` yet: only ``set_status(done)`` remains.
+        - ``"skip"``     — already terminal (done); nothing to resume.
+        """
+        _, m = self._locate_msg(agent_id, msg_id)
+        log = m.get("handled_log") or []
+        has_intent = any(e.get("action") == HANDLED_INTENT for e in log)
+        has_outcome = any(e.get("action") == HANDLED_OUTCOME for e in log)
+        status = m.get("status")
+        if status == "done":
+            resume = "skip"
+        elif has_intent and has_outcome:
+            resume = "finalize"
+        elif has_intent:
+            resume = "replay"
+        else:
+            resume = "process"
+        return {
+            "id": m["id"],
+            "status": status,
+            "intent": has_intent,
+            "outcome": has_outcome,
+            "resume": resume,
+        }
 
     def list_messages(self, agent_id: str, status: str | None = None) -> list[dict[str, Any]]:
         inbox = self._inbox_dir(agent_id)
