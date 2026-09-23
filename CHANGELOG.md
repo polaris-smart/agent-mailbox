@@ -13,7 +13,7 @@ Security hardening + closing three long-open v0.5.x items. Default behavior is u
 ### Security
 
 - **SECURITY.md**: vulnerability reporting channel (GitHub Security Advisories), supported versions, and the security model stated in the open — local trust by default, `identity_binding` as the opt-in hardening mode.
-- **Identity binding (opt-in, fail-open)**: `identity_binding` in `<mail-root>/config.json` (`{"enabled": true, "<agent_id>": "<sha256(token) hex>"}`) pins agent ids to tokens. Bound callers must present `AGENT_MAIL_TOKEN` — sha256, compared in constant time (`hmac.compare_digest`, per the web.py precedent) — or every tool call fails with `identity mismatch`. Unbound agents and the disabled default keep today's local-trust behavior; a malformed block fails loudly at server startup, never silently degrading to "disabled".
+- **Identity binding (opt-in)**: `identity_binding` in `<mail-root>/config.json` (`{"enabled": true, "<agent_id>": "<sha256(token) hex>"}`) pins agent ids to tokens. Semantics pinned down: **not enabled → allow (local trust remains the default); token mismatch → reject with `identity mismatch`; malformed config → fail loudly at startup**. Bound callers present `AGENT_MAIL_TOKEN` — sha256, compared in constant time (`hmac.compare_digest`, per the web.py precedent). Unbound agents and the disabled default keep today's local-trust behavior; a malformed block fails loudly at server startup, never silently degrading to "disabled".
 
 ### Added
 
