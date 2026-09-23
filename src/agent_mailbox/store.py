@@ -525,7 +525,13 @@ class MailStore:
         # outside the file lock: optional webhook wake-up, best-effort.
         # config_root binds the webhook.json lookup to THIS store's root so a
         # custom-root store can never read the production gateway config.
-        notify_new_messages(notify_msgs, config_root=self.root)
+        # unread_count (v0.6.2): per-recipient pending tally at notification
+        # time, freshly landed letters included; best-effort like the POST.
+        unread = {
+            rid: len(self.list_messages(rid, status="pending"))
+            for rid in {str(m["to"]) for m in notify_msgs}
+        }
+        notify_new_messages(notify_msgs, config_root=self.root, unread_counts=unread)
         return out
 
     def _dedup_candidates(self, agent_id: str, msg_hash: str) -> list[Path]:

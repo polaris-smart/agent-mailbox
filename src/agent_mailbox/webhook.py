@@ -122,11 +122,26 @@ def _validate_url(url: str, allow_public: bool = False) -> None:
             raise ValueError(f"webhook resolves to non-private {ip}")
 
 
-def post_message(url: str, secret: str, message: dict, timeout: float = 3.0) -> bool:
-    """POST one message as a signed JSON event. Returns True on 2xx."""
+def post_message(
+    url: str,
+    secret: str,
+    message: dict,
+    timeout: float = 3.0,
+    unread_count: int | None = None,
+) -> bool:
+    """POST one message as a signed JSON event. Returns True on 2xx.
+
+    ``unread_count`` (optional, v0.6.2) rides on the payload top level as a
+    plain int — the recipient's pending-mail count at notification time.
+    ``None`` (wake-adapter callers) omits the field entirely: existing
+    payload consumers see byte-identical events as before.
+    """
+    event: dict = {"event": EVENT_TYPE, "event_type": EVENT_TYPE, "message": message}
+    if unread_count is not None:
+        event["unread_count"] = int(unread_count)
     payload = json.dumps(
         # event_type is the key Hermes gateway reads; event kept as an alias
-        {"event": EVENT_TYPE, "event_type": EVENT_TYPE, "message": message},
+        event,
         ensure_ascii=False,
     ).encode()
     style = signature_style()
@@ -167,8 +182,14 @@ def notify_new_messages(
     url: str | None = None,
     secret: str = "",
     config_root: str | os.PathLike[str] | None = None,
+    unread_counts: dict[str, int] | None = None,
 ) -> None:
-    """Fire-and-forget webhook for freshly persisted mail. Never raises."""
+    """Fire-and-forget webhook for freshly persisted mail. Never raises.
+
+    ``unread_counts`` maps recipient id → pending-letter count at
+    notification time (supplied by the store, v0.6.2); recipients without an
+    entry get no ``unread_count`` field.
+    """
     if not messages:
         return
     if url is None:
@@ -180,5 +201,7 @@ def notify_new_messages(
         _validate_url(url)
     except ValueError:
         return
+    counts = unread_counts or {}
     for m in messages:
-        post_message(url, secret, m)
+        count = counts.get(str(m.get("to", "")))
+        post_message(url, secret, m, unread_count=count)

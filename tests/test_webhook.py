@@ -236,3 +236,42 @@ def test_send_appends_sent_log_audit(tmp_path, monkeypatch):
     assert len(lines) == 1
     entry = json.loads(lines[0])
     assert entry["subject"] == "audited" and entry["to"] == "HS"
+
+
+# ------------------------------------------------------------------ unread_count (v0.6.2)
+
+def test_send_payload_carries_unread_count(sink, tmp_path, monkeypatch):
+    """payload['unread_count'] = recipient's pending tally at notify time,
+    the freshly landed letter included; a second letter sees the grow."""
+    url, received = sink
+    monkeypatch.setenv("AGENT_MAIL_WEBHOOK_URL", url)
+    monkeypatch.setenv("AGENT_MAIL_HOME", str(tmp_path))
+
+    st = MailStore(root=tmp_path / "mail")
+    st.register("HS")
+    st.send(from_id="ZC", to="HS", subject="first", body="b")
+    assert _wait_for(lambda: len(received) == 1)
+    assert json.loads(received[0][1])["unread_count"] == 1
+
+    st.send(from_id="ZC", to="HS", subject="second", body="b", dedupe=False)
+    assert _wait_for(lambda: len(received) == 2)
+    assert json.loads(received[1][1])["unread_count"] == 2
+
+
+def test_unread_count_zero_when_letter_not_pending(sink, tmp_path, monkeypatch):
+    url, received = sink
+    monkeypatch.setenv("AGENT_MAIL_WEBHOOK_URL", url)
+    monkeypatch.setenv("AGENT_MAIL_HOME", str(tmp_path))
+
+    st = MailStore(root=tmp_path / "mail")
+    st.register("HS")
+    st.send(from_id="ZC", to="HS", subject="done on arrival", body="b", status="done")
+    assert _wait_for(lambda: len(received) == 1)
+    assert json.loads(received[0][1])["unread_count"] == 0
+
+
+def test_post_message_without_count_omits_field(sink):
+    """Wake-adapter callers pass no count: payload stays byte-compatible."""
+    url, received = sink
+    post_message(url, "", {"id": "m1"})
+    assert "unread_count" not in json.loads(received[0][1])
