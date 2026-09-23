@@ -261,9 +261,12 @@ def mailbox_wait(agent_id: str = "", timeout_seconds: float = 25.0) -> dict:
     st = _store_instance()
     deadline = time.time() + max(1.0, min(timeout_seconds, 60.0))
     while True:
-        msgs = st.list_messages(me, status="pending")
-        if msgs:
-            got = st.check(me, mark=True)
+        # Atomic claim (v0.6.2): list + ack in one locked pass, so a second
+        # waiter on this mailbox can never re-consume the same batch. A
+        # claimed-but-unhandled letter stays recoverable via the stale-acked
+        # reap round (fail-open).
+        got = st.claim(me)
+        if got:
             return {"agent_id": me, "received": len(got), "messages": got}
         if time.time() >= deadline:
             return {"agent_id": me, "received": 0, "messages": [], "timeout": True}

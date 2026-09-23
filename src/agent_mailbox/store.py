@@ -764,6 +764,38 @@ class MailStore:
         msgs.sort(key=lambda m: ({"high": 0, "normal": 1, "low": 2}.get(m.get("priority", "normal"), 1), m["id"]))
         return msgs
 
+    def claim(self, agent_id: str) -> list[dict[str, Any]]:
+        """Atomically claim all pending mail: return it flipped to ``acked``
+        in one locked pass (v0.6.2 T3 — mailbox_wait claim semantics).
+
+        ``mailbox_wait`` used to list pending mail and then consume it via
+        ``check()`` in a second unlocked step, so two waiters on one mailbox
+        could both observe the same pending batch and race each other for
+        it. Claim is the single-step fix: the second waiter's locked pass
+        never sees letters the first one already claimed, so a batch is
+        consumed exactly once. Each claimed letter records ``claimed_by``
+        (the claiming agent id) plus a ``claimed`` handled_log entry.
+        Fail-open: a claimed-but-never-handled letter is ordinary acked
+        mail — ``reap_stale_acked`` (铁1: reap_ttl < dedup_ttl, unchanged)
+        returns it to ``pending`` and drops the stale ``claimed_by``, so
+        nothing is lost.
+        """
+        inbox = self._inbox_dir(agent_id)
+        msgs = []
+        with self._locked():
+            for p in sorted(inbox.glob("*.json")):
+                m = self._read_msg(p)
+                if m.get("status") != "pending":
+                    continue
+                m["status"] = "acked"
+                m["acked_at"] = _now_iso()
+                m["claimed_by"] = agent_id
+                _append_handled(m, agent_id, "claimed")
+                p.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
+                msgs.append(m)
+        msgs.sort(key=lambda m: ({"high": 0, "normal": 1, "low": 2}.get(m.get("priority", "normal"), 1), m["id"]))
+        return msgs
+
     def reap_stale_acked(
         self,
         agent_id: str,
@@ -819,6 +851,7 @@ class MailStore:
                     continue
                 m["status"] = "pending"
                 m.pop("acked_at", None)
+                m.pop("claimed_by", None)  # v0.6.2: the stale claim dies with the ack
                 _append_handled(m, agent_id, "reclaimed")
                 p.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
                 reaped.append(m["id"])
