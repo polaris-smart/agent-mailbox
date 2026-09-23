@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-09-23
+
+Security hardening + closing three long-open v0.5.x items. Default behavior is unchanged: every new capability is opt-in or additive until configured.
+
+### Security
+
+- **SECURITY.md**: vulnerability reporting channel (GitHub Security Advisories), supported versions, and the security model stated in the open — local trust by default, `identity_binding` as the opt-in hardening mode.
+- **Identity binding (opt-in, fail-open)**: `identity_binding` in `<mail-root>/config.json` (`{"enabled": true, "<agent_id>": "<sha256(token) hex>"}`) pins agent ids to tokens. Bound callers must present `AGENT_MAIL_TOKEN` — sha256, compared in constant time (`hmac.compare_digest`, per the web.py precedent) — or every tool call fails with `identity mismatch`. Unbound agents and the disabled default keep today's local-trust behavior; a malformed block fails loudly at server startup, never silently degrading to "disabled".
+
+### Added
+
+- **`unread_count` in webhook payloads**: the recipient's pending-letter count at notification time, top-level on the POSTed event (pure addition — callers that pass no count, like the wake adapters, emit payloads without the field).
+- **Claim semantics for `mailbox_wait`** (P1–P4 from the 2026-09-13 forensics): a new locked single-pass `MailStore.claim` returns pending letters already flipped to `acked`, stamped `claimed_by` with a `claimed` handled_log entry, so two waiters on one mailbox can never consume the same batch (the old list-then-check gap let them race and wake empty). Fail-open unchanged: a claimed-but-unhandled letter stays ordinary acked mail for the stale-acked reap round, which now also drops the stale `claimed_by`.
+
 ## [0.6.1] — 2026-09-23
 
 Docs-only hotfix: v0.6.0 updated only the English README; every other doc surface was still up to three versions behind.
@@ -62,7 +76,8 @@ Docs-only hotfix: v0.6.0 updated only the English README; every other doc surfac
 - Web board tokens use constant-time comparison (`hmac.compare_digest`, both sites) and persist across reboots (`~/.agent-mail/web_token`, mode 0600; `AGENT_MAIL_WEB_TOKEN` env always wins).
 - `sent.log` auto-rotates one generation past 10 MB (`os.replace` → `sent.log.1`).
 
-[Unreleased]: https://github.com/polaris-smart/agent-mailbox/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/polaris-smart/agent-mailbox/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/polaris-smart/agent-mailbox/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/polaris-smart/agent-mailbox/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/polaris-smart/agent-mailbox/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/polaris-smart/agent-mailbox/compare/v0.4.0...v0.5.0

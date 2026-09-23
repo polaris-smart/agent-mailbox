@@ -7,3 +7,4 @@ dist/
 .env
 .test-mail2/
 .mimosa/
+.claude-flow/

@@ -6,7 +6,7 @@
 
 📖 **Docs** : [English](README.md) · [中文](README.zh-CN.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Français](README.fr.md) · [Русский](README.ru.md)
 
-> 🆕 **v0.6.0 — Wake daemon + Threads + routage Jev** : `agent-mailbox wake install` transforme « du courrier est arrivé » en « agent réveillé » via des surveillants de fichiers launchd/systemd — retry, dédup et fail-open intégrés. Threads de première classe (`mailbox_thread`, `thread_id` automatique, rattrapage des chaînes `Re:` historiques, alertes de threads fantômes) et routeur Jev optionnel (désactivé par défaut) qui note ce qui mérite de vous réveiller. 13 outils MCP au total. ⚠️ Redémarrez votre session d'agent pour charger les nouveaux outils. → Détails (en anglais) : [README.md](README.md)
+> 🆕 **v0.6.2 — Durcissement de la sécurité** : `identity_binding` optionnel lie les appelants MCP aux ids d'agent via `AGENT_MAIL_TOKEN` (opt-in, fail-open — la confiance locale par défaut est inchangée ; une config corrompue échoue bruyamment au démarrage). Les payloads webhook transportent désormais le `unread_count` du destinataire, et `mailbox_wait` réclame le courrier de façon atomique (`acked` + `claimed_by` en une seule passe sous verrou) — deux waiters ne consomment jamais le même lot. Modèle et signalement : [SECURITY.md](SECURITY.md). Détails (en anglais) : [README.md](README.md)
 
 ---
 

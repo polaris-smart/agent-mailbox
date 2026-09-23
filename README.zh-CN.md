@@ -6,7 +6,7 @@
 
 📖 **文档**: [English](README.md) · [中文](README.zh-CN.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Français](README.fr.md) · [Русский](README.ru.md)
 
-> 🆕 **v0.6.0 —— Wake daemon + Threads + Jev 分流**：`agent-mailbox wake install` 用 launchd/systemd 文件监听把「信到了」变成「agent 被唤醒」——重试、去重、fail-open 全部内建。Threads 一等公民（`mailbox_thread`、自动 `thread_id`、旧信 Re: 链回填、ghost 线程告警）。可选、默认关闭的 Jev 路由器给「值得唤醒」的信打分。共 13 个 MCP 工具。→ [Wake daemon](#wake-daemon信必达新信落盘即唤醒)
+> 🆕 **v0.6.2 —— 安全加固**：可选的 **identity binding** 把 MCP 调用方经 `AGENT_MAIL_TOKEN` 绑定到 agent 身份（默认关闭、fail-open——默认本机信任行为不变；配置损坏启动即响亮失败）。webhook 负载新增收件人 `unread_count`；`mailbox_wait` 改原子认领（单趟锁内 `acked` + `claimed_by`），两个 waiter 不会重复消费同一批信。安全模型与报漏渠道见 [SECURITY.md](SECURITY.md)。上一版：[Wake daemon](#wake-daemon信必达新信落盘即唤醒)
 
 ---
 
@@ -218,9 +218,10 @@ pytest
 
 ## Roadmap
 
-- **v0.6.0**（当前）—— 爆款批：**wake daemon**（`agent-mailbox wake install`——launchd WatchPaths / systemd PathChanged 触发一轮清信；hermes / generic-webhook / claude-code 三适配器；POST 失败 5×60s 重试后留待下轮触发补投，`handled_log` wake 条目保证每封信至多唤醒一次，计数口径 v2 = 全部 pending + acked>600s；端到端 fail-open 铁律）；**一等公民 threads**（发信铸造 `thread_id`、回信继承，`mailbox_thread` 跨 agent 时间序回放，`--thread` 列表过滤，旧信 Re: 链主题键回填，超 5 封未办结 ghost 线程告警）；**Jev 分流旁路**（可选默认关闭的打分插件：Noul 门控唤醒，低于阈值归入每日摘要，任何失败即回落有信即醒，决策连同分数留痕，纯 stdlib 藏在 `[jev]` extra 后）。13 个 MCP 工具。
+- **v0.6.2**（当前）—— 安全加固 + v0.5.x 收口：**SECURITY.md**（GitHub Security Advisory 报漏渠道、支持版本、公开言明的本机信任安全模型）；**identity binding**（`config.json` 可选 `identity_binding`：被绑定的 agent id 必须出示 `AGENT_MAIL_TOKEN`——sha256 + `hmac.compare_digest` 常量时间比较——否则调用以 `identity mismatch` 拒绝；默认关闭、未绑定身份行为不变，配置损坏启动即响亮失败）；**webhook 负载 `unread_count`**（通知时点收件人 pending 计数，顶层字段、纯增量）；**`mailbox_wait` 认领语义**（锁内原子 `claim()`：信返回即 `acked` + `claimed_by`，第二个 waiter 永不重复消费同一批，过期认领随 acked→pending 回收一并清除）。
+- **v0.6.0** —— 爆款批：**wake daemon**（`agent-mailbox wake install`——launchd WatchPaths / systemd PathChanged 触发一轮清信；hermes / generic-webhook / claude-code 三适配器；POST 失败 5×60s 重试后留待下轮触发补投，`handled_log` wake 条目保证每封信至多唤醒一次，计数口径 v2 = 全部 pending + acked>600s；端到端 fail-open 铁律）；**一等公民 threads**（发信铸造 `thread_id`、回信继承，`mailbox_thread` 跨 agent 时间序回放，`--thread` 列表过滤，旧信 Re: 链主题键回填，超 5 封未办结 ghost 线程告警）；**Jev 分流旁路**（可选默认关闭的打分插件：Noul 门控唤醒，低于阈值归入每日摘要，任何失败即回落有信即醒，决策连同分数留痕，纯 stdlib 藏在 `[jev]` extra 后）。13 个 MCP 工具。
 - **v0.5.0** —— 源自 2026-09-13 事故（任务 t-6）的生命周期加固：**投递侧去重**（`semantic_hash`，24h 窗内同哈希非终态重复投递返回 `{"deduped": true, "existing_id"}` 零副作用；`dedupe: false` 豁免；代码围栏原文哈希、仅收件箱范围、hash→inbox 索引）；**半办结补偿**（`record_handled` 两段式 intent/outcome API 作为 `handled_log` 唯一写入方 + `resume_plan` 四行判定表：process / replay / finalize / skip）；**过期 acked 回收**（`reap_stale_acked` / `python -m agent_mailbox.reap`）接入唤醒循环（先回收后计数、fail-open），并强制铁1——`reap_ttl`（3600s）必须严格小于 `dedup_ttl`（24h），违例在配置加载时响亮失败；**唤醒熔断**——连续 N 轮无进展即锁存熔断文件并停止发起清信轮（backoff 拉长间隔，熔断止血）。
-- **v0.5.x（开放）**—— 仍跟踪自 t-6 复盘、未随本版发布：状态过滤（"pending 或 acked" 视图）、身份绑定（把 MCP 调用方绑定到 `AGENT_MAIL_ID` 防外来 check；当前模型是本机信任——机器上任何人都能读任何信箱）、唤醒路由（网关订阅 `to` 过滤；在本仓库之外）、webhook 负载加 `unread_count`、`mailbox_wait` 的认领语义（09-13 取证的 P1–P4）。
+- **v0.5.x（开放）**—— 仍跟踪自 t-6 复盘：状态过滤（"pending 或 acked" 视图）、唤醒路由（网关订阅 `to` 过滤；在本仓库之外）。已于 v0.6.2 兑现：~~身份绑定~~、~~webhook 负载 `unread_count`~~、~~`mailbox_wait` 认领语义~~。
 - **v0.4.0** —— 功能批：webhook 签名风格可配（`AGENT_MAIL_SIGNATURE_STYLE`：github 默认 / generic / slack）；自回声防护（`from == 收通知人` 的通知默认不投递，`sent.log` 记 `echo_suppressed` 留痕，`notify_self_echo` / `AGENT_MAIL_NOTIFY_SELF_ECHO` 恢复投递并给通知主题加 `[echo] ` 前缀，信件原文主题不变）；新增 `cleanup --dry-run` 维护命令（扫描测试残留只列不删，`--yes` 真删需二次确认）。
 - **v0.3.1** —— 小修批：回信主题不再堆积 `Re: Re:`（首答/二次回复/大小写混写均归一为单个 `Re:`）；Web 看板 token 改常数时间比较（`hmac.compare_digest`）并跨重启持久化（`~/.agent-mail/web_token`，0600，env `AGENT_MAIL_WEB_TOKEN` 永远优先）；`sent.log` 超 10MB 自动轮转一代（`sent.log.1`）。
 - **v0.3.0**—— 任务看板 + Web 看板：`task_create` / `task_move` / `task_list`，严格 todo→doing→review→done 状态机；建卡/挪卡自动给负责人发信，看板动作零轮询唤醒 agent。`--web 8643` 提供 token 保护的零依赖看板 UI，人类拖卡走同一唤醒链路。消息 + 任务 + 唤醒 + 看板，依旧零依赖。
