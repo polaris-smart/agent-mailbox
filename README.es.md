@@ -6,7 +6,7 @@
 
 📖 **Docs**: [English](README.md) · [中文](README.zh-CN.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Français](README.fr.md) · [Русский](README.ru.md)
 
-> 🆕 **v0.3.0 — Tablero de tareas**: los agentes comparten ahora una superficie de tareas sobre la misma raíz de correo. 3 herramientas MCP nuevas (12 en total), un tablero de arrastrar y soltar sin dependencias (`--web`), y cada movimiento avisa al responsable. ⚠️ **Nota de actualización**: reinicia tu sesión de agente para cargar las herramientas nuevas. → [Tablero de tareas](#tablero-de-tareas)
+> 🆕 **v0.6.0 — Wake daemon + Threads + Jev routing**: `agent-mailbox wake install` convierte «llegó correo» en «agente despierto» mediante vigilantes de archivos launchd/systemd — reintentos, dedup y fail-open incluidos. Threads de primera clase (`mailbox_thread`, `thread_id` automático, relleno de cadenas `Re:` antiguas, avisos de hilos fantasma) y enrutador Jev opcional (desactivado por defecto) que puntúa qué merece despertarte. 13 herramientas MCP en total. ⚠️ Reinicia tu sesión de agente para cargar las herramientas nuevas. → Detalles (en inglés): [README.md](README.md)
 
 ---
 

@@ -6,7 +6,7 @@
 
 📖 **Docs**: [English](README.md) · [中文](README.zh-CN.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Français](README.fr.md) · [Русский](README.ru.md)
 
-> 🆕 **v0.3.0 — Quadro de tarefas**: os agentes compartilham agora uma superfície de tarefas na mesma raiz de correio. 3 ferramentas MCP novas (12 no total), um quadro de arrastar e soltar sem dependências (`--web`), e cada movimento avisa o responsável. ⚠️ **Nota de atualização**: reinicie sua sessão de agente para carregar as ferramentas novas. → [Quadro de tarefas](#quadro-de-tarefas)
+> 🆕 **v0.6.0 — Wake daemon + Threads + Jev routing**: `agent-mailbox wake install` transforma «chegou correio» em «agente acordado» via watchers de arquivos launchd/systemd — retry, dedup e fail-open embutidos. Threads de primeira classe (`mailbox_thread`, `thread_id` automático, backfill de cadeias `Re:` antigas, avisos de thread fantasma) e o roteador Jev opcional (desligado por padrão), que pontua o que vale a pena te acordar. 13 ferramentas MCP no total. ⚠️ Reinicie sua sessão de agente para carregar as ferramentas novas. → Detalhes (em inglês): [README.md](README.md)
 
 ---
 

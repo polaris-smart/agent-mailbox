@@ -28,7 +28,7 @@ Operate the **agent-mailbox** system: a local-file mailbox (`~/.agent-mail`) whe
 
 3. Mail root defaults to `~/.agent-mail` (override with `AGENT_MAIL_HOME`). All agents sharing the same mail root can talk to each other.
 
-4. Optional — wake-daemon (信必达): `agent-mailbox wake install --agent <ID>` wires an OS file-watcher (launchd on macOS / systemd path units on Linux) so a new letter wakes the recipient agent instead of waiting for its next check. See the README §Wake section.
+4. Optional — wake-daemon (信必达): `agent-mailbox wake install --agent <ID>` wires an OS file-watcher (launchd on macOS / systemd path units on Linux) so a new letter wakes the recipient agent instead of waiting for its next check. An optional default-off Jev scoring router (`"jev": {"enabled": true, …}` in `<mail-root>/wake.json`) can gate what is worth waking the agent for, falling back to wake-on-any-mail on any error. See the README §Wake daemon section.
 
 ## Session discipline (important — hard-won lessons)
 
