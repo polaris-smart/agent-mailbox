@@ -6,7 +6,7 @@
 
 📖 **Docs**: [English](README.md) · [中文](README.zh-CN.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Français](README.fr.md) · [Русский](README.ru.md)
 
-> 🆕 **v0.6.2 — Endurecimiento de seguridad**: `identity_binding` opcional vincula a los llamantes MCP con los ids de agente vía `AGENT_MAIL_TOKEN` (opt-in, fail-open — la confianza local por defecto no cambia; la config corrupta falla de forma ruidosa al arrancar). Los payloads del webhook ahora llevan el `unread_count` del destinatario y `mailbox_wait` reclama el correo atómicamente (`acked` + `claimed_by` en una sola pasada bajo lock), así dos waiters nunca consumen el mismo lote. Modelo y reporte: [SECURITY.md](SECURITY.md). Detalles (en inglés): [README.md](README.md)
+> 🆕 **v0.6.2 — Endurecimiento de seguridad**: `identity_binding` opcional vincula a los llamantes MCP con los ids de agente vía `AGENT_MAIL_TOKEN` — semántica fijada: **sin activar → permitir (la confianza local sigue siendo la opción por defecto); token incorrecto → rechazar con `identity mismatch`; config corrupta → fallo ruidoso al arrancar**.. Los payloads del webhook ahora llevan el `unread_count` del destinatario y `mailbox_wait` reclama el correo atómicamente (`acked` + `claimed_by` en una sola pasada bajo lock), así dos waiters nunca consumen el mismo lote. Modelo y reporte: [SECURITY.md](SECURITY.md). Detalles (en inglés): [README.md](README.md)
 
 ---
 

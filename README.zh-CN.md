@@ -6,7 +6,7 @@
 
 📖 **文档**: [English](README.md) · [中文](README.zh-CN.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Français](README.fr.md) · [Русский](README.ru.md)
 
-> 🆕 **v0.6.2 —— 安全加固**：可选的 **identity binding** 把 MCP 调用方经 `AGENT_MAIL_TOKEN` 绑定到 agent 身份（默认关闭、fail-open——默认本机信任行为不变；配置损坏启动即响亮失败）。webhook 负载新增收件人 `unread_count`；`mailbox_wait` 改原子认领（单趟锁内 `acked` + `claimed_by`），两个 waiter 不会重复消费同一批信。安全模型与报漏渠道见 [SECURITY.md](SECURITY.md)。上一版：[Wake daemon](#wake-daemon信必达新信落盘即唤醒)
+> 🆕 **v0.6.2 —— 安全加固**：可选的 **identity binding** 把 MCP 调用方经 `AGENT_MAIL_TOKEN` 绑定到 agent 身份——语义钉死：**未启用 → 放行（本地信任仍是默认）；token 不匹配 → 以 `identity mismatch` 拒绝；配置损坏 → 启动即响亮失败**。webhook 负载新增收件人 `unread_count`；`mailbox_wait` 改原子认领（单趟锁内 `acked` + `claimed_by`），两个 waiter 不会重复消费同一批信。安全模型与报漏渠道见 [SECURITY.md](SECURITY.md)。上一版：[Wake daemon](#wake-daemon信必达新信落盘即唤醒)
 
 ---
 

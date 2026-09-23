@@ -21,7 +21,7 @@ Other docs: [中文](README.zh-CN.md) · [Español](README.es.md) · [Português
 
 The gap agent-mailbox fills: **agents on different CLIs, on the same machine, messaging each other asynchronously — with delivery guarantees and a human-visible board — without a single dependency.**
 
-> 🆕 **v0.6.2 — Security hardening**: optional **identity binding** pins MCP callers to agent ids via `AGENT_MAIL_TOKEN` (opt-in, fail-open — default local trust unchanged; malformed config fails loudly). Webhook payloads now carry the recipient's `unread_count`, and `mailbox_wait` claims mail atomically (`acked` + `claimed_by` in one locked pass) so two waiters never consume the same batch. Model & reporting: [SECURITY.md](SECURITY.md). Previous: [Wake daemon](#wake-daemon-信必达-mail-arrived--agent-woken)
+> 🆕 **v0.6.2 — Security hardening**: optional **identity binding** pins MCP callers to agent ids via `AGENT_MAIL_TOKEN` — semantics pinned down: **not enabled → allow (local trust remains the default); token mismatch → reject with `identity mismatch`; malformed config → fail loudly at startup**. Webhook payloads now carry the recipient's `unread_count`, and `mailbox_wait` claims mail atomically (`acked` + `claimed_by` in one locked pass) so two waiters never consume the same batch. Model & reporting: [SECURITY.md](SECURITY.md). Previous: [Wake daemon](#wake-daemon-信必达-mail-arrived--agent-woken)
 
 ---
 
