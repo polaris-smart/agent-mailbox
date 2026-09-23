@@ -160,6 +160,49 @@ def load_window_config(root: Path) -> dict[str, float]:
     return {"dedup_ttl": dedup_ttl, "reap_ttl": reap_ttl}
 
 
+def load_identity_binding(root: Path) -> dict[str, Any]:
+    """Read the optional ``identity_binding`` block from ``<root>/config.json``.
+
+    Schema::
+
+        {"identity_binding": {"enabled": true, "<agent_id>": "<sha256(token) hex>"}}
+
+    Returns ``{"enabled": bool, "<agent_id>": "<64-hex>"}``; ``{"enabled": False}``
+    when the block is absent — binding off, local-trust behavior unchanged.
+    A malformed block raises ``MailboxError`` loudly (same doctrine as
+    ``load_window_config``): a half-written security boundary must never
+    silently degrade to "disabled".
+    """
+    try:
+        cfg = json.loads((root / "config.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"enabled": False}
+    except (OSError, json.JSONDecodeError) as e:
+        raise MailboxError(f"corrupt config.json: {e}") from e
+    binding = cfg.get("identity_binding")
+    if binding is None:
+        return {"enabled": False}
+    if not isinstance(binding, dict):
+        raise MailboxError("config.json: identity_binding must be an object")
+    enabled = binding.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise MailboxError("config.json: identity_binding.enabled must be a boolean")
+    table: dict[str, Any] = {"enabled": enabled}
+    for agent_id, token_hash in binding.items():
+        if agent_id == "enabled":
+            continue
+        if not AGENT_ID_RE.match(agent_id):
+            raise MailboxError(
+                f"config.json: identity_binding key {agent_id!r} is not a valid agent id"
+            )
+        if not isinstance(token_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", token_hash):
+            raise MailboxError(
+                f"config.json: identity_binding[{agent_id}] must be a sha256 hex digest"
+            )
+        table[agent_id] = token_hash
+    return table
+
+
 # replies collapse stacked "Re:" prefixes to one, like a mail client does:
 # "Re: Re: X" and "rE: x" both become "Re: X"; a bare subject gains one.
 _STACKED_RE_PREFIX = re.compile(r"^(?:\s*re\s*:\s*)+", re.IGNORECASE)

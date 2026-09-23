@@ -11,13 +11,15 @@ Run:  ``agent-mailbox``            (stdio transport, for host apps)
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import os
 import sys
 import time
 
 from mcp.server.mcpserver import MCPServer
 
-from .store import MailboxError, MailStore, ghost_open_limit
+from .store import MailboxError, MailStore, ghost_open_limit, load_identity_binding
 
 server = MCPServer(
     "agent-mailbox",
@@ -35,6 +37,7 @@ server = MCPServer(
 )
 
 _store: MailStore | None = None
+_binding: dict | None = None  # identity binding table, loaded once per process
 
 
 def _store_instance() -> MailStore:
@@ -44,11 +47,47 @@ def _store_instance() -> MailStore:
     return _store
 
 
+def _identity_binding() -> dict:
+    """The identity binding table, read once at server startup.
+
+    A malformed ``identity_binding`` block raises here (fail-loud) — via
+    ``main()`` before the transport starts, or on the first tool call — so a
+    half-written security boundary never silently degrades to "disabled".
+    """
+    global _binding
+    if _binding is None:
+        _binding = load_identity_binding(_store_instance().root)
+    return _binding
+
+
+def _verify_identity(agent_id: str) -> None:
+    """Enforce identity binding for one tool call.
+
+    With binding enabled, an agent listed in the table must present the
+    ``AGENT_MAIL_TOKEN`` env whose sha256 matches the stored hash — compared
+    in constant time, per the web.py token precedent. A mismatch rejects the
+    call with ``identity mismatch``. Identities not in the table, and every
+    call when binding is disabled, keep the default local-trust behavior
+    (fail-open compatibility).
+    """
+    binding = _identity_binding()
+    if not binding.get("enabled"):
+        return
+    expected = binding.get(agent_id or "")
+    if not expected:
+        return  # unbound identity: local trust as before
+    token = os.environ.get("AGENT_MAIL_TOKEN", "")
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    if not hmac.compare_digest(digest, expected):
+        raise MailboxError("identity mismatch")
+
+
 # --------------------------------------------------------------------- tools
 
 @server.tool()
 def mailbox_register(agent_id: str, owner: str = "", description: str = "") -> dict:
     """Register this agent and claim its mailbox. Idempotent — safe to call again."""
+    _verify_identity(agent_id)
     return _store_instance().register(agent_id, owner, description)
 
 
@@ -74,6 +113,7 @@ def mailbox_send(
     frm = from_id or os.environ.get("AGENT_MAIL_ID", "")
     if not frm:
         raise MailboxError("from_id required (or set AGENT_MAIL_ID env)")
+    _verify_identity(frm)
     sent = _store_instance().send(
         frm, to, subject, body, reply_to=reply_to, priority=priority, dedupe=dedupe
     )
@@ -92,6 +132,7 @@ def mailbox_check(agent_id: str = "", mark: bool = True) -> dict:
     me = agent_id or os.environ.get("AGENT_MAIL_ID", "")
     if not me:
         raise MailboxError("agent_id required (or set AGENT_MAIL_ID env)")
+    _verify_identity(me)
     st = _store_instance()
     msgs = st.check(me, mark=mark)
     out: dict = {"agent_id": me, "unread": len(msgs), "messages": msgs}
@@ -111,6 +152,7 @@ def mailbox_reply(msg_id: str, body: str, agent_id: str = "") -> dict:
     me = agent_id or os.environ.get("AGENT_MAIL_ID", "")
     if not me:
         raise MailboxError("agent_id required (or set AGENT_MAIL_ID env)")
+    _verify_identity(me)
     st = _store_instance()
     mine = [m for m in st.list_messages(me) if m["id"] == msg_id]
     from_archive = False
@@ -149,6 +191,7 @@ def mailbox_list(
     me = agent_id or os.environ.get("AGENT_MAIL_ID", "")
     if not me:
         raise MailboxError("agent_id required (or set AGENT_MAIL_ID env)")
+    _verify_identity(me)
     msgs = _store_instance().list_messages(me, status, thread=thread)
     return {"agent_id": me, "count": len(msgs), "messages": msgs}
 
@@ -163,6 +206,7 @@ def mailbox_thread(thread: str) -> dict:
     to one thread. Letters come back oldest first with their status, so the
     full cross-agent conversation is visible in one call.
     """
+    _verify_identity(os.environ.get("AGENT_MAIL_ID", ""))
     st = _store_instance()
     return st.thread_messages(thread)
 
@@ -173,6 +217,7 @@ def mailbox_done(msg_id: str, agent_id: str = "") -> dict:
     me = agent_id or os.environ.get("AGENT_MAIL_ID", "")
     if not me:
         raise MailboxError("agent_id required (or set AGENT_MAIL_ID env)")
+    _verify_identity(me)
     m = _store_instance().set_status(me, msg_id, "done")
     n = _store_instance().archive_done(me)
     return {"message": m["id"], "status": "done", "archived": n}
@@ -186,6 +231,7 @@ def mailbox_broadcast(subject: str, body: str, from_id: str = "", dedupe: bool =
     frm = from_id or os.environ.get("AGENT_MAIL_ID", "")
     if not frm:
         raise MailboxError("from_id required (or set AGENT_MAIL_ID env)")
+    _verify_identity(frm)
     sent = _store_instance().send(frm, "all", subject, body, priority="high", dedupe=dedupe)
     delivered = sum(1 for e in sent if not e.get("deduped"))
     return {"delivered": sent, "count": delivered}
@@ -194,6 +240,7 @@ def mailbox_broadcast(subject: str, body: str, from_id: str = "", dedupe: bool =
 @server.tool()
 def mailbox_whoami() -> dict:
     """List all registered agents and the mail root location."""
+    _verify_identity(os.environ.get("AGENT_MAIL_ID", ""))
     st = _store_instance()
     reg = st.registry()
     return {
@@ -210,6 +257,7 @@ def mailbox_wait(agent_id: str = "", timeout_seconds: float = 25.0) -> dict:
     me = agent_id or os.environ.get("AGENT_MAIL_ID", "")
     if not me:
         raise MailboxError("agent_id required (or set AGENT_MAIL_ID env)")
+    _verify_identity(me)
     st = _store_instance()
     deadline = time.time() + max(1.0, min(timeout_seconds, 60.0))
     while True:
@@ -233,6 +281,7 @@ def task_create(
     me = from_id or os.environ.get("AGENT_MAIL_ID", "")
     if not me:
         raise MailboxError("from_id required (or set AGENT_MAIL_ID env)")
+    _verify_identity(me)
     task = _store_instance().task_create(title, assignee, me, due, notify=notify)
     return {"task": task}
 
@@ -253,6 +302,7 @@ def task_move(
     me = from_id or os.environ.get("AGENT_MAIL_ID", "")
     if not me:
         raise MailboxError("from_id required (or set AGENT_MAIL_ID env)")
+    _verify_identity(me)
     task = _store_instance().task_move(
         task_id, status, moved_by=me, assignee=assignee,
         force=force, notify=notify, note=note,
@@ -263,6 +313,7 @@ def task_move(
 @server.tool()
 def task_list(assignee: str | None = None, status: str | None = None) -> dict:
     """List task cards, optionally filtered by assignee and/or status."""
+    _verify_identity(os.environ.get("AGENT_MAIL_ID", ""))
     tasks = _store_instance().task_list(assignee=assignee, status=status)
     return {"count": len(tasks), "tasks": tasks}
 
@@ -314,6 +365,11 @@ def main() -> None:
 
     if args.home:
         os.environ["AGENT_MAIL_HOME"] = args.home
+
+    # Load (and validate) the identity binding table at startup: a corrupt
+    # identity_binding block kills the server here, before any tool runs,
+    # instead of mid-session on the first guarded call.
+    _identity_binding()
 
     if args.web:
         from .web import run_web
