@@ -367,9 +367,17 @@ class MailStore:
 
     def _read_msg(self, path: Path) -> dict[str, Any]:
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            m = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as e:
             raise MailboxError(f"corrupt message {path.name}: {e}") from e
+        if isinstance(m, dict) and not m.get("id"):
+            # Legacy letter (pre-id format): the filename stem *is* the id in
+            # the canonical scheme ({id}.json). Surface it in memory so
+            # list/set_status/thread can address the letter — without the
+            # back-fill it is unaddressable through the whole API surface.
+            # Disk is not touched here; the next write-through persists it.
+            m["id"] = path.stem
+        return m
 
     # ================================================================ public
 
@@ -646,7 +654,18 @@ class MailStore:
                 break
             if m.get("thread_id") == thread_ref:
                 resolved = thread_ref
-        if resolved is None:
+        if resolved is None and skey is None:
+            # No id/thread_id anchor: accept the reference itself as a
+            # subject, matching list_messages' legacy ``_thread_match``
+            # semantics — a legacy thread whose letters carry neither id
+            # nor thread_id is still pullable by any of its subjects.
+            want = thread_key(thread_ref)
+            if want:
+                for _, m in self._iter_all_letters():
+                    if not m.get("thread_id") and thread_key(m.get("subject", "")) == want:
+                        skey = want
+                        break
+        if resolved is None and skey is None:
             raise MailboxError(f"unknown thread or message id {thread_ref!r}")
         matched: list[dict[str, Any]] = []
         for p, m in self._iter_all_letters():
@@ -667,9 +686,15 @@ class MailStore:
 
         matched.sort(key=_order)
         messages = [m for _, m in matched]
+        if resolved and not skey:
+            matched_by = "thread_id"
+        elif resolved:
+            matched_by = "thread_id+subject_key"
+        else:
+            matched_by = "subject_key"
         return {
             "thread_id": resolved,
-            "matched_by": "thread_id" if not skey else "thread_id+subject_key",
+            "matched_by": matched_by,
             "count": len(messages),
             "messages": messages,
         }

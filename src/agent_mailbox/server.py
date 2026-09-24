@@ -200,11 +200,12 @@ def mailbox_list(
 def mailbox_thread(thread: str) -> dict:
     """Pull one thread in time order across every agent (inbox + archive).
 
-    ``thread`` may be a thread_id or any message id on the thread. Legacy
-    letters without a thread_id are included via the subject-key heuristic
-    (Re:/Fwd: prefixes stripped), so a 12-deep "Re: Re: ..." chain resolves
-    to one thread. Letters come back oldest first with their status, so the
-    full cross-agent conversation is visible in one call.
+    ``thread`` may be a thread_id, any message id on the thread, or a subject
+    on the thread. Legacy letters without an id/thread_id are included via
+    the subject-key heuristic (Re:/Fwd: prefixes stripped), so a 12-deep
+    "Re: Re: ..." chain resolves to one thread. Letters come back oldest
+    first with their status, so the full cross-agent conversation is
+    visible in one call.
     """
     _verify_identity(os.environ.get("AGENT_MAIL_ID", ""))
     st = _store_instance()
