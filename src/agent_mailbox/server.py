@@ -84,6 +84,7 @@ def _verify_identity(agent_id: str) -> None:
 
 # --------------------------------------------------------------------- tools
 
+
 @server.tool()
 def mailbox_register(agent_id: str, owner: str = "", description: str = "") -> dict:
     """Register this agent and claim its mailbox. Idempotent — safe to call again."""
@@ -160,9 +161,7 @@ def mailbox_reply(msg_id: str, body: str, agent_id: str = "") -> dict:
         mine = [m for m in st.list_archived(me) if m["id"] == msg_id]
         from_archive = True
     if not mine:
-        raise MailboxError(
-            f"message {msg_id!r} not found in inbox or archive for {me!r}"
-        )
+        raise MailboxError(f"message {msg_id!r} not found in inbox or archive for {me!r}")
     original = mine[0]
     sent = st.send(
         me,
@@ -180,19 +179,21 @@ def mailbox_reply(msg_id: str, body: str, agent_id: str = "") -> dict:
 
 
 @server.tool()
-def mailbox_list(
-    agent_id: str = "", status: str | None = None, thread: str | None = None
-) -> dict:
+def mailbox_list(agent_id: str = "", status: str | None = None, thread: str | None = None) -> dict:
     """List messages in your mailbox, optionally filtered by status and/or thread.
 
-    ``thread`` takes a thread_id, or any subject on the thread (legacy letters
-    without a thread_id are matched by the subject key heuristic).
+    Spans inbox **and** archive: ``check()`` moves handled letters into the
+    archive, so an inbox-only view reports zero for any agent that drains
+    regularly (HS 09-24: five status queries all returned 0 against 877
+    on-disk letters). ``thread`` takes a thread_id, or any subject on the
+    thread (legacy letters without a thread_id are matched by the subject key
+    heuristic).
     """
     me = agent_id or os.environ.get("AGENT_MAIL_ID", "")
     if not me:
         raise MailboxError("agent_id required (or set AGENT_MAIL_ID env)")
     _verify_identity(me)
-    msgs = _store_instance().list_messages(me, status, thread=thread)
+    msgs = _store_instance().list_all_messages(me, status, thread=thread)
     return {"agent_id": me, "count": len(msgs), "messages": msgs}
 
 
@@ -209,7 +210,19 @@ def mailbox_thread(thread: str) -> dict:
     """
     _verify_identity(os.environ.get("AGENT_MAIL_ID", ""))
     st = _store_instance()
-    return st.thread_messages(thread)
+    try:
+        return st.thread_messages(thread)
+    except MailboxError as e:
+        # Structured miss instead of an MCP "Error executing tool" bubble:
+        # callers probing by commit hashes or session ids (HS 09-24) get an
+        # addressable empty result, not a stack trace.
+        return {
+            "error": str(e),
+            "thread_id": None,
+            "matched_by": "miss",
+            "count": 0,
+            "messages": [],
+        }
 
 
 @server.tool()
@@ -276,6 +289,7 @@ def mailbox_wait(agent_id: str = "", timeout_seconds: float = 25.0) -> dict:
 
 # ---------------------------------------------------------------- task tools
 
+
 @server.tool()
 def task_create(
     title: str, assignee: str, due: str = "", from_id: str = "", notify: bool = True
@@ -308,8 +322,13 @@ def task_move(
         raise MailboxError("from_id required (or set AGENT_MAIL_ID env)")
     _verify_identity(me)
     task = _store_instance().task_move(
-        task_id, status, moved_by=me, assignee=assignee,
-        force=force, notify=notify, note=note,
+        task_id,
+        status,
+        moved_by=me,
+        assignee=assignee,
+        force=force,
+        notify=notify,
+        note=note,
     )
     return {"task": task}
 
@@ -349,22 +368,35 @@ def main() -> None:
         pre_args, _ = pre_parser.parse_known_args(pre)
         from .wake import wake_main
 
-        wake_args = argv[idx + 1:]
+        wake_args = argv[idx + 1 :]
         subcommand = next((a for a in wake_args if not a.startswith("-")), "")
-        if pre_args.home and subcommand != "uninstall" and not any(
-            a == "--root" or a.startswith("--root=") for a in wake_args
+        if (
+            pre_args.home
+            and subcommand != "uninstall"
+            and not any(a == "--root" or a.startswith("--root=") for a in wake_args)
         ):
             wake_args = ["--root", pre_args.home, *wake_args]
         wake_main(wake_args)
         return
 
     parser = argparse.ArgumentParser(prog="agent-mailbox")
-    parser.add_argument("--http", metavar="PORT", type=int, default=None,
-                        help="serve streamable HTTP on PORT (default: stdio)")
-    parser.add_argument("--web", metavar="PORT", type=int, default=None,
-                        help="serve the kanban board UI + JSON API on PORT (default: stdio)")
-    parser.add_argument("--home", metavar="DIR", default=None,
-                        help="mail root directory (default: ~/.agent-mail)")
+    parser.add_argument(
+        "--http",
+        metavar="PORT",
+        type=int,
+        default=None,
+        help="serve streamable HTTP on PORT (default: stdio)",
+    )
+    parser.add_argument(
+        "--web",
+        metavar="PORT",
+        type=int,
+        default=None,
+        help="serve the kanban board UI + JSON API on PORT (default: stdio)",
+    )
+    parser.add_argument(
+        "--home", metavar="DIR", default=None, help="mail root directory (default: ~/.agent-mail)"
+    )
     args = parser.parse_args()
 
     if args.home:

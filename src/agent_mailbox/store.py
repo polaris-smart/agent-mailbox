@@ -45,12 +45,12 @@ SENT_LOG_MAX_BYTES = 10 * 1024 * 1024  # rotate sent.log one generation past thi
 # duplicate is finally allowed through. Defaults (24h / 1h) satisfy the rule;
 # config.json overrides are validated loudly in load_window_config().
 DEDUP_TTL_DEFAULT = 24 * 3600.0  # semantic-hash dedup window: 24h
-REAP_TTL_DEFAULT = 3600.0        # stale-acked reclaim: 1h (缺口3: keep 1–2h, < dedup_ttl)
-INTENT_TTL_DEFAULT = 1800.0      # 缺口4: a fresh (<30m) handling intent defers reclaim
+REAP_TTL_DEFAULT = 3600.0  # stale-acked reclaim: 1h (缺口3: keep 1–2h, < dedup_ttl)
+INTENT_TTL_DEFAULT = 1800.0  # 缺口4: a fresh (<30m) handling intent defers reclaim
 DEDUP_BLOCKING = ("pending", "acked")  # non-terminal states that block a re-send
-HANDLED_INTENT = "intent"        # two-phase handled_log: intent first …
-HANDLED_OUTCOME = "outcome"      # … outcome last; set_status(done) only after both
-HASH_LOG_CHARS = 16              # store full 64-hex; logs/display truncate to 16
+HANDLED_INTENT = "intent"  # two-phase handled_log: intent first …
+HANDLED_OUTCOME = "outcome"  # … outcome last; set_status(done) only after both
+HASH_LOG_CHARS = 16  # store full 64-hex; logs/display truncate to 16
 
 # Self-echo (from == notification target): suppressed by default (R1 of the
 # 2026-09-09 requirement); opt-in delivery marks the *notification* subject so
@@ -84,6 +84,7 @@ def notify_self_echo_enabled(root: Path) -> bool:
 # lifted out of the body first and hashed raw (original order, zero folding —
 # differently ordered code must not collapse to one hash), everything else is
 # NFKC+NFC normalized with whitespace folded.
+
 
 def _split_code_regions(text: str) -> tuple[str, list[str]]:
     """Split fenced ``` regions out of ``text``.
@@ -232,9 +233,7 @@ def thread_key(subject: str) -> str:
 
 
 def _thread_id() -> str:
-    return "th-" + hashlib.sha1(
-        f"{time.time_ns()}-{os.urandom(8).hex()}".encode()
-    ).hexdigest()[:12]
+    return "th-" + hashlib.sha1(f"{time.time_ns()}-{os.urandom(8).hex()}".encode()).hexdigest()[:12]
 
 
 def ghost_open_limit() -> int:
@@ -257,14 +256,14 @@ def _handled_session(agent_id: str) -> str:
     return os.environ.get("AGENT_MAIL_SESSION", agent_id)
 
 
-def _append_handled(
-    msg: dict[str, Any], agent_id: str, action: str, **fields: Any
-) -> None:
+def _append_handled(msg: dict[str, Any], agent_id: str, action: str, **fields: Any) -> None:
     """Append an entry to the message's ``handled_log`` (in-place, append-only)."""
     log = msg.setdefault("handled_log", [])
     entry: dict[str, Any] = {"by": _handled_session(agent_id), "at": _now_iso(), "action": action}
     entry.update(fields)
     log.append(entry)
+
+
 RESERVED_IDS = {"boss"}
 
 TASK_STATUSES = ("todo", "doing", "review", "done")
@@ -289,9 +288,11 @@ def _now_iso() -> str:
 
 
 def _msg_id() -> str:
-    return time.strftime("%Y%m%d%H%M%S", time.gmtime()) + "-" + hashlib.sha1(
-        f"{time.time_ns()}-{os.urandom(8).hex()}".encode()
-    ).hexdigest()[:8]
+    return (
+        time.strftime("%Y%m%d%H%M%S", time.gmtime())
+        + "-"
+        + hashlib.sha1(f"{time.time_ns()}-{os.urandom(8).hex()}".encode()).hexdigest()[:8]
+    )
 
 
 class MailStore:
@@ -361,9 +362,7 @@ class MailStore:
     @staticmethod
     def _validate_id(agent_id: str) -> None:
         if not AGENT_ID_RE.match(agent_id or ""):
-            raise MailboxError(
-                f"invalid agent id {agent_id!r}: use [A-Za-z0-9_-], max 64 chars"
-            )
+            raise MailboxError(f"invalid agent id {agent_id!r}: use [A-Za-z0-9_-], max 64 chars")
 
     def _read_msg(self, path: Path) -> dict[str, Any]:
         try:
@@ -387,13 +386,18 @@ class MailStore:
         with self._locked():
             reg = self._read_registry()
             exists = agent_id in reg["agents"]
-            card = reg["agents"].get(agent_id, {
-                "created_at": _now_iso(),
-            })
-            card.update({
-                "owner": owner or card.get("owner", ""),
-                "description": description or card.get("description", ""),
-            })
+            card = reg["agents"].get(
+                agent_id,
+                {
+                    "created_at": _now_iso(),
+                },
+            )
+            card.update(
+                {
+                    "owner": owner or card.get("owner", ""),
+                    "description": description or card.get("description", ""),
+                }
+            )
             reg["agents"][agent_id] = card
             self._write_registry(reg)
         self._inbox_dir(agent_id)  # ensure inbox exists
@@ -572,9 +576,7 @@ class MailStore:
             self._dedup_index[agent_id] = cached
         return list(cached[1].get(msg_hash, ()))
 
-    def _find_dupe(
-        self, agent_id: str, msg_hash: str, dedup_ttl: float, now: float
-    ) -> str | None:
+    def _find_dupe(self, agent_id: str, msg_hash: str, dedup_ttl: float, now: float) -> str | None:
         """Id of a same-hash non-terminal letter inside the window, else None."""
         for p in self._dedup_candidates(agent_id, msg_hash):
             try:
@@ -612,12 +614,24 @@ class MailStore:
         ``path`` is None when the original cannot be found (the reply still
         goes out, minting its own thread); ``thread_id`` is None when the
         original is a legacy letter without one — send() back-fills it.
+
+        The reply target lives in *its recipient's* mailbox, not the
+        replier's — a per-agent lookup misses every cross-agent reply
+        (A replying to the letter B holds), which silently minted a fresh
+        thread per reply (09-24 regression: v0.6 F2 "reply inherits
+        thread_id" only ever worked for self-mailbox replies). The
+        per-agent miss therefore falls back to a whole-root scan.
         """
         try:
             path, m = self._locate_msg(from_id, reply_to)
+            return path, m.get("thread_id")
         except MailboxError:
-            return None, None
-        return path, m.get("thread_id")
+            pass
+        want = f"{Path(reply_to).name}.json"
+        for p, m in self._iter_all_letters():
+            if p.name == want:
+                return p, m.get("thread_id")
+        return None, None
 
     def _iter_all_letters(self) -> Any:
         """Yield ``(path, msg)`` for every letter under the root (inboxes and
@@ -673,6 +687,7 @@ class MailStore:
                 skey and thread_key(m.get("subject", "")) == skey
             ):
                 matched.append((p, m))
+
         # created_at is second-granular and several letters can share one
         # second, so file mtime (write order, kept across os.replace into the
         # archive) breaks ties before the id does.
@@ -727,9 +742,7 @@ class MailStore:
                     m2 = self._read_msg(p)  # re-read under the lock
                     if not m2.get("thread_id"):
                         m2["thread_id"] = tid
-                        p.write_text(
-                            json.dumps(m2, ensure_ascii=False, indent=1), encoding="utf-8"
-                        )
+                        p.write_text(json.dumps(m2, ensure_ascii=False, indent=1), encoding="utf-8")
                         backfilled += 1
         return {"groups": grouped, "backfilled": backfilled}
 
@@ -786,7 +799,12 @@ class MailStore:
                         m["acked_at"] = _now_iso()
                         _append_handled(m, agent_id, "acked")
                         p.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
-        msgs.sort(key=lambda m: ({"high": 0, "normal": 1, "low": 2}.get(m.get("priority", "normal"), 1), m["id"]))
+        msgs.sort(
+            key=lambda m: (
+                {"high": 0, "normal": 1, "low": 2}.get(m.get("priority", "normal"), 1),
+                m["id"],
+            )
+        )
         return msgs
 
     def claim(self, agent_id: str) -> list[dict[str, Any]]:
@@ -818,7 +836,12 @@ class MailStore:
                 _append_handled(m, agent_id, "claimed")
                 p.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
                 msgs.append(m)
-        msgs.sort(key=lambda m: ({"high": 0, "normal": 1, "low": 2}.get(m.get("priority", "normal"), 1), m["id"]))
+        msgs.sort(
+            key=lambda m: (
+                {"high": 0, "normal": 1, "low": 2}.get(m.get("priority", "normal"), 1),
+                m["id"],
+            )
+        )
         return msgs
 
     def reap_stale_acked(
@@ -867,7 +890,9 @@ class MailStore:
                 stamp = m.get("acked_at")
                 if stamp:
                     try:
-                        acked = datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp()
+                        acked = datetime.fromisoformat(
+                            str(stamp).replace("Z", "+00:00")
+                        ).timestamp()
                     except ValueError:
                         acked = p.stat().st_mtime
                 else:
@@ -885,9 +910,7 @@ class MailStore:
     def _intent_fresh(self, m: dict[str, Any], now: float | None, intent_ttl: float) -> bool:
         """True when the newest handled_log ``intent`` is younger than ``intent_ttl``."""
         stamps = [
-            e.get("at")
-            for e in (m.get("handled_log") or [])
-            if e.get("action") == HANDLED_INTENT
+            e.get("at") for e in (m.get("handled_log") or []) if e.get("action") == HANDLED_INTENT
         ]
         if not stamps:
             return False
@@ -918,9 +941,7 @@ class MailStore:
             if arch.exists():
                 path = arch
             else:
-                raise MailboxError(
-                    f"message {msg_id!r} not found in {agent_id}'s inbox or archive"
-                )
+                raise MailboxError(f"message {msg_id!r} not found in {agent_id}'s inbox or archive")
         return path, self._read_msg(path)
 
     def record_handled(
@@ -1024,6 +1045,28 @@ class MailStore:
                     out.append(m)
         return out
 
+    def list_all_messages(
+        self,
+        agent_id: str,
+        status: str | None = None,
+        thread: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Inbox + archive in one view, newest first.
+
+        ``check()`` moves handled letters into ``archive/``, so an inbox-only
+        listing reports zero for any agent that drains regularly (HS 09-24:
+        five status queries all returned 0 against 877 on-disk letters). This
+        is the addressable whole mailbox; ``status`` keeps the same literal
+        filtering as the two single-source methods (``None`` = no filter).
+        """
+        inbox = self.list_messages(agent_id, status, thread=thread)
+        archived = self.list_archived(agent_id, status)
+        if thread is not None:
+            archived = [m for m in archived if self._thread_match(m, thread)]
+        merged = [*inbox, *archived]
+        merged.sort(key=lambda m: m.get("created_at", ""), reverse=True)
+        return merged
+
     def set_status(self, agent_id: str, msg_id: str, status: str) -> dict[str, Any]:
         if status not in MSG_STATUSES:
             raise MailboxError(f"status must be one of {MSG_STATUSES}")
@@ -1036,9 +1079,7 @@ class MailStore:
             if arch.exists():
                 path = arch  # already archived: update in place (idempotent re-done)
             else:
-                raise MailboxError(
-                    f"message {msg_id!r} not found in {agent_id}'s inbox or archive"
-                )
+                raise MailboxError(f"message {msg_id!r} not found in {agent_id}'s inbox or archive")
         with self._locked():
             m = self._read_msg(path)
             m["status"] = status
@@ -1163,9 +1204,7 @@ class MailStore:
                 raise MailboxError(f"task {task_id!r} not found")
             cur = task["status"]
             if cur == "done":
-                raise MailboxError(
-                    f"task {task_id} is done (terminal) — create a new task instead"
-                )
+                raise MailboxError(f"task {task_id} is done (terminal) — create a new task instead")
             if status == cur:
                 raise MailboxError(f"task {task_id} already in {cur}")
             if status not in TASK_TRANSITIONS[cur] and not force:
@@ -1179,13 +1218,20 @@ class MailStore:
                 task["assignee"] = assignee
             task["status"] = status
             task["updated_at"] = _now_iso()
-            entry: dict[str, Any] = {"at": task["updated_at"], "from": cur, "to": status, "by": moved_by}
+            entry: dict[str, Any] = {
+                "at": task["updated_at"],
+                "from": cur,
+                "to": status,
+                "by": moved_by,
+            }
             if note:
                 entry["note"] = note
             task["history"].append(entry)
             self._write_tasks(data)
         if notify and task["assignee"] != moved_by:
-            lines = [f"任务 {task_id}「{task['title']}」已由 {moved_by or task['created_by']} 移至 {status}。"]
+            lines = [
+                f"任务 {task_id}「{task['title']}」已由 {moved_by or task['created_by']} 移至 {status}。"
+            ]
             if task["assignee"] != old_assignee:
                 lines.append(f"负责人已从 {old_assignee} 转派给 {task['assignee']}。")
             if note:
