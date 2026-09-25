@@ -25,7 +25,8 @@ wake policy schema（wake.json，per-agent 段，改点4；缺省 = 最小权限
           "task": "唤醒后的任务指令",
           "forbidden": ["禁区列表，逐条注入为硬约束"],
           "require_receipt": true,
-          "max_tokens": 512
+          "max_tokens": 512,
+          "max_concurrent": 1
         }
       }
     }
@@ -33,14 +34,28 @@ wake policy schema（wake.json，per-agent 段，改点4；缺省 = 最小权限
 per-agent 段按**整键覆盖**合并到 DEFAULT_WAKE_POLICY 上：没写的键保持
 最小权限默认（策略作者只显式放宽他写出来的键）。wake.json 损坏 =
 fail-loud（安全边界不静默降级），由采样侧接住落 error 日志。
+
+per-agent 执行锁（HS 09-25 补钉①②③④，老板收束目标②）：同一 agent
+同时至多 ``max_concurrent``（未配置默认 1——schema 缺省即锁）个
+createMessage 在途，后续信进入该 agent 的闸门队列排队，FIFO = 按
+**落箱时间序**（created_at，同秒内按到达序 tiebreak）。锁释放覆盖
+成功/失败/超时三路径（``_run_one`` finally 计数）——宿主卡死走
+timeout 返回时锁即释放，单卡死分身不得永久堵死该 agent 队列。
+重启/连接死亡降级（补钉⑤）：内存排队未发出的请求一律逐条落
+sampling.log ``degrade`` 审计并清空内存队列（不驻留内存队列）——信在
+通知前已落盘 pending，mailbox_check / wake-daemon fallback 天然接管；
+真正的保底是盘上的信，degrade 审计只是诚实记账。
 """
 
 from __future__ import annotations
 
 import asyncio
+import bisect
+import itertools
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -85,6 +100,9 @@ DEFAULT_WAKE_POLICY: dict[str, Any] = {
     ],
     "require_receipt": True,
     "max_tokens": DEFAULT_MAX_TOKENS,
+    # per-agent 执行锁并发上限（补钉③）：未配置默认 1 —— schema 缺省即锁，
+    # 「默认策略=最小权限」同一口径（上一分身未 done，新 sampling 排队不发出）
+    "max_concurrent": 1,
 }
 
 _POLICY_KEYS = set(DEFAULT_WAKE_POLICY)
@@ -103,6 +121,19 @@ def sampling_timeout() -> float:
     if value <= 0:
         raise ValueError(f"{TIMEOUT_ENV} must be a positive number, got {raw!r}")
     return value
+
+
+def wake_max_concurrent(policy: dict[str, Any]) -> int:
+    """per-agent 执行锁并发上限（补钉③）：wake.json ``max_concurrent`` 可配，
+    未配置默认 1（schema 缺省即锁）。
+
+    值非法（非正整数）→ fail-loud 抛 MailboxError；闸门侧接住后回落到最
+    保守的 1（锁语义）并落 warning——上限配置坏了宁可锁死也不放并发。
+    """
+    raw = policy.get("max_concurrent", 1)
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        raise MailboxError(f"wake policy max_concurrent must be a positive integer, got {raw!r}")
+    return raw
 
 
 def load_wake_policies(root: Path | str) -> dict[str, dict[str, Any]]:
@@ -285,37 +316,223 @@ class SamplingRegistry:
         self._agents.clear()
 
 
+# ------------------------------------------------------------- per-agent gate
+
+
+@dataclass
+class _QueuedLetter:
+    """闸门队列里的一封待唤醒信。
+
+    排序键 = ``(created_at, seq)``：created_at 是落箱时间序（FIFO 依据，
+    ISO 字典序即时间序）；seq 是通知到达序，做同秒 created_at 的 tiebreak。
+    created_at 缺失（直接 notify 的调用方）用 ``"\\uffff"`` 沉底，落箱序
+    永远优先于无时间戳的请求。
+    """
+
+    msg_id: str
+    created_at: str
+    seq: int
+    store: MailStore
+    entry: ConnectionEntry
+
+    @staticmethod
+    def sort_key(item: _QueuedLetter) -> tuple[str, int]:
+        return (item.created_at or "\uffff", item.seq)
+
+
+class _AgentGate:
+    """per-agent sampling 执行闸门（HS 补钉①②③④，收束目标②）。
+
+    同一 agent 全程至多 ``max_concurrent``（默认 1）个 createMessage 在途；
+    后续信落 ``queue`` 排队，FIFO = (created_at, 到达序)。全部状态只在
+    gate 所属事件循环上读写（enqueue/drain 协程单线程串行），notify()
+    的 worker 线程只做闸门创建与 ``run_coroutine_threadsafe`` 调度。
+
+    锁释放三路径（成功/失败/超时）由 ``_run_one`` 的 finally 计数保证：
+    ``_attempt`` 自身 fail-open 永不抛出，无论 outcome 如何 in_flight 都
+    递减、drain 自动续跑下一封——单卡死分身走 timeout 返回后队列照常流动。
+    """
+
+    def __init__(
+        self, agent_id: str, loop: asyncio.AbstractEventLoop, owner: SamplingNotifier
+    ) -> None:
+        self.agent_id = agent_id
+        self.loop = loop
+        self.owner = owner
+        self.in_flight = 0
+        self.queue: list[_QueuedLetter] = []
+        self._drain_task: asyncio.Task | None = None
+        self._refill = asyncio.Event()  # enqueue 唤醒信号（首个 wait 在 loop 上，绑定安全）
+
+    async def enqueue(self, item: _QueuedLetter) -> None:
+        """入队（落箱时间序插入，晚到早落的信插队到同批前头）并确保 drain 在跑。"""
+        bisect.insort(self.queue, item, key=_QueuedLetter.sort_key)
+        self._refill.set()
+        if self._drain_task is None or self._drain_task.done():
+            self._drain_task = asyncio.create_task(self._drain())
+
+    async def _drain(self) -> None:
+        """补位式派发：有空槽就立刻从队首补信，slot 满则等任一在途完成或新信入队。
+
+        与 enqueue 同循环串行：top-up 之间没有 await 间隙，晚到信要么被下一轮
+        top-up 捡起（refill 唤醒），要么在 drain 已 done 后由 enqueue 重起新 drain。
+        """
+        pending: set[asyncio.Task] = set()
+        refill: asyncio.Task | None = None
+        try:
+            while True:
+                cap = self.owner._capacity(self)
+                while self.queue and self.in_flight < cap:
+                    item = self.queue.pop(0)
+                    self.in_flight += 1
+                    pending.add(asyncio.create_task(self._run_one(item)))
+                if not pending:
+                    return
+                self._refill.clear()
+                refill = asyncio.create_task(self._refill.wait())
+                _, still = await asyncio.wait(
+                    {*pending, refill}, return_when=asyncio.FIRST_COMPLETED
+                )
+                pending = {t for t in still if t is not refill}
+                refill = None
+        except asyncio.CancelledError:
+            for t in pending:
+                t.cancel()
+            raise
+        finally:
+            if refill is not None:
+                refill.cancel()
+
+    async def _run_one(self, item: _QueuedLetter) -> None:
+        try:
+            await self.owner._attempt(item.entry, item.store, self.agent_id, item.msg_id)
+        finally:
+            # 锁释放三路径：成功/失败/超时（_attempt 吞掉一切异常）都走到这里
+            self.in_flight -= 1
+
+
 # ---------------------------------------------------------------- notifier
 
 
 class SamplingNotifier:
-    """send() 落箱后的 sampling 唤醒通知器（改点2/3）。
+    """send() 落箱后的 sampling 唤醒通知器（改点2/3 + HS 补钉①-⑤）。
 
-    notify() 只做寻址 + 调度（worker 线程安全、微秒级返回）；策略加载、
-    去重、createMessage、超时、审计全部在连接事件循环侧 _attempt 内跑。
+    notify() 只做寻址 + 入闸门调度（worker 线程安全、微秒级返回）；排队、
+    并发互斥、策略加载、去重、createMessage、超时、审计全部在连接事件
+    循环侧 per-agent 闸门（_AgentGate）内跑。
     """
 
     def __init__(self, registry: SamplingRegistry) -> None:
         self._registry = registry
         self._fired: set[str] = set()  # 进程内 msg_id 去重（事件循环串行访问，无锁）
+        # per-agent 执行闸门（补钉①）：notify 来自任意 anyio worker 线程，
+        # 闸门表的创建/查找用 threading.Lock 护住；闸门内部状态只在 loop 上动。
+        self._gates: dict[str, _AgentGate] = {}
+        self._gates_lock = threading.Lock()
+        self._seq = itertools.count()  # 通知到达序（同 created_at 的 FIFO tiebreak）
 
-    def notify(self, store: MailStore, agent_id: str, msg_id: str) -> bool:
-        """对已声明 sampling 的收件人连接调度一次唤醒。返回是否已调度。
+    def notify(
+        self, store: MailStore, agent_id: str, msg_id: str, created_at: str | None = None
+    ) -> bool:
+        """对已声明 sampling 的收件人连接调度一次唤醒。返回是否已入队调度。
 
         未登记 / 未声明 / loop 已死 → False（静默跳过，信照常落箱）。
+        收件人在途/排队时 → True（进入 per-agent 闸门排队，FIFO 等待，
+        不并发出第二个 sampling——补钉①②）。
         """
         entry = self._registry.entry_for(agent_id)
         if entry is None or not entry.declared_sampling:
             logger.debug("sampling skip: %s has no sampling-declared connection", agent_id)
             return False
+        with self._gates_lock:
+            gate = self._gate_for(agent_id, entry)
+            seq = next(self._seq)
         try:
             asyncio.run_coroutine_threadsafe(
-                self._attempt(entry, store, agent_id, msg_id), entry.loop
+                gate.enqueue(
+                    _QueuedLetter(
+                        msg_id=msg_id,
+                        created_at=created_at or "",
+                        seq=seq,
+                        store=store,
+                        entry=entry,
+                    )
+                ),
+                gate.loop,
             )
         except RuntimeError:
             logger.debug("sampling skip: connection loop not running for %s", agent_id)
             return False
         return True
+
+    def _gate_for(self, agent_id: str, entry: ConnectionEntry) -> _AgentGate:
+        """取或建 per-agent 闸门（调用方须持 ``_gates_lock``）。
+
+        旧闸门的事件循环已关（连接死亡/会话重建）→ 队列里未发出的信逐条
+        落 degrade 审计（补钉⑤连接腿），闸门在当前连接的循环上重建。
+        """
+        gate = self._gates.get(agent_id)
+        if gate is not None and gate.loop is not entry.loop and gate.loop.is_closed():
+            self._degrade_gate(gate, "connection-loop-closed")
+            gate = None
+        if gate is None:
+            gate = _AgentGate(agent_id, entry.loop, owner=self)
+            self._gates[agent_id] = gate
+        return gate
+
+    def _degrade_gate(self, gate: _AgentGate, reason: str) -> list[dict[str, Any]]:
+        """清空一个闸门的内存队列，逐条落 sampling.log degrade 审计。"""
+        degraded: list[dict[str, Any]] = []
+        while gate.queue:
+            item = gate.queue.pop(0)
+            degraded.append({"to": gate.agent_id, "msg_id": item.msg_id})
+            try:
+                append_sampling_log(
+                    item.store.root,
+                    {
+                        "event": "degrade",
+                        "reason": reason,
+                        "to": gate.agent_id,
+                        "msg_id": item.msg_id,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 — 审计失败不影响降级本身
+                logger.debug(
+                    "sampling degrade audit failed for %s/%s: %s",
+                    gate.agent_id,
+                    item.msg_id,
+                    exc,
+                )
+        return degraded
+
+    def degrade_pending(self, reason: str = "server-restart") -> list[dict[str, Any]]:
+        """补钉⑤：内存排队未发出的 sampling 请求一律降级走 fallback 落箱。
+
+        进程收场（server.main 的 finally）调用：逐条落 sampling.log
+        ``degrade`` 审计并**清空内存队列**（不驻留内存队列，重启即失，
+        fallback 天然接管——信在通知前已落盘 pending，mailbox_check 兜底）。
+        返回降级清单。真正的保底是盘上的信，本审计只是诚实记账。
+        """
+        with self._gates_lock:
+            degraded: list[dict[str, Any]] = []
+            for gate in self._gates.values():
+                degraded.extend(self._degrade_gate(gate, reason))
+            return degraded
+
+    def _capacity(self, gate: _AgentGate) -> int:
+        """该 agent 当前批次的并发上限（补钉③）：wake.json max_concurrent，
+        未配置默认 1；配置不可读（损坏/非法值）→ 回落最保守的 1 + warning。"""
+        if not gate.queue:
+            return 1  # 空队列上限无意义，不读配置不扰日志
+        try:
+            head = gate.queue[0]
+            policy, _ = wake_policy_for(head.store.root, gate.agent_id)
+            return wake_max_concurrent(policy)
+        except Exception as exc:  # noqa: BLE001 — 上限坏了宁可锁死也不放并发
+            logger.warning(
+                "sampling max_concurrent unreadable for %s (%s); locked to 1", gate.agent_id, exc
+            )
+            return 1
 
     async def _attempt(
         self, entry: ConnectionEntry, store: MailStore, agent_id: str, msg_id: str
@@ -423,5 +640,7 @@ class SamplingNotifier:
                 logger.debug("sampling audit write failed too: %s", exc2)
 
     def reset(self) -> None:
-        """测试钩子：清空进程内去重集。"""
+        """测试钩子：清空进程内去重集与全部执行闸门（不落降级审计）。"""
         self._fired.clear()
+        with self._gates_lock:
+            self._gates.clear()

@@ -18,8 +18,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -30,6 +32,7 @@ from mcp import ClientSession, types
 from mcp.shared.memory import create_client_server_memory_streams
 
 from agent_mailbox import server as srv
+from agent_mailbox.sampling import ConnectionEntry, _AgentGate, _QueuedLetter
 from agent_mailbox.store import MailStore
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -107,6 +110,45 @@ def make_sampling_cb(state: dict, release: asyncio.Event | None = None, boom: bo
         )
 
     return cb
+
+
+def make_seq_cb(state: dict, releases: list, boom_first: bool = False):
+    """逐笔阻塞的宿主回调（执行锁 recording 铁证用）。
+
+    第 i 个请求抓体并挂起直到 releases[i] 置位（缺位=None 不阻塞）；
+    每个请求记 (start, end)——相邻请求时间窗不相交 ⇔ 任意时刻 in-flight
+    sampling ≤ 1 ⇔ 全程无双分身。end 在 finally 记账：服务端超时可能把
+    挂起的回调静默取消（SDK 行为），取消/异常收场同样算"已收场"。
+    """
+
+    async def cb(context, params: types.CreateMessageRequestParams):
+        idx = len(state["requests"])
+        state["requests"].append({"params": params, "start": time.monotonic(), "end": None})
+        try:
+            if idx == 0 and boom_first:
+                raise RuntimeError("host llm exploded")
+            ev = releases[idx] if idx < len(releases) else None
+            if ev is not None:
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(ev.wait(), 30)
+            return types.CreateMessageResult(
+                role="assistant",
+                content=types.TextContent(type="text", text="ok, will check mailbox"),
+                model="test-host-model",
+            )
+        finally:
+            state["requests"][idx]["end"] = time.monotonic()
+
+    return cb
+
+
+def request_msg_ids(state: dict) -> list[str]:
+    """recording 里逐笔抽出的 msg_id（请求正文注入的 msg_id 行）。"""
+    out = []
+    for r in state["requests"]:
+        m = re.search(r"msg_id: (\S+)", r["params"].messages[0].content.text)
+        out.append(m.group(1) if m else "")
+    return out
 
 
 async def run_pair(mailroot, body, sampling_cb=None):
@@ -699,3 +741,437 @@ def test_sampling_stdio_e2e_wire(mailroot, tmp_path):
     finally:
         proc.kill()
         proc.wait()
+
+
+# ================================= per-agent 执行锁（HS 09-25 补钉①-⑥）
+
+
+def test_concurrent_three_letters_single_flight_fifo_no_double_host(mailroot, monkeypatch):
+    """负例铁证（收束目标②）：并发投 3 封同 agent 信 → 仅 1 个 sampling 在途
+    → 剩余 2 封排队 → FIFO 依次发出；recording 逐笔验相邻请求时间窗不相交
+    （任意时刻 in-flight ≤ 1，全程不出现双分身）。"""
+    monkeypatch.setenv("AGENT_MAIL_SAMPLING_TIMEOUT", "30")
+    state = {"requests": []}
+    releases = [asyncio.Event(), asyncio.Event(), asyncio.Event()]
+    cb = make_seq_cb(state, releases)
+    landed: dict = {}
+
+    async def body(client):
+        await call_tool(client, "mailbox_register", {"agent_id": "WB"})
+        s1 = await call_tool(
+            client, "mailbox_send", {"from_id": "HS", "to": "WB", "subject": "one", "body": "1"}
+        )
+        landed["s1"] = s1["delivered"][0]["id"]
+        await wait_until(lambda: len(state["requests"]) == 1, what="first letter in flight")
+        s2 = await call_tool(
+            client, "mailbox_send", {"from_id": "HS", "to": "WB", "subject": "two", "body": "2"}
+        )
+        landed["s2"] = s2["delivered"][0]["id"]
+        s3 = await call_tool(
+            client, "mailbox_send", {"from_id": "HS", "to": "WB", "subject": "three", "body": "3"}
+        )
+        landed["s3"] = s3["delivered"][0]["id"]
+        await asyncio.sleep(0.8)
+        # 锁在途：第二/三封只准排队，绝不并发出第二个 sampling
+        assert len(state["requests"]) == 1, (
+            f"双分身实锤：执行锁未拦住并发，host 已收到 {len(state['requests'])} 个在途请求"
+        )
+        releases[0].set()
+        await wait_until(lambda: len(state["requests"]) == 2, what="second fires after first done")
+        releases[1].set()
+        await wait_until(lambda: len(state["requests"]) == 3, what="third fires after second done")
+        releases[2].set()
+        await wait_until(
+            lambda: all(r["end"] is not None for r in state["requests"]), what="all settled"
+        )
+
+    asyncio.run(run_pair(mailroot, body, sampling_cb=cb))
+    expect = [landed["s1"], landed["s2"], landed["s3"]]
+    assert request_msg_ids(state) == expect, f"FIFO 违序: {request_msg_ids(state)} != {expect}"
+    for prev, nxt in zip(state["requests"], state["requests"][1:]):
+        assert prev["end"] is not None and prev["end"] <= nxt["start"], (
+            "双分身实锤：相邻 sampling 请求时间窗相交（前一封未完成下一封已在途）"
+        )
+    store = MailStore(mailroot)
+    for mid in expect:
+        log = store.get_letter("WB", mid).get("handled_log") or []
+        assert sum(1 for e in log if e.get("action") == "sampling") == 1  # 每信恰一次留痕
+
+
+def test_host_hang_timeout_releases_lock_next_letter_fires(mailroot, monkeypatch):
+    """补钉④ 超时路径：宿主卡死走 timeout 返回时锁即释放，后续排队信正常
+    发出（§四负例：单卡死分身不得永久堵死该 agent 队列）。"""
+    monkeypatch.setenv("AGENT_MAIL_SAMPLING_TIMEOUT", "1.0")
+    state = {"requests": []}
+    releases = [asyncio.Event(), asyncio.Event()]  # releases[0] 永不释放=模拟卡死
+    cb = make_seq_cb(state, releases)
+    landed: dict = {}
+
+    async def body(client):
+        await call_tool(client, "mailbox_register", {"agent_id": "WB"})
+        s1 = await call_tool(
+            client,
+            "mailbox_send",
+            {"from_id": "HS", "to": "WB", "subject": "hang-forever", "body": "h"},
+        )
+        landed["s1"] = s1["delivered"][0]["id"]
+        await wait_until(lambda: len(state["requests"]) == 1, what="hung letter in flight")
+        s2 = await call_tool(
+            client,
+            "mailbox_send",
+            {"from_id": "HS", "to": "WB", "subject": "queued-behind", "body": "q"},
+        )
+        landed["s2"] = s2["delivered"][0]["id"]
+        await wait_until(
+            lambda: len(state["requests"]) == 2,
+            what="queued letter fired after timeout released the lock",
+        )
+        releases[0].set()  # 场景收尾：放开卡死回调
+        releases[1].set()
+        await wait_until(
+            lambda: any(
+                e.get("event") == "result" and e.get("outcome") == "timeout"
+                for e in read_sampling_log(mailroot)
+            ),
+            what="timeout outcome audit",
+        )
+        await wait_until(
+            lambda: any(
+                e.get("event") == "result" and e.get("outcome") == "ok"
+                for e in read_sampling_log(mailroot)
+            ),
+            what="queued letter ok audit",
+        )
+
+    asyncio.run(run_pair(mailroot, body, sampling_cb=cb))
+    assert request_msg_ids(state) == [landed["s1"], landed["s2"]]
+
+
+def test_host_error_releases_lock_next_letter_fires(mailroot):
+    """补钉④ 失败路径：宿主回调抛错（error outcome）同样释放锁，下一封照常发出。"""
+    state = {"requests": []}
+    releases = [asyncio.Event(), asyncio.Event()]
+    cb = make_seq_cb(state, releases, boom_first=True)
+    landed: dict = {}
+
+    async def body(client):
+        await call_tool(client, "mailbox_register", {"agent_id": "WB"})
+        s1 = await call_tool(
+            client, "mailbox_send", {"from_id": "HS", "to": "WB", "subject": "boom", "body": "b"}
+        )
+        landed["s1"] = s1["delivered"][0]["id"]
+        await wait_until(
+            lambda: any(
+                e.get("event") == "result" and e.get("outcome") == "error"
+                for e in read_sampling_log(mailroot)
+            ),
+            what="error outcome audit",
+        )
+        s2 = await call_tool(
+            client, "mailbox_send", {"from_id": "HS", "to": "WB", "subject": "next", "body": "n"}
+        )
+        landed["s2"] = s2["delivered"][0]["id"]
+        await wait_until(lambda: len(state["requests"]) == 2, what="next letter fires after error")
+        releases[1].set()
+
+    asyncio.run(run_pair(mailroot, body, sampling_cb=cb))
+    assert request_msg_ids(state) == [landed["s1"], landed["s2"]]
+    r0, r1 = state["requests"]
+    assert r0["end"] <= r1["start"]  # 失败释放后才有第二路，无并发
+
+
+def test_queue_order_follows_created_at_landing_time(mailroot):
+    """补钉②：排队顺序=落箱时间序（created_at），非通知到达序——
+    晚到但早落的信插队到先落者之后、先到晚落者之前。"""
+    state = {"requests": []}
+    releases = [asyncio.Event(), asyncio.Event(), asyncio.Event()]
+    cb = make_seq_cb(state, releases)
+    seed = MailStore(mailroot)  # 无钩子实例：手工种信 + 手工控制通知序
+    m_c = seed.send("HS", "WB", "lands-last", "c", dedupe=False)[0]["id"]
+    m_a = seed.send("HS", "WB", "lands-first", "a", dedupe=False)[0]["id"]
+    m_b = seed.send("HS", "WB", "lands-second", "b", dedupe=False)[0]["id"]
+
+    async def body(client):
+        await call_tool(client, "mailbox_register", {"agent_id": "WB"})
+        notifier = srv._sampling_notifier
+        store = srv._store_instance()
+        assert notifier.notify(store, "WB", m_c, created_at="2026-09-25T12:00:03Z")
+        await wait_until(lambda: len(state["requests"]) == 1, what="first letter in flight")
+        # 到达序 b 先 a 后；落箱序 a（12:00:01）先 b（12:00:02）→ 队列须重排
+        assert notifier.notify(store, "WB", m_b, created_at="2026-09-25T12:00:02Z")
+        assert notifier.notify(store, "WB", m_a, created_at="2026-09-25T12:00:01Z")
+        await asyncio.sleep(0.8)
+        assert len(state["requests"]) == 1, "两封排队信都不得抢先在途"
+        releases[0].set()
+        await wait_until(lambda: len(state["requests"]) == 2, what="earlier-landing letter fires")
+        releases[1].set()
+        await wait_until(lambda: len(state["requests"]) == 3, what="later-landing letter fires")
+        releases[2].set()
+        await wait_until(lambda: all(r["end"] is not None for r in state["requests"]))
+
+    asyncio.run(run_pair(mailroot, body, sampling_cb=cb))
+    assert request_msg_ids(state) == [m_c, m_a, m_b], (
+        "FIFO 须按 created_at 落箱序：早落的 a 先于晚落的 b（尽管 b 的通知先到）"
+    )
+
+
+def test_queue_same_created_at_keeps_arrival_order(mailroot):
+    """补钉② tiebreak：同秒落箱（created_at 相同）的信按通知到达序排。"""
+    state = {"requests": []}
+    releases = [asyncio.Event(), asyncio.Event(), asyncio.Event()]
+    cb = make_seq_cb(state, releases)
+    seed = MailStore(mailroot)
+    m1 = seed.send("HS", "WB", "tie-one", "1", dedupe=False)[0]["id"]
+    m2 = seed.send("HS", "WB", "tie-two", "2", dedupe=False)[0]["id"]
+
+    async def body(client):
+        await call_tool(client, "mailbox_register", {"agent_id": "WB"})
+        notifier = srv._sampling_notifier
+        store = srv._store_instance()
+        assert notifier.notify(store, "WB", m1, created_at="2026-09-25T12:00:00Z")
+        await wait_until(lambda: len(state["requests"]) == 1, what="first in flight")
+        assert notifier.notify(store, "WB", m2, created_at="2026-09-25T12:00:00Z")
+        await asyncio.sleep(0.5)
+        assert len(state["requests"]) == 1
+        releases[0].set()
+        await wait_until(lambda: len(state["requests"]) == 2, what="tie letter fires")
+        releases[1].set()
+        await wait_until(lambda: all(r["end"] is not None for r in state["requests"]))
+
+    asyncio.run(run_pair(mailroot, body, sampling_cb=cb))
+    assert request_msg_ids(state) == [m1, m2]  # 同 created_at → 到达序保序
+
+
+def test_max_concurrent_two_allows_parallel_wake(mailroot):
+    """补钉③ 配置面：wake.json max_concurrent=2 → 同 agent 可 2 路在途，
+    第 3 封仍排队且不超出配额。"""
+    (mailroot / "wake.json").write_text(
+        json.dumps({"agents": {"WB": {"max_concurrent": 2}}}), encoding="utf-8"
+    )
+    state = {"requests": []}
+    releases = [asyncio.Event(), asyncio.Event(), asyncio.Event()]
+    cb = make_seq_cb(state, releases)
+    landed: dict = {}
+
+    async def body(client):
+        await call_tool(client, "mailbox_register", {"agent_id": "WB"})
+        s1 = await call_tool(
+            client, "mailbox_send", {"from_id": "HS", "to": "WB", "subject": "p1", "body": "1"}
+        )
+        landed["s1"] = s1["delivered"][0]["id"]
+        await wait_until(lambda: len(state["requests"]) == 1, what="first in flight")
+        s2 = await call_tool(
+            client, "mailbox_send", {"from_id": "HS", "to": "WB", "subject": "p2", "body": "2"}
+        )
+        landed["s2"] = s2["delivered"][0]["id"]
+        await wait_until(lambda: len(state["requests"]) == 2, what="second route in parallel")
+        s3 = await call_tool(
+            client, "mailbox_send", {"from_id": "HS", "to": "WB", "subject": "p3", "body": "3"}
+        )
+        landed["s3"] = s3["delivered"][0]["id"]
+        await asyncio.sleep(0.8)
+        assert len(state["requests"]) == 2, "第 3 封必须排队：不得超过 max_concurrent=2"
+        releases[0].set()
+        releases[1].set()
+        await wait_until(lambda: len(state["requests"]) == 3, what="third fires within quota")
+        releases[2].set()
+        await wait_until(lambda: all(r["end"] is not None for r in state["requests"]))
+
+    asyncio.run(run_pair(mailroot, body, sampling_cb=cb))
+    assert request_msg_ids(state) == [landed["s1"], landed["s2"], landed["s3"]]
+    r0, r1, r2 = state["requests"]
+    assert r1["start"] < r0["end"], "并行实锤：第二路在第一路释放前已在途（配额 2 生效）"
+    assert r2["start"] >= r0["end"] and r2["start"] >= r1["end"], "第 3 路不得超配额抢跑"
+
+
+def test_max_concurrent_garbage_clamps_to_locked_default(mailroot, caplog):
+    """补钉③ 防御面：max_concurrent 非法（0）→ 回落最保守的 1（锁语义），
+    落 warning，队列仍按单飞执行不放大并发。"""
+    (mailroot / "wake.json").write_text(
+        json.dumps({"agents": {"WB": {"max_concurrent": 0}}}), encoding="utf-8"
+    )
+    state = {"requests": []}
+    releases = [asyncio.Event(), asyncio.Event()]
+    cb = make_seq_cb(state, releases)
+
+    async def body(client):
+        await call_tool(client, "mailbox_register", {"agent_id": "WB"})
+        await call_tool(
+            client, "mailbox_send", {"from_id": "HS", "to": "WB", "subject": "g1", "body": "1"}
+        )
+        await wait_until(lambda: len(state["requests"]) == 1, what="first in flight")
+        await call_tool(
+            client, "mailbox_send", {"from_id": "HS", "to": "WB", "subject": "g2", "body": "2"}
+        )
+        await asyncio.sleep(0.8)
+        assert len(state["requests"]) == 1, "垃圾 max_concurrent 必须锁死在 1，不放并发"
+        releases[0].set()
+        await wait_until(lambda: len(state["requests"]) == 2, what="second fires after release")
+        releases[1].set()
+        await wait_until(lambda: all(r["end"] is not None for r in state["requests"]))
+
+    with caplog.at_level(logging.WARNING, logger="agent_mailbox.sampling"):
+        asyncio.run(run_pair(mailroot, body, sampling_cb=cb))
+    assert any("locked to 1" in r.message for r in caplog.records), "配置坏了必须可见（warning）"
+
+
+def test_degrade_pending_audits_and_clears_queue(mailroot, monkeypatch):
+    """补钉⑤ 收场腿：内存排队未发出的 sampling 请求降级走 fallback——
+    逐条 degrade 审计、清空内存队列（不驻留）、信仍 pending、不补发采样。"""
+    monkeypatch.setenv("AGENT_MAIL_SAMPLING_TIMEOUT", "30")
+    state = {"requests": []}
+    releases = [asyncio.Event()]
+    cb = make_seq_cb(state, releases)
+
+    async def body(client):
+        await call_tool(client, "mailbox_register", {"agent_id": "WB"})
+        await call_tool(
+            client, "mailbox_send", {"from_id": "HS", "to": "WB", "subject": "d1", "body": "1"}
+        )
+        await wait_until(lambda: len(state["requests"]) == 1, what="first in flight")
+        s2 = await call_tool(
+            client, "mailbox_send", {"from_id": "HS", "to": "WB", "subject": "d2", "body": "2"}
+        )
+        s2_id = s2["delivered"][0]["id"]
+        await asyncio.sleep(0.5)  # 让 s2 的 enqueue 落进内存队列
+        # 模拟 server 收场（main 的 finally 调同一路径）
+        degraded = srv._sampling_notifier.degrade_pending("server-restart")
+        assert [d["msg_id"] for d in degraded] == [s2_id]
+        gate = srv._sampling_notifier._gates.get("WB")
+        assert gate is not None and gate.queue == []  # 内存队列清空，不驻留
+        assert any(
+            e.get("event") == "degrade"
+            and e.get("reason") == "server-restart"
+            and e.get("msg_id") == s2_id
+            for e in read_sampling_log(mailroot)
+        )
+        assert MailStore(mailroot).get_letter("WB", s2_id)["status"] == "pending"  # fallback 兜底
+        releases[0].set()
+        await wait_until(lambda: all(r["end"] is not None for r in state["requests"]))
+        await asyncio.sleep(0.6)
+        assert len(state["requests"]) == 1, "已降级的信不得再补发 sampling"
+        log = MailStore(mailroot).get_letter("WB", s2_id).get("handled_log") or []
+        assert not [e for e in log if e.get("action") == "sampling"]  # 零采样留痕=纯 fallback
+
+    asyncio.run(run_pair(mailroot, body, sampling_cb=cb))
+
+
+def test_reconnect_after_teardown_no_memory_queue_letters_reachable(mailroot):
+    """补钉⑤ 连接腿（真 teardown 语义）：会话收场连接死亡 → 在途/排队请求
+    经失败路径收场，内存队列不驻留；信留在盘上 pending，新连接首个 notify
+    照常唤醒（mailbox_check fallback 永远可达）。"""
+    state1 = {"requests": []}
+    cb1 = make_seq_cb(state1, [asyncio.Event()])  # releases[0] 不置位=c1 卡死
+    queued: dict = {}
+
+    async def body1(client):
+        await call_tool(client, "mailbox_register", {"agent_id": "WB"})
+        await call_tool(
+            client, "mailbox_send", {"from_id": "HS", "to": "WB", "subject": "c1", "body": "1"}
+        )
+        await wait_until(lambda: len(state1["requests"]) == 1, what="first in flight")
+        s2 = await call_tool(
+            client, "mailbox_send", {"from_id": "HS", "to": "WB", "subject": "c2", "body": "2"}
+        )
+        queued["id"] = s2["delivered"][0]["id"]
+        await asyncio.sleep(0.5)
+        gate = srv._sampling_notifier._gates.get("WB")
+        assert gate is not None and [i.msg_id for i in gate.queue] == [queued["id"]]
+        # 会话在此收场：连接死亡，在途+排队的 sampling 请求随连接收场
+
+    asyncio.run(run_pair(mailroot, body1, sampling_cb=cb1))
+
+    gate = srv._sampling_notifier._gates.get("WB")
+    assert gate is not None and gate.queue == [], "连接死亡后内存队列不得驻留排队信"
+    assert MailStore(mailroot).get_letter("WB", queued["id"])["status"] == "pending"  # 不丢信
+
+    state2 = {"requests": []}
+    cb2 = make_seq_cb(state2, [])
+
+    async def body2(client):
+        await call_tool(client, "mailbox_register", {"agent_id": "WB"})
+        await call_tool(
+            client, "mailbox_send", {"from_id": "HS", "to": "WB", "subject": "c3", "body": "3"}
+        )
+        await wait_until(lambda: len(state2["requests"]) == 1, what="new connection wake fires")
+
+    asyncio.run(run_pair(mailroot, body2, sampling_cb=cb2))
+    assert MailStore(mailroot).get_letter("WB", queued["id"])["status"] == "pending"
+
+
+def test_stale_gate_degrades_on_reconnect_notify(mailroot):
+    """补钉⑤ 降级路径：旧闸门 loop 已死且队列有滞留信（进程硬杀的等价形态）
+    → 新连接首个 notify 触发重建，滞留信逐条落 degrade 审计、不发出。"""
+    seed = MailStore(mailroot)
+    stale_mid = seed.send("HS", "WB", "hard-killed-queue", "s", dedupe=False)[0]["id"]
+    dead_loop = asyncio.new_event_loop()
+    dead_loop.close()
+    stale_gate = _AgentGate("WB", dead_loop, owner=srv._sampling_notifier)
+    stale_gate.queue.append(
+        _QueuedLetter(
+            msg_id=stale_mid,
+            created_at="2026-09-25T12:00:00Z",
+            seq=10**9,
+            store=seed,
+            entry=ConnectionEntry(connection=object(), declared_sampling=True, loop=dead_loop),
+        )
+    )
+    srv._sampling_notifier._gates["WB"] = stale_gate
+
+    state = {"requests": []}
+    cb = make_seq_cb(state, [])
+
+    async def body(client):
+        await call_tool(client, "mailbox_register", {"agent_id": "WB"})
+        sent = await call_tool(
+            client, "mailbox_send", {"from_id": "HS", "to": "WB", "subject": "fresh", "body": "f"}
+        )
+        fresh_id = sent["delivered"][0]["id"]
+        await wait_until(lambda: len(state["requests"]) == 1, what="fresh wake on new gate")
+        assert request_msg_ids(state) == [fresh_id]  # 只有新信被唤醒
+        assert any(
+            e.get("event") == "degrade"
+            and e.get("reason") == "connection-loop-closed"
+            and e.get("msg_id") == stale_mid
+            for e in read_sampling_log(mailroot)
+        ), "滞留信必须在闸门重建时落降级审计"
+        assert srv._sampling_notifier._gates["WB"].queue == []  # 降级后内存队列不驻留
+
+    asyncio.run(run_pair(mailroot, body, sampling_cb=cb))
+    assert MailStore(mailroot).get_letter("WB", stale_mid)["status"] == "pending"  # fallback 兜底
+
+
+@pytest.mark.parametrize("plat", ["posix", "win32"], ids=["linux-ci", "windows-ci"])
+def test_lock_timeout_release_platform_matrix(mailroot, monkeypatch, plat):
+    """补钉⑥ Windows CI 参数化占位：锁超时释放路径按平台矩阵跑。
+    posix 行 = 本机/Linux CI 照旧实跑；win32 行为 Windows CI 占位（skip）。"""
+    current = "win32" if sys.platform == "win32" else "posix"
+    if plat != current:
+        pytest.skip(f"{plat} CI 占位：等待对应平台接入（当前 {sys.platform}）")
+    monkeypatch.setenv("AGENT_MAIL_SAMPLING_TIMEOUT", "0.6")
+    state = {"requests": []}
+    releases = [asyncio.Event(), asyncio.Event()]
+    cb = make_seq_cb(state, releases)
+    landed: dict = {}
+
+    async def body(client):
+        await call_tool(client, "mailbox_register", {"agent_id": "WB"})
+        s1 = await call_tool(
+            client, "mailbox_send", {"from_id": "HS", "to": "WB", "subject": "m1", "body": "1"}
+        )
+        landed["s1"] = s1["delivered"][0]["id"]
+        await wait_until(lambda: len(state["requests"]) == 1, what="first in flight")
+        s2 = await call_tool(
+            client, "mailbox_send", {"from_id": "HS", "to": "WB", "subject": "m2", "body": "2"}
+        )
+        landed["s2"] = s2["delivered"][0]["id"]
+        await wait_until(
+            lambda: len(state["requests"]) == 2,
+            what="lock released by timeout on this platform",
+        )
+        releases[0].set()
+        releases[1].set()
+        await wait_until(lambda: all(r["end"] is not None for r in state["requests"]))
+
+    asyncio.run(run_pair(mailroot, body, sampling_cb=cb))
+    assert request_msg_ids(state) == [landed["s1"], landed["s2"]]

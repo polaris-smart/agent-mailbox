@@ -101,7 +101,13 @@ def _wake_on_delivered(landed: list[dict]) -> None:
         if m.get("from") == m.get("to"):
             continue
         try:
-            _sampling_notifier.notify(_store_instance(), str(m.get("to")), str(m.get("id")))
+            # created_at 随信传递：per-agent 闸门的 FIFO 排队依据=落箱时间序（补钉②）
+            _sampling_notifier.notify(
+                _store_instance(),
+                str(m.get("to")),
+                str(m.get("id")),
+                str(m.get("created_at") or ""),
+            )
         except Exception as exc:  # noqa: BLE001 — 唤醒失败永不影响落箱主链路
             logger.warning("sampling wake dispatch failed for %s: %s", m.get("id"), exc)
 
@@ -466,14 +472,20 @@ def main() -> None:
     # instead of mid-session on the first guarded call.
     _identity_binding()
 
-    if args.web:
-        from .web import run_web
+    try:
+        if args.web:
+            from .web import run_web
 
-        run_web(args.web)
-    elif args.http:
-        server.run(transport="streamable-http", port=args.http)
-    else:
-        server.run(transport="stdio")
+            run_web(args.web)
+        elif args.http:
+            server.run(transport="streamable-http", port=args.http)
+        else:
+            server.run(transport="stdio")
+    finally:
+        # v0.7 补钉⑤（HS 复核）：进程收场时，内存排队未发出的 sampling 请求
+        # 一律降级走 fallback 落箱——逐条落 degrade 审计并清空内存队列，
+        # 不驻留内存队列；信在通知前已落盘 pending，mailbox_check 天然兜底。
+        _sampling_notifier.degrade_pending("server-restart")
 
 
 if __name__ == "__main__":
