@@ -762,6 +762,11 @@ def _cmd_run(args: argparse.Namespace) -> None:
         )
     if args.agent:
         cfg.agent_id = args.agent
+    if getattr(args, "adapter", ""):
+        # per-agent plist override: multi-agent installs share one wake.json,
+        # each plist passes --adapter to pick its own wake path (HS=hermes
+        # stays untouched, codex=local-command).
+        cfg.adapter = args.adapter
     if not cfg.agent_id:
         raise SystemExit("wake run: no agent_id in wake.json — pass --agent")
     run(root, cfg, once=args.once)
@@ -807,6 +812,11 @@ def wake_main(argv: list[str] | None = None) -> None:
     p_run = sub.add_parser("run", help="run one drain round (--once) or loop")
     p_run.add_argument("--agent", default="")
     p_run.add_argument("--root", default="")
+    p_run.add_argument(
+        "--adapter",
+        default="",
+        help="override wake.json adapter (e.g. local-command for per-agent plist wake)",
+    )
     p_run.add_argument("--once", action="store_true", help="one round then exit (WatchPaths mode)")
     p_run.set_defaults(func=_cmd_run)
 

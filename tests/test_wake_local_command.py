@@ -250,3 +250,34 @@ def test_legacy_wake_json_without_command_keys_loads_and_drains(env):
     st.send("HS", "ZC", "hello", "wake me")
     stats = run_once(root, legacy, adapter=_Recorder([True]))
     assert stats["woke"] == 1
+
+
+def test_cmd_run_adapter_cli_override(env, monkeypatch):
+    """wake run --adapter CLI 覆盖 wake.json 顶层 adapter——多 agent 共享
+    wake.json 时各 plist 按 --agent --adapter 各取所需（HS=hermes 不动，
+    codex=local-command），覆盖只影响本次 run。"""
+    import types
+
+    from agent_mailbox import wake as wk
+
+    root, st = env
+    st.send("HS", "codex", "wake codex", "process me")
+    # 模拟共享 wake.json：顶层 adapter=hermes（HS 的默认）
+    (root / "wake.json").write_text(
+        json.dumps({"agent_id": "HS", "adapter": "hermes"}), encoding="utf-8"
+    )
+    captured = {}
+
+    def fake_run(root_, cfg_, once=False):
+        captured["adapter"] = cfg_.adapter
+        captured["agent"] = cfg_.agent_id
+
+    monkeypatch.setattr(wk, "run", fake_run)
+    args = types.SimpleNamespace(agent="codex", root=str(root), once=True, adapter="local-command")
+    wk._cmd_run(args)
+    assert captured == {"adapter": "local-command", "agent": "codex"}
+
+    # 不传 --adapter 时回落 wake.json 顶层（HS 语义零变化）
+    captured.clear()
+    wk._cmd_run(types.SimpleNamespace(agent="HS", root=str(root), once=True, adapter=""))
+    assert captured["adapter"] == "hermes" and captured["agent"] == "HS"
