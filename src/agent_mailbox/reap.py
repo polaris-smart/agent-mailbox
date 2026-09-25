@@ -21,7 +21,9 @@ from .store import MailboxError, MailStore
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="agent-mailbox-reap")
-    parser.add_argument("--agent", required=True, help="mailbox to reap (defaults to AGENT_MAIL_ID when omitted)")
+    parser.add_argument(
+        "--agent", required=True, help="mailbox to reap (defaults to AGENT_MAIL_ID when omitted)"
+    )
     parser.add_argument(
         "--ttl",
         type=float,

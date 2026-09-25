@@ -38,6 +38,7 @@ def store(tmp_path, monkeypatch):
 
 # ------------------------------------------------------------------ 缺口1 hash
 
+
 def test_hash_pinned_formula():
     h = semantic_hash("s", "b")
     assert re.fullmatch(r"[0-9a-f]{64}", h)  # full 64 hex, stored in full
@@ -65,6 +66,7 @@ def test_hash_changes_when_code_body_changes():
 
 
 # --------------------------------------------------------------- 铁2 three paths
+
 
 def test_dupe_blocked_with_zero_side_effects(store):
     """铁2 ①: hit -> blocked, caller sees deduped/existing_id, zero side effects."""
@@ -103,6 +105,7 @@ def test_same_hash_terminal_passes_through(store):
 
 # ------------------------------------------------------------------ window/范围
 
+
 def test_ttl_release_leaves_two_same_hash_letters(store):
     """微点2: after the dedup window a re-send passes — the queue may then
     legitimately hold two same-hash non-terminal letters."""
@@ -136,9 +139,15 @@ def test_legacy_letter_without_hash_never_blocks(store):
     """旧信 null hash 不回填：pre-v0.5 letters cannot match a new hash."""
     p = store.root / "inbox" / "B"
     legacy = {
-        "id": "20260901000000-legacy-b", "from": "A", "to": "B",
-        "subject": "legacy", "body": "legacy", "priority": "normal",
-        "status": "pending", "reply_to": None, "created_at": "2026-09-01T00:00:00Z",
+        "id": "20260901000000-legacy-b",
+        "from": "A",
+        "to": "B",
+        "subject": "legacy",
+        "body": "legacy",
+        "priority": "normal",
+        "status": "pending",
+        "reply_to": None,
+        "created_at": "2026-09-01T00:00:00Z",
     }
     (p / f"{legacy['id']}.json").write_text(json.dumps(legacy), encoding="utf-8")
     out = store.send("A", "B", "legacy", "legacy")
@@ -147,9 +156,7 @@ def test_legacy_letter_without_hash_never_blocks(store):
 
 def test_message_stores_full_hash(store):
     mid = store.send("A", "B", "hash me", "body")[0]["id"]
-    m = json.loads(
-        (store.root / "inbox" / "B" / f"{mid}.json").read_text(encoding="utf-8")
-    )
+    m = json.loads((store.root / "inbox" / "B" / f"{mid}.json").read_text(encoding="utf-8"))
     assert m["semantic_hash"] == semantic_hash("hash me", "body")
 
 
@@ -164,6 +171,7 @@ def test_broadcast_dedupes_per_recipient(store):
 
 # ------------------------------------------------------------------ 铁1 pin
 
+
 def test_iron1_defaults_satisfy_reap_below_dedup():
     assert REAP_TTL_DEFAULT < DEDUP_TTL_DEFAULT
     assert load_window_config(Path("/nonexistent-root-for-test")) == {
@@ -175,11 +183,11 @@ def test_iron1_defaults_satisfy_reap_below_dedup():
 @pytest.mark.parametrize(
     "cfg",
     [
-        '{"reap_ttl": 86400}',               # reap >= default dedup
+        '{"reap_ttl": 86400}',  # reap >= default dedup
         '{"dedup_ttl": 3600, "reap_ttl": 3600}',  # equal — must fail loudly
         '{"dedup_ttl": 3600, "reap_ttl": 7200}',
         '{"reap_ttl": 0}',
-        'not json at all',
+        "not json at all",
     ],
 )
 def test_iron1_config_violation_fails_loudly(tmp_path, cfg):
@@ -206,6 +214,7 @@ def test_iron1_valid_override_accepted(tmp_path):
 
 
 # ------------------------------------------------------------------ index
+
 
 def test_index_sees_letters_from_other_instances(tmp_path):
     """缺口2: two MailStore instances on one root dedupe against each other —

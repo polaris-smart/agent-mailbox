@@ -41,11 +41,15 @@ def _send_and_claim(store, subject="work item"):
 
 # ------------------------------------------------------- §3 compensation table
 
+
 def test_row1_pending_no_records_is_process(store):
     mid = store.send("A", "B", "row1", "body")[0]["id"]
     plan = store.resume_plan("B", mid)
     assert plan == {
-        "id": mid, "status": "pending", "intent": False, "outcome": False,
+        "id": mid,
+        "status": "pending",
+        "intent": False,
+        "outcome": False,
         "resume": "process",
     }
 
@@ -99,6 +103,7 @@ def test_resume_plan_unknown_message_raises(store):
 
 # ------------------------------------------------------------ record_handled
 
+
 def test_record_handled_appends_two_phase_entries(store):
     mid = _send_and_claim(store, "two-phase")
     store.record_handled("B", mid, HANDLED_INTENT)
@@ -125,6 +130,7 @@ def test_record_handled_unknown_message_raises(store):
 
 
 # ----------------------------------------------------------------- 缺口4 reap
+
 
 def _iso(epoch: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(epoch)) + "Z"
@@ -171,6 +177,7 @@ def test_reclaim_default_ttl_comes_from_config(tmp_path):
 
 
 # --------------------------------------------------------------- N1: no auto-reap
+
 
 def test_n1_reap_has_no_library_call_site():
     """N1: ``reap_stale_acked`` must stay a manual maintenance operation —

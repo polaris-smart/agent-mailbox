@@ -70,12 +70,14 @@ def _wait_for(predicate, timeout=5.0):
 
 # ------------------------------------------------------------------ signature
 
+
 def test_signature_is_hmac_sha256_hex():
     expected = "sha256=" + hmac.new(b"s3cret", b"payload", hashlib.sha256).hexdigest()
     assert _sign("s3cret", b"payload") == expected
 
 
 # ------------------------------------------------------------------ signature styles (B1)
+
 
 def test_sign_styles_github_generic_slack():
     hexd = hmac.new(b"s3cret", b"payload", hashlib.sha256).hexdigest()
@@ -113,6 +115,7 @@ def test_post_message_uses_style_header(sink, monkeypatch, style, header, prefix
 
 # ------------------------------------------------------------------ config
 
+
 def test_load_config_env_overrides_file(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENT_MAIL_WEBHOOK_URL", "http://127.0.0.1:1/hook")
     monkeypatch.setenv("AGENT_MAIL_HOME", str(tmp_path))  # no config file here
@@ -126,6 +129,7 @@ def test_load_config_none_when_unset(monkeypatch, tmp_path):
 
 
 # ------------------------------------------------------------------ send integration
+
 
 def test_send_triggers_signed_webhook(sink, tmp_path, monkeypatch):
     url, received = sink
@@ -167,6 +171,7 @@ def test_post_message_direct(sink):
 
 # ------------------------------------------------------------------ pinning
 
+
 def test_validate_rejects_non_http_scheme():
     with pytest.raises(ValueError):
         _validate_url("ftp://127.0.0.1/x")
@@ -188,6 +193,7 @@ def test_validate_allows_loopback():
 
 
 # ------------------------------------------------------- config/root binding
+
 
 def test_custom_root_store_does_not_read_other_home_webhook(sink, tmp_path, monkeypatch):
     """Regression (2026-09-06 phantom-notification incident): a store built on
@@ -239,6 +245,7 @@ def test_send_appends_sent_log_audit(tmp_path, monkeypatch):
 
 
 # ------------------------------------------------------------------ unread_count (v0.6.2)
+
 
 def test_send_payload_carries_unread_count(sink, tmp_path, monkeypatch):
     """payload['unread_count'] = recipient's pending tally at notify time,

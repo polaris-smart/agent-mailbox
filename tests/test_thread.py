@@ -24,6 +24,7 @@ def store(tmp_path, monkeypatch):
 
 # --------------------------------------------------------------- mint/inherit
 
+
 def test_send_mints_shared_thread_id(store):
     store.register("HS")
     store.register("ZC")
@@ -47,8 +48,7 @@ def test_new_send_gets_fresh_thread(store):
 def test_reply_inherits_thread_id(store):
     store.register("HS")
     original = store.send("ZC", "HS", "design review", "please review")[0]
-    reply = store.send("HS", "ZC", "Re: design review", "looks good",
-                       reply_to=original["id"])[0]
+    reply = store.send("HS", "ZC", "Re: design review", "looks good", reply_to=original["id"])[0]
     assert reply["thread_id"] == original["thread_id"]
 
 
@@ -62,13 +62,13 @@ def test_reply_to_legacy_original_backfills_original(store):
     del legacy["thread_id"]  # simulate a pre-v0.6 letter
     path.write_text(json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
 
-    reply = store.send("HS", "ZC", "Re: legacy thread", "done",
-                       reply_to=original["id"])[0]
+    reply = store.send("HS", "ZC", "Re: legacy thread", "done", reply_to=original["id"])[0]
     back = json.loads(path.read_text(encoding="utf-8"))
     assert back["thread_id"] == reply["thread_id"]
 
 
 # ------------------------------------------------------------------- key
+
 
 def test_thread_key_strips_stacked_prefixes():
     assert thread_key("Re: Re: Fwd: 发票确认") == thread_key("发票确认")
@@ -78,12 +78,19 @@ def test_thread_key_strips_stacked_prefixes():
 
 # ---------------------------------------------------------------- backfill
 
+
 def _write_legacy(store, agent, subject, created):
     mid = f"legacy-{created}-{agent}".replace(":", "")
     msg = {
-        "id": mid, "from": "ZC", "to": agent, "subject": subject,
-        "body": "b", "priority": "normal", "status": "done",
-        "reply_to": None, "created_at": created,
+        "id": mid,
+        "from": "ZC",
+        "to": agent,
+        "subject": subject,
+        "body": "b",
+        "priority": "normal",
+        "status": "done",
+        "reply_to": None,
+        "created_at": created,
     }
     (store.root / "inbox" / agent).mkdir(parents=True, exist_ok=True)
     (store.root / "inbox" / agent / f"{mid}.json").write_text(
@@ -118,6 +125,7 @@ def test_backfill_singleton_stays_null(store):
 
 # ------------------------------------------------------------------ replay
 
+
 def test_thread_messages_cross_agent_time_order(store):
     store.register("HS")
     store.register("ZC")
@@ -144,6 +152,7 @@ def test_thread_messages_unknown_ref_raises(store):
 
 # ------------------------------------------------------------------ filter
 
+
 def test_list_messages_thread_filter(store):
     store.register("HS")
     t1 = store.send("ZC", "HS", "alpha", "1")[0]["thread_id"]
@@ -162,6 +171,7 @@ def test_list_filter_matches_legacy_by_subject(store):
 
 
 # ------------------------------------------------------------------ ghosts
+
 
 def test_ghost_threads_and_check_warning(store, monkeypatch):
     monkeypatch.setenv("AGENT_MAIL_ID", "HS")

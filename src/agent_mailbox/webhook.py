@@ -31,10 +31,12 @@ EVENT_TYPE = "agent_mailbox_new_message"  # consumers filter on this name
 # is always hmac-sha256 over the raw request body (see _sign); only the header
 # name and value format differ per style.
 _STYLE_HEADERS: dict[str, str] = {
-    "github": "X-Hub-Signature-256",   # value sha256=<hex> (default)
+    "github": "X-Hub-Signature-256",  # value sha256=<hex> (default)
     "generic": "X-Webhook-Signature",  # value <hex>, no scheme prefix
-    "slack": "X-Slack-Signature",      # value v0=<hex> — see note in _sign
+    "slack": "X-Slack-Signature",  # value v0=<hex> — see note in _sign
 }
+
+
 def _default_config_root() -> Path:
     # resolved per call (not at import time) so AGENT_MAIL_HOME is honoured at runtime
     return Path(os.environ.get("AGENT_MAIL_HOME", Path.home() / ".agent-mail"))

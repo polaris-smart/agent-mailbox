@@ -68,6 +68,7 @@ def jev_cfg(root, **kw):
 
 # ------------------------------------------------------------- default off
 
+
 def test_jev_disabled_by_default_and_regression(env):
     """Jev 关闭（或未配置）→ 行为与 v0.5 完全一致：信到就醒，无 Jev 调用。"""
     root, st = env
@@ -83,13 +84,16 @@ def test_jev_disabled_by_default_and_regression(env):
 
 # ------------------------------------------------------- fail-open iron law
 
+
 def test_jev_gate_fails_open_on_error(env):
     """Jev 报错/超时/断网 → 立即按「有信就醒」走，宁多勿漏。"""
     root, _ = env
     c = jev_cfg(root)
     m = {"id": "m1", "subject": "s", "body": "b"}
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(wake_mod, "jev_decide", lambda c_, m_: (_ for _ in ()).throw(OSError("net down")))
+        mp.setattr(
+            wake_mod, "jev_decide", lambda c_, m_: (_ for _ in ()).throw(OSError("net down"))
+        )
         wake, reason = jev_gate(c, m, root / "wake-jev.log")
     assert wake is True and reason == "fail-open"
 
@@ -106,12 +110,12 @@ def test_run_once_falls_open_when_jev_unreachable(env):
 
 # ----------------------------------------------------------------- routing
 
+
 def _routed(root, monkeypatch, result):
     c = jev_cfg(root)
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(wake_mod, "jev_decide", lambda c_, m_: result)
-        return jev_gate(c, {"id": "m1", "subject": "s", "body": "b"},
-                        root / "wake-jev.log")
+        return jev_gate(c, {"id": "m1", "subject": "s", "body": "b"}, root / "wake-jev.log")
 
 
 def test_jev_routes_noul_to_no_wake(env):
@@ -133,6 +137,7 @@ def test_jev_routes_high_score_to_wake(env):
 
 
 # --------------------------------------------------------------- logging
+
 
 def test_jev_log_records_score_never_key(env):
     """决策可解释：日志含 score；api_key 绝不上屏。"""

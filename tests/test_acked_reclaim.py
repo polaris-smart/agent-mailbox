@@ -24,9 +24,9 @@ def test_orphaned_ack_is_reclaimed_and_replayable(tmp_path):
     store.register("B")
     store.send("A", "B", "work item", "please handle")
 
-    got = store.check("B")                      # reserve it...
+    got = store.check("B")  # reserve it...
     assert [m["status"] for m in got] == ["acked"]
-    assert _msgs(store, "B", "pending") == []   # ...then the caller dies
+    assert _msgs(store, "B", "pending") == []  # ...then the caller dies
 
     reaped = store.reap_stale_acked("B", ttl_seconds=0)
     assert len(reaped) == 1
@@ -108,7 +108,7 @@ def test_reply_check_done_chain_survives_orphan(tmp_path):
 
     store.send("B", "A", "Re: topic", "pong", reply_to=first)  # B answers, A gets the reply
     reply_id = _msgs(store, "A", "pending")[0]["id"]
-    store.check("A")                            # A reserves the reply, then dies
+    store.check("A")  # A reserves the reply, then dies
     assert store.reap_stale_acked("A", ttl_seconds=0) == [reply_id]
 
     got = store.check("A")

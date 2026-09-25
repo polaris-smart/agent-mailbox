@@ -274,8 +274,11 @@ class _BoardHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _json(self, code: int, payload: dict) -> None:
-        self._send(code, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                   "application/json; charset=utf-8")
+        self._send(
+            code,
+            json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            "application/json; charset=utf-8",
+        )
 
     def _deny(self) -> None:
         self._json(401, {"error": "unauthorized: pass ?token=… or Authorization: Bearer …"})
@@ -303,15 +306,19 @@ class _BoardHandler(BaseHTTPRequestHandler):
             if path == "/api/tasks":
                 data = self._body()
                 task = self.store.task_create(
-                    str(data.get("title", "")), str(data.get("assignee", "")),
-                    "boss", str(data.get("due", "") or ""),
+                    str(data.get("title", "")),
+                    str(data.get("assignee", "")),
+                    "boss",
+                    str(data.get("due", "") or ""),
                 )
                 return self._json(200, {"task": task})
             if path.startswith("/api/tasks/") and path.endswith("/move"):
-                tid = path[len("/api/tasks/"):-len("/move")]
+                tid = path[len("/api/tasks/") : -len("/move")]
                 data = self._body()
                 task = self.store.task_move(
-                    tid, str(data.get("status", "")), moved_by="boss",
+                    tid,
+                    str(data.get("status", "")),
+                    moved_by="boss",
                     note=str(data.get("note", "") or ""),
                 )
                 return self._json(200, {"task": task})
@@ -369,10 +376,14 @@ def run_web(port: int = 8643, store: MailStore | None = None) -> None:
     """Serve the board on 127.0.0.1:port until interrupted."""
     store = store or MailStore()
     token = _web_token(store.root)
-    handler = type("BoardHandler", (_BoardHandler,), {
-        "store": store,
-        "token": token,
-    })
+    handler = type(
+        "BoardHandler",
+        (_BoardHandler,),
+        {
+            "store": store,
+            "token": token,
+        },
+    )
     srv = LoopbackServer(("127.0.0.1", port), handler)
     print(f"[agent-mailbox] board: http://127.0.0.1:{port}/?token={token}", flush=True)
     try:

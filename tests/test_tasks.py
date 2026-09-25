@@ -14,6 +14,7 @@ def store(tmp_path):
 
 # ------------------------------------------------------------------ create
 
+
 def test_task_create_defaults(store):
     task = store.task_create("write docs", "ZC", "HS")
     assert task["id"] == "t-1"
@@ -42,6 +43,7 @@ def test_task_create_rejects_bad_ids(store):
 
 
 # -------------------------------------------------------------- state machine
+
 
 def test_full_lifecycle_happy_path(store):
     store.task_create("ship v0.3.0", "ZC", "HS")
@@ -94,6 +96,7 @@ def test_move_rejects_bad_status_and_unknown_task(store):
 
 
 # ---------------------------------------------------------------- auto-notify
+
 
 def test_move_auto_messages_assignee(store):
     store.register("HS")
@@ -151,6 +154,7 @@ def test_move_note_recorded_in_history(store):
 
 # ------------------------------------------------------------------ reassign
 
+
 def test_move_reassigns_and_notifies_new_owner(store):
     store.register("HS")
     store.register("ZC")
@@ -171,6 +175,7 @@ def test_reassign_to_same_owner_keeps_card(store):
 
 
 # --------------------------------------------------------------------- list
+
 
 def test_task_list_filters(store):
     store.task_create("a", "ZC", "HS")
@@ -195,6 +200,7 @@ def test_corrupt_tasks_json_raises(store):
 
 
 # ---------------------------------------------------------------- concurrency
+
 
 def test_concurrent_moves_no_corruption(store):
     store.task_create("t", "ZC", "HS", notify=False)

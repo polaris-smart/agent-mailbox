@@ -64,13 +64,15 @@ def scan(root: Path) -> list[dict]:
         for entry in sorted(base.iterdir()):
             rel = f"{base_name}/{entry.name}"
             if entry.is_file():
-                findings.append({
-                    "kind": "orphan-letter",
-                    "path": rel,
-                    "size": entry.stat().st_size,
-                    "reason": "stray file directly under inbox/archive (no agent dir)",
-                    "action": "delete file",
-                })
+                findings.append(
+                    {
+                        "kind": "orphan-letter",
+                        "path": rel,
+                        "size": entry.stat().st_size,
+                        "reason": "stray file directly under inbox/archive (no agent dir)",
+                        "action": "delete file",
+                    }
+                )
                 continue
             size, n_files = _dir_stats(entry)
             registered = entry.name in agents
@@ -80,37 +82,50 @@ def scan(root: Path) -> list[dict]:
                 reason = "agent not in registry.json"
                 if test_named:
                     reason += "; name matches test pattern"
-                findings.append({
-                    "kind": kind, "path": rel, "size": size,
-                    "reason": reason, "action": f"delete dir ({n_files} files)",
-                })
+                findings.append(
+                    {
+                        "kind": kind,
+                        "path": rel,
+                        "size": size,
+                        "reason": reason,
+                        "action": f"delete dir ({n_files} files)",
+                    }
+                )
             elif test_named:
-                findings.append({
-                    "kind": "test-named-dir", "path": rel, "size": size,
-                    "reason": f"test-named but registered ({n_files} files)",
-                    "action": "review only — not deleted",
-                })
+                findings.append(
+                    {
+                        "kind": "test-named-dir",
+                        "path": rel,
+                        "size": size,
+                        "reason": f"test-named but registered ({n_files} files)",
+                        "action": "review only — not deleted",
+                    }
+                )
             else:
                 for p in sorted(entry.glob("*.json")):
                     try:
                         json.loads(p.read_text(encoding="utf-8"))
                     except (json.JSONDecodeError, OSError):
-                        findings.append({
-                            "kind": "orphan-letter",
-                            "path": f"{rel}/{p.name}",
-                            "size": p.stat().st_size,
-                            "reason": "unparseable JSON — invisible to mailbox_list",
-                            "action": "delete file",
-                        })
+                        findings.append(
+                            {
+                                "kind": "orphan-letter",
+                                "path": f"{rel}/{p.name}",
+                                "size": p.stat().st_size,
+                                "reason": "unparseable JSON — invisible to mailbox_list",
+                                "action": "delete file",
+                            }
+                        )
 
     for p in sorted(root.glob("*.tmp")):
-        findings.append({
-            "kind": "orphan-letter",
-            "path": p.name,
-            "size": p.stat().st_size,
-            "reason": "stray *.tmp from an interrupted atomic write",
-            "action": "delete file",
-        })
+        findings.append(
+            {
+                "kind": "orphan-letter",
+                "path": p.name,
+                "size": p.stat().st_size,
+                "reason": "stray *.tmp from an interrupted atomic write",
+                "action": "delete file",
+            }
+        )
     return findings
 
 
@@ -134,15 +149,18 @@ def main(argv: list[str] | None = None) -> None:
         description="List (default) or delete suspected test residue in a mail root.",
     )
     parser.add_argument(
-        "--root", default=None,
+        "--root",
+        default=None,
         help="mail root (default $AGENT_MAIL_HOME or ~/.agent-mail)",
     )
     parser.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="list suspects only, never delete (the default behaviour)",
     )
     parser.add_argument(
-        "--yes", action="store_true",
+        "--yes",
+        action="store_true",
         help="actually delete the listed suspects (asks for confirmation)",
     )
     args = parser.parse_args(argv)
