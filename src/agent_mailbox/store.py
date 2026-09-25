@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import sys
@@ -29,6 +30,7 @@ if sys.platform == "win32":
     import msvcrt
 else:
     import fcntl
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -308,6 +310,11 @@ class MailStore:
         # semantic-hash -> letter paths, per inbox, keyed by directory mtime
         # (缺口2: send-side dedup must not O(N)-scan the box on every send).
         self._dedup_index: dict[str, tuple[int, dict[str, list[Path]]]] = {}
+        # v0.7 sampling 唤醒（改点2）: send() 落箱后的投递钩子，签名
+        # ``(landed_messages) -> None``（landed = 真正写到磁盘的信 dict 列表，
+        # 去重信不含）。默认 None（store 独立使用零行为变化）；MCP server 层
+        # 挂 _wake_on_delivered 做采样寻址。钩子异常由 send() 兜住，绝不影响落箱。
+        self.on_delivered: Callable[[list[dict[str, Any]]], None] | None = None
 
     # ------------------------------------------------------------------ lock
 
@@ -544,6 +551,13 @@ class MailStore:
             for rid in {str(m["to"]) for m in notify_msgs}
         }
         notify_new_messages(notify_msgs, config_root=self.root, unread_counts=unread)
+        # v0.7 落箱钩子（sampling 唤醒的进料口）：只投递真正落盘的信；
+        # 钩子异常一律兜住——唤醒失败永不影响落箱主链路（铁律）。
+        if self.on_delivered is not None:
+            try:
+                self.on_delivered(full)
+            except Exception as exc:  # noqa: BLE001 — 钩子失败绝不上抛（落箱主链路铁律）
+                logging.getLogger(__name__).warning("on_delivered hook failed: %s", exc)
         return out
 
     def _dedup_candidates(self, agent_id: str, msg_hash: str) -> list[Path]:
@@ -943,6 +957,14 @@ class MailStore:
             else:
                 raise MailboxError(f"message {msg_id!r} not found in {agent_id}'s inbox or archive")
         return path, self._read_msg(path)
+
+    def get_letter(self, agent_id: str, msg_id: str) -> dict[str, Any]:
+        """读一封完整的信（inbox 优先，archive 兜底）——v0.7 sampling 唤醒
+        的去重读（handled_log）与摘要读共用这一个入口。信已不在盘上
+        （被处理/清理）时抛 ``MailboxError``，由采样侧按"无需唤醒"处理。
+        """
+        _, m = self._locate_msg(agent_id, msg_id)
+        return m
 
     def record_handled(
         self, agent_id: str, msg_id: str, action: str, **fields: Any

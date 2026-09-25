@@ -13,13 +13,55 @@ from __future__ import annotations
 import argparse
 import hashlib
 import hmac
+import logging
 import os
 import sys
 import time
 
 from mcp.server.mcpserver import MCPServer
 
+from .sampling import SamplingNotifier, SamplingRegistry
 from .store import MailboxError, MailStore, ghost_open_limit, load_identity_binding
+
+logger = logging.getLogger(__name__)
+
+
+class _WakeCapabilityMiddleware:
+    """MCP 连接登记中间件（v0.7 改点1），两条观测线：
+
+    - ``initialize``：宿主是否声明 ``capabilities.sampling``，逐连接登记
+      （per-connection），同时捕获该连接的事件循环供跨线程调度回环。
+      initialize 处理器被 SDK runner 保留，官方口径即用 middleware 观察；
+    - ``tools/call``：把 acting identity（参数 agent_id / from_id，缺省回退
+      AGENT_MAIL_ID env）绑到其连接——send() 落箱后按收件人身份寻址
+      sampling 通道的依据。
+
+    纯观察不重写：`call_next(ctx)` 原样放行，注册失败也不拦握手。
+    """
+
+    async def __call__(self, ctx: object, call_next: object) -> object:
+        method = getattr(ctx, "method", "")
+        params = getattr(ctx, "params", None) or {}
+        if method == "initialize":
+            caps = params.get("capabilities")
+            declared = isinstance(caps, dict) and "sampling" in caps
+            try:
+                _sampling_registry.register_connection(ctx.session, declared)
+            except RuntimeError:
+                logger.debug("no running loop at initialize; sampling registry skipped")
+        elif method == "tools/call":
+            args = params.get("arguments") or {}
+            me = args.get("agent_id") or args.get("from_id") or ""
+            if not me and str(params.get("name") or "").startswith(("mailbox_", "task_")):
+                me = os.environ.get("AGENT_MAIL_ID", "")
+            if me:
+                _sampling_registry.bind_agent(str(me), ctx.session)
+        return await call_next(ctx)  # type: ignore[misc]
+
+
+# v0.7 sampling 唤醒：per-connection 能力登记（改点1）+ 落箱通知器（改点2/3）。
+_sampling_registry = SamplingRegistry()
+_sampling_notifier = SamplingNotifier(_sampling_registry)
 
 server = MCPServer(
     "agent-mailbox",
@@ -34,6 +76,7 @@ server = MCPServer(
         "creating or moving a card auto-messages the assignee, so board motion wakes "
         "agents without polling."
     ),
+    middleware=[_WakeCapabilityMiddleware()],
 )
 
 _store: MailStore | None = None
@@ -44,7 +87,23 @@ def _store_instance() -> MailStore:
     global _store
     if _store is None:
         _store = MailStore()
+        _store.on_delivered = _wake_on_delivered
     return _store
+
+
+def _wake_on_delivered(landed: list[dict]) -> None:
+    """send() 落箱钩子（v0.7 改点2）：对收件人已声明 sampling 的连接异步发
+    createMessage。自信（from == to）跳过——发件人自己刚写的信无需被唤醒
+    （对齐 self-echo 先例）。notify() 只做寻址+调度，微秒级返回，不阻塞
+    send 主链路；实际请求/超时/去重/审计全在连接事件循环侧（sampling 模块）。
+    """
+    for m in landed:
+        if m.get("from") == m.get("to"):
+            continue
+        try:
+            _sampling_notifier.notify(_store_instance(), str(m.get("to")), str(m.get("id")))
+        except Exception as exc:  # noqa: BLE001 — 唤醒失败永不影响落箱主链路
+            logger.warning("sampling wake dispatch failed for %s: %s", m.get("id"), exc)
 
 
 def _identity_binding() -> dict:
