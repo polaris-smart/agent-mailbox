@@ -20,7 +20,7 @@ import time
 
 from mcp.server.mcpserver import MCPServer
 
-from .sampling import SamplingNotifier, SamplingRegistry
+from .sampling import SamplingNotifier, SamplingRegistry, stable_connection
 from .store import MailboxError, MailStore, ghost_open_limit, load_identity_binding
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ class _WakeCapabilityMiddleware:
             caps = params.get("capabilities")
             declared = isinstance(caps, dict) and "sampling" in caps
             try:
-                _sampling_registry.register_connection(ctx.session, declared)
+                _sampling_registry.register_connection(stable_connection(ctx.session), declared)
             except RuntimeError:
                 logger.debug("no running loop at initialize; sampling registry skipped")
         elif method == "tools/call":
@@ -55,7 +55,7 @@ class _WakeCapabilityMiddleware:
             if not me and str(params.get("name") or "").startswith(("mailbox_", "task_")):
                 me = os.environ.get("AGENT_MAIL_ID", "")
             if me:
-                _sampling_registry.bind_agent(str(me), ctx.session)
+                _sampling_registry.bind_agent(str(me), stable_connection(ctx.session))
         return await call_next(ctx)  # type: ignore[misc]
 
 

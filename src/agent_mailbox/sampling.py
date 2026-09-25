@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp import types
+from mcp.server.session import ServerSession
 
 from .store import MailboxError, MailStore
 
@@ -205,16 +206,31 @@ def _serialize_messages(messages: list[types.SamplingMessage]) -> list[dict[str,
 # ------------------------------------------------------- per-connection registry
 
 
+def stable_connection(session: Any) -> Any:
+    """从 per-request 代理里取稳定的 per-connection 锚点。
+
+    MCP SDK 的 ``ServerSession`` 是**每请求新建**的代理（ServerRunner.
+    _make_context），真正跨请求存活的是 ``session._connection``
+    （mcp.server.connection.Connection，独立出站通道 connection.outbound
+    也挂在它身上）。SDK 没有公开 accessor，这里走私有属性并兜底回退
+    （测试替身可直接传 Connection 或任意稳定对象）。
+    """
+    return getattr(session, "_connection", session)
+
+
 @dataclass
 class ConnectionEntry:
     """一条 MCP 连接在采样注册表里的登记（v0.7 改点1）。
 
-    ``loop`` 在 initialize 时捕获：同步工具跑在 anyio worker 线程，
-    落箱钩子靠 ``run_coroutine_threadsafe(coro, loop)`` 把 createMessage
-    调度回连接的事件循环，send 主链路零阻塞。
+    ``connection`` 是稳定锚点（ServerSession 每请求重建，Connection 不是）；
+    ``loop`` 在 initialize 时捕获：同步工具跑在 anyio worker 线程，落箱钩子
+    靠 ``run_coroutine_threadsafe(coro, loop)`` 把 createMessage 调度回连接的
+    事件循环，send 主链路零阻塞。createMessage 经 ``ServerSession(None,
+    connection)`` 代理、不带 related_request_id → 走 connection.outbound
+    独立通道（SDK send_request 的既定路由）。
     """
 
-    session: Any  # mcp.server.session.ServerSession（宽松引用，方便测试替身）
+    connection: Any  # mcp.server.connection.Connection（宽松引用，方便测试替身）
     declared_sampling: bool
     loop: asyncio.AbstractEventLoop
     connected_at: float = field(default_factory=time.time)
@@ -237,17 +253,17 @@ class SamplingRegistry:
         self._connections: dict[int, ConnectionEntry] = {}
         self._agents: dict[str, int] = {}
 
-    def register_connection(self, session: Any, declared: bool) -> ConnectionEntry:
+    def register_connection(self, connection: Any, declared: bool) -> ConnectionEntry:
         entry = ConnectionEntry(
-            session=session,
+            connection=connection,
             declared_sampling=declared,
             loop=asyncio.get_running_loop(),
-            session_id=getattr(session, "session_id", None),
+            session_id=getattr(connection, "session_id", None),
         )
         if len(self._connections) >= self.MAX_CONNECTIONS:
             oldest = min(self._connections.values(), key=lambda e: e.connected_at)
-            self._connections.pop(id(oldest.session), None)
-        self._connections[id(session)] = entry
+            self._connections.pop(id(oldest.connection), None)
+        self._connections[id(connection)] = entry
         logger.info(
             "sampling capability %s on connection %s",
             "declared" if declared else "not declared",
@@ -255,9 +271,9 @@ class SamplingRegistry:
         )
         return entry
 
-    def bind_agent(self, agent_id: str, session: Any) -> None:
-        if id(session) in self._connections:
-            self._agents[agent_id] = id(session)
+    def bind_agent(self, agent_id: str, connection: Any) -> None:
+        if id(connection) in self._connections:
+            self._agents[agent_id] = id(connection)
 
     def entry_for(self, agent_id: str) -> ConnectionEntry | None:
         key = self._agents.get(agent_id)
@@ -362,8 +378,12 @@ class SamplingNotifier:
                 },
             )
             try:
+                # ServerSession 是每请求代理：这里用轻量长命代理（只读
+                # connection 的稳定状态），不带 related_request_id → 走
+                # connection.outbound 独立通道（宿主已 initialized 才会有信）。
+                proxy = ServerSession(None, entry.connection)
                 result = await asyncio.wait_for(
-                    entry.session.create_message(
+                    proxy.create_message(
                         messages=messages,
                         system_prompt=system_prompt,
                         max_tokens=int(policy.get("max_tokens") or DEFAULT_MAX_TOKENS),
