@@ -53,6 +53,7 @@ DEFAULT_STALE_ACKED = 600.0  # count semantics v2: acked older than this counts
 
 # ------------------------------------------------------------------- config
 
+
 class WakeConfig:
     """``<root>/wake.json`` — one wake installation per agent id."""
 
@@ -105,9 +106,7 @@ class WakeConfig:
 
     def save(self) -> Path:
         path = self.root / "wake.json"
-        path.write_text(
-            json.dumps(self.to_dict(), ensure_ascii=False, indent=1), encoding="utf-8"
-        )
+        path.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=1), encoding="utf-8")
         return path
 
 
@@ -117,6 +116,7 @@ def default_python() -> str:
 
 
 # ----------------------------------------------------------------- adapters
+
 
 class WakeAdapter:
     """Delivery interface for one harness's wake mechanism."""
@@ -174,9 +174,9 @@ def _desktop_notify(title: str, body: str) -> None:
     try:
         if sys.platform == "darwin":
             subprocess.run(
-                ["osascript", "-e",
-                 f'display notification "{body}" with title "{title}"'],
-                check=False, timeout=5,
+                ["osascript", "-e", f'display notification "{body}" with title "{title}"'],
+                check=False,
+                timeout=5,
             )
         elif sys.platform == "linux":
             subprocess.run(["notify-send", title, body], check=False, timeout=5)
@@ -196,6 +196,7 @@ def make_adapter(cfg: WakeConfig) -> WakeAdapter:
 
 # -------------------------------------------------------------------- jev
 
+
 def jev_decide(cfg: WakeConfig, msg: dict[str, Any]) -> dict[str, Any] | None:
     """Ask the Jev scoring API whether this letter deserves a wake-up.
 
@@ -208,12 +209,15 @@ def jev_decide(cfg: WakeConfig, msg: dict[str, Any]) -> dict[str, Any] | None:
     import urllib.error
     import urllib.request
 
-    payload = json.dumps({
-        "subject": msg.get("subject", ""),
-        "body": (msg.get("body", "") or "")[:4000],
-        "from": msg.get("from", ""),
-        "priority": msg.get("priority", "normal"),
-    }, ensure_ascii=False).encode("utf-8")
+    payload = json.dumps(
+        {
+            "subject": msg.get("subject", ""),
+            "body": (msg.get("body", "") or "")[:4000],
+            "from": msg.get("from", ""),
+            "priority": msg.get("priority", "normal"),
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
     req = urllib.request.Request(
         cfg.jev_endpoint,
         data=payload,
@@ -235,9 +239,7 @@ def jev_decide(cfg: WakeConfig, msg: dict[str, Any]) -> dict[str, Any] | None:
         return None  # fail-open: caller wakes regardless
 
 
-def jev_gate(
-    cfg: WakeConfig, msg: dict[str, Any], log_path: Path
-) -> tuple[bool, str]:
+def jev_gate(cfg: WakeConfig, msg: dict[str, Any], log_path: Path) -> tuple[bool, str]:
     """Jev routing with the fail-open iron law applied.
 
     Runs the scoring call on a worker thread bounded by ``jev_timeout`` — the
@@ -289,6 +291,7 @@ def jev_gate(
 
 # ------------------------------------------------------------------- drain
 
+
 def should_wake(msg: dict[str, Any], now: float, stale_acked: float) -> bool:
     """Count semantics v2: every pending letter counts; an acked letter only
     counts once it has sat acked longer than ``stale_acked`` (a handler died
@@ -328,8 +331,12 @@ def run_once(
     (fail-open iron law). Returns a stats dict for logging/tests.
     """
     stats: dict[str, Any] = {
-        "scanned": 0, "due": 0, "woke": 0, "skipped_woken": 0,
-        "failed": 0, "jev_skipped": 0,
+        "scanned": 0,
+        "due": 0,
+        "woke": 0,
+        "skipped_woken": 0,
+        "failed": 0,
+        "jev_skipped": 0,
     }
     try:
         store = store or MailStore(root)
@@ -345,6 +352,13 @@ def run_once(
                 m = json.loads(p.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue  # partially-written letters wait for the next round
+            if isinstance(m, dict) and not m.get("id"):
+                # Legacy letter (pre-id format): the filename stem *is* the id
+                # in the canonical scheme. Without the back-fill the bare
+                # m["id"] further down poisoned the whole drain round
+                # (KeyError → fail-open skipped every letter after it),
+                # 09-25: one stale-format letter starved the entire inbox.
+                m["id"] = p.stem
             stats["due"] += 1 if should_wake(m, ref, cfg.stale_acked) else 0
             if not should_wake(m, ref, cfg.stale_acked):
                 continue
@@ -358,8 +372,11 @@ def run_once(
                     try:
                         store.record_handled(cfg.agent_id, m["id"], "jev_skip", note=reason)
                     except Exception as exc:  # noqa: BLE001
-                        print(f"[agent-mailbox wake] jev_skip mark failed (fail-open): {exc}",
-                              file=sys.stderr, flush=True)
+                        print(
+                            f"[agent-mailbox wake] jev_skip mark failed (fail-open): {exc}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
                     continue
             delivered = False
             for attempt in range(1, cfg.retry_max + 1):
@@ -376,15 +393,20 @@ def run_once(
                 # success marks the letter woken (idempotent dedup): later
                 # rounds skip it even after a reclaim cycles acked->pending.
                 store.record_handled(
-                    cfg.agent_id, m["id"], "wake",
+                    cfg.agent_id,
+                    m["id"],
+                    "wake",
                     note=getattr(adapter, "name", "adapter"),
                 )
                 stats["woke"] += 1
             # else: every attempt failed — leave the letter un-marked so the
             # next WatchPaths trigger re-drains it. 信不丢。
     except Exception as exc:  # noqa: BLE001 — total fail-open: never raise out of drain
-        print(f"[agent-mailbox wake] drain round failed (fail-open): {exc}",
-              file=sys.stderr, flush=True)
+        print(
+            f"[agent-mailbox wake] drain round failed (fail-open): {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
     return stats
 
 
@@ -400,6 +422,7 @@ def run(root: Path, cfg: WakeConfig, poll_interval: float = 2.0, once: bool = Fa
 
 # ------------------------------------------------------- install / uninstall
 
+
 def plist_body(cfg: WakeConfig, python_exe: str, root: Path) -> str:
     """launchd plist for one agent's wake (WatchPaths on its inbox).
 
@@ -408,8 +431,15 @@ def plist_body(cfg: WakeConfig, python_exe: str, root: Path) -> str:
     """
     inbox = Path(root) / "inbox" / cfg.agent_id
     program = [
-        python_exe, "-m", "agent_mailbox.wake", "run",
-        "--root", str(Path(root)), "--agent", cfg.agent_id, "--once",
+        python_exe,
+        "-m",
+        "agent_mailbox.wake",
+        "run",
+        "--root",
+        str(Path(root)),
+        "--agent",
+        cfg.agent_id,
+        "--once",
     ]
     prog_xml = "".join(f"        <string>{a}</string>\n" for a in program)
     return f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -441,8 +471,7 @@ def systemd_unit_body(cfg: WakeConfig, python_exe: str, root: Path) -> dict[str,
     PathChanged=) triggering a oneshot service. Returns {filename: body}."""
     inbox = Path(root) / "inbox" / cfg.agent_id
     exec_line = (
-        f"{python_exe} -m agent_mailbox.wake run "
-        f"--root {Path(root)} --agent {cfg.agent_id} --once"
+        f"{python_exe} -m agent_mailbox.wake run --root {Path(root)} --agent {cfg.agent_id} --once"
     )
     return {
         f"{WAKE_LABEL}-{cfg.agent_id}.path": f"""[Unit]
@@ -507,16 +536,16 @@ def install(
         for name, body in systemd_unit_body(cfg, py, cfg.root).items():
             (target / name).write_text(body, encoding="utf-8")
             out["files"].append(str(target / name))
-        out["activate_cmd"] = (
-            f"systemctl --user enable --now {WAKE_LABEL}-{cfg.agent_id}.path"
-        )
+        out["activate_cmd"] = f"systemctl --user enable --now {WAKE_LABEL}-{cfg.agent_id}.path"
         if activate:
             out["activated"] = _launchctl(
                 "--user", "enable", "--now", f"{WAKE_LABEL}-{cfg.agent_id}.path"
             )
     else:
-        raise SystemExit(f"wake install: unsupported platform {sys.platform!r} "
-                         "(run `agent-mailbox wake run` manually instead)")
+        raise SystemExit(
+            f"wake install: unsupported platform {sys.platform!r} "
+            "(run `agent-mailbox wake run` manually instead)"
+        )
     cfg.save()
     out["config"] = str(cfg.save())
     return out
@@ -553,6 +582,7 @@ def uninstall(
 
 
 # ----------------------------------------------------------------------- CLI
+
 
 def _cmd_install(args: argparse.Namespace) -> None:
     root = Path(args.root or os.environ.get("AGENT_MAIL_HOME", Path.home() / ".agent-mail"))
@@ -607,8 +637,7 @@ def _cmd_status(args: argparse.Namespace) -> None:
         info["adapter"] = cfg.adapter
         info["jev_enabled"] = cfg.jev_enabled
         if sys.platform == "darwin":
-            plist = (Path.home() / "Library" / "LaunchAgents"
-                     / f"{WAKE_LABEL}-{cfg.agent_id}.plist")
+            plist = Path.home() / "Library" / "LaunchAgents" / f"{WAKE_LABEL}-{cfg.agent_id}.plist"
             info["plist_installed"] = plist.exists()
     print(json.dumps(info, ensure_ascii=False))
 
@@ -617,7 +646,9 @@ def _cmd_run(args: argparse.Namespace) -> None:
     root = Path(args.root or os.environ.get("AGENT_MAIL_HOME", Path.home() / ".agent-mail"))
     cfg = WakeConfig.load(root)
     if cfg is None:
-        raise SystemExit(f"wake run: no wake.json in {root} — run `agent-mailbox wake install` first")
+        raise SystemExit(
+            f"wake run: no wake.json in {root} — run `agent-mailbox wake install` first"
+        )
     if args.agent:
         cfg.agent_id = args.agent
     if not cfg.agent_id:
@@ -640,12 +671,17 @@ def wake_main(argv: list[str] | None = None) -> None:
     p_inst.add_argument("--jev-api-key", default="")
     p_inst.add_argument("--jev-endpoint", default="")
     p_inst.add_argument("--root", default="", help="mail root (default ~/.agent-mail)")
-    p_inst.add_argument("--launch-agents-dir", default=None,
-                        help="override ~/Library/LaunchAgents (tests/tmp)")
-    p_inst.add_argument("--systemd-dir", default=None,
-                        help="override ~/.config/systemd/user (tests/tmp)")
-    p_inst.add_argument("--no-activate", action="store_true",
-                        help="write files only, do not load into launchd/systemd")
+    p_inst.add_argument(
+        "--launch-agents-dir", default=None, help="override ~/Library/LaunchAgents (tests/tmp)"
+    )
+    p_inst.add_argument(
+        "--systemd-dir", default=None, help="override ~/.config/systemd/user (tests/tmp)"
+    )
+    p_inst.add_argument(
+        "--no-activate",
+        action="store_true",
+        help="write files only, do not load into launchd/systemd",
+    )
     p_inst.set_defaults(func=_cmd_install)
 
     p_un = sub.add_parser("uninstall", help="remove the OS integration for one agent")

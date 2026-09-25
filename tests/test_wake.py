@@ -48,6 +48,7 @@ def cfg(root, **kw):
 
 # ------------------------------------------------- unit generation (tmp only)
 
+
 def test_plist_body_watches_inbox_and_runs_once(env):
     root, _ = env
     body = plist_body(cfg(root), "/usr/bin/python3", root)
@@ -88,6 +89,7 @@ def test_install_writes_files_without_activating(env, monkeypatch):
 
 # ------------------------------------------------------- count semantics v2
 
+
 def test_should_wake_count_v2():
     now = time.time()
     assert should_wake({"status": "pending"}, now, 600) is True
@@ -104,6 +106,7 @@ def _iso(ts: float) -> str:
 
 
 # ---------------------------------------------------------------- adapters
+
 
 def test_make_adapter_dispatch(env):
     root, _ = env
@@ -125,6 +128,7 @@ class _Recorder:
 
 
 # ------------------------------------------------------------------- drain
+
 
 def test_run_once_wakes_and_dedups_second_round(env):
     root, st = env
@@ -197,16 +201,28 @@ def test_run_once_stale_acked_gets_rewoken_once(env):
 
 # --------------------------------------------------------------------- CLI
 
+
 def test_wake_cli_install_and_status(env, monkeypatch, capsys):
     root, _ = env
     tmp = root / "plist-tmp"
     monkeypatch.setattr(wake_mod, "_launchctl", lambda *a, **k: True)
     monkeypatch.setattr(wake_mod.sys, "platform", "darwin")
-    wake_main([
-        "install", "--agent", "ZC", "--adapter", "generic-webhook",
-        "--webhook-url", "http://127.0.0.1:9/h", "--root", str(root),
-        "--launch-agents-dir", str(tmp), "--no-activate",
-    ])
+    wake_main(
+        [
+            "install",
+            "--agent",
+            "ZC",
+            "--adapter",
+            "generic-webhook",
+            "--webhook-url",
+            "http://127.0.0.1:9/h",
+            "--root",
+            str(root),
+            "--launch-agents-dir",
+            str(tmp),
+            "--no-activate",
+        ]
+    )
     assert (tmp / f"{WAKE_LABEL}-ZC.plist").exists()
     saved = json.loads((root / "wake.json").read_text(encoding="utf-8"))
     assert saved["agent_id"] == "ZC" and saved["webhook"]["url"] == "http://127.0.0.1:9/h"
@@ -215,3 +231,36 @@ def test_wake_cli_install_and_status(env, monkeypatch, capsys):
     wake_main(["status", "--root", str(root)])
     info = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert info["configured"] is True and info["agent_id"] == "ZC"
+
+
+def test_run_once_legacy_letter_does_not_poison_drain(env):
+    """A stale-format letter (no id field) must not KeyError-poison the whole
+    drain round — letters after it still get woken (09-25: one legacy letter
+    starved the entire inbox with repeating ``drain round failed: 'id'``)."""
+    root, st = env
+    inbox = root / "inbox" / "ZC"
+    inbox.mkdir(parents=True, exist_ok=True)
+    legacy_name = "20260925000000-legacy00-zc.json"
+    legacy = {
+        "from": "HS",
+        "to": "ZC",
+        "subject": "legacy letter",
+        "body": "old format",
+        "status": "pending",
+        "created_at": "2026-09-25T00:00:00Z",
+    }
+    (inbox / legacy_name).write_text(json.dumps(legacy), encoding="utf-8")
+    good = st.send("HS", "ZC", "fresh letter", "wake me too")
+
+    rec = _Recorder([True, True])
+    stats = run_once(root, cfg(root), adapter=rec)
+
+    assert stats["woke"] == 2, f"both letters must wake, got {stats}"
+    assert good[0]["id"] in rec.calls
+    # the legacy letter was woken under its stem id, and the wake mark was
+    # written through with the back-filled id (dedup works next round)
+    marked = json.loads((inbox / legacy_name).read_text(encoding="utf-8"))
+    assert marked["id"] == legacy_name[: -len(".json")]
+    assert any(e.get("action") == "wake" for e in marked.get("handled_log", []))
+    stats2 = run_once(root, cfg(root), adapter=_Recorder([True]))
+    assert stats2["woke"] == 0  # both deduped on the second round
