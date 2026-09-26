@@ -624,7 +624,13 @@ class SamplingNotifier:
                 root, agent_id
             )  # corrupt → fail-loud → 下方 except
             system_prompt = render_identity(policy, agent_id)
-            prompt = render_wake_prompt(policy, letter)
+            # t-38③：unread 实查数（拉起瞬间锁内计数），非 send 时点快照——
+            # 平行窗并发下快照会少报（卡面实证：通知写 1 实查 2）。
+            try:
+                unread_now = len(store.list_messages(agent_id, status="pending"))
+            except Exception:  # noqa: BLE001 — 实查失败回落快照语义（信不丢）
+                unread_now = 1
+            prompt = render_wake_prompt(policy, letter, unread=unread_now)
             messages = [
                 types.SamplingMessage(
                     role="user", content=types.TextContent(type="text", text=prompt)

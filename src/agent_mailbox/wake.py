@@ -83,6 +83,12 @@ class WakeConfig:
         self.webhook_url = str(webhook.get("url", ""))
         self.webhook_secret = str(webhook.get("secret", ""))
         self.webhook_style = str(webhook.get("style", "")) or None
+        # t-37 同根因·嵌套层：webhook/jev 段的未知子键也原样保留。
+        self._webhook_extra = (
+            {k: v for k, v in webhook.items() if k not in ("url", "secret", "style")}
+            if isinstance(webhook, dict)
+            else {}
+        )
         # local-command adapter: argv list only — a bare string is rejected
         # (there is no shell-concatenation wake path, ever).
         raw_command = data.get("command")
@@ -96,6 +102,15 @@ class WakeConfig:
         self.jev_endpoint = str(jev.get("endpoint", ""))
         self.jev_threshold = float(jev.get("threshold", 3.0))
         self.jev_timeout = float(jev.get("timeout", 3.0))
+        self._jev_extra = (
+            {
+                k: v
+                for k, v in jev.items()
+                if k not in ("enabled", "api_key", "endpoint", "threshold", "timeout")
+            }
+            if isinstance(jev, dict)
+            else {}
+        )
         self.retry_interval = float(data.get("retry_interval", DEFAULT_RETRY_INTERVAL))
         self.retry_max = int(data.get("retry_max", DEFAULT_RETRY_MAX))
         self.stale_acked = float(data.get("stale_acked", DEFAULT_STALE_ACKED))
@@ -121,6 +136,7 @@ class WakeConfig:
                 "agent_id": self.agent_id,
                 "adapter": self.adapter,
                 "webhook": {
+                    **self._webhook_extra,
                     "url": self.webhook_url,
                     "secret": self.webhook_secret,
                     "style": self.webhook_style or "github",
@@ -128,6 +144,7 @@ class WakeConfig:
                 "command": list(self.command),
                 "timeout": self.command_timeout,
                 "jev": {
+                    **self._jev_extra,
                     "enabled": self.jev_enabled,
                     "api_key": self.jev_api_key,
                     "endpoint": self.jev_endpoint,
@@ -683,8 +700,7 @@ def install(
             f"wake install: unsupported platform {sys.platform!r} "
             "(run `agent-mailbox wake run` manually instead)"
         )
-    cfg.save()
-    out["config"] = str(cfg.save())
+    out["config"] = str(cfg.save())  # 单次写入（HS 派单项①：双调清理）
     return out
 
 

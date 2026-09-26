@@ -272,6 +272,51 @@ def test_install_preserves_unknown_top_level_keys(env, monkeypatch):
     assert saved["agent_id"] == "ZC"  # 已知键照常工作
 
 
+def test_install_preserves_unknown_nested_keys(env, monkeypatch):
+    """t-37 同根因·嵌套层：webhook / jev 段重建时未知子键必须原样保留，
+    不得静默丢（HS 0.7.4 派单项②残余观察）。"""
+    root, _ = env
+    tmp = root / "plist-tmp"
+    (root / "wake.json").write_text(
+        json.dumps(
+            {
+                "agent_id": "ZC",
+                "adapter": "generic-webhook",
+                "webhook": {
+                    "url": "http://127.0.0.1:9/h",
+                    "secret": "s",
+                    "custom_header": "X-Token: abc",  # 未知嵌套键
+                },
+                "jev": {"enabled": False, "custom_gate": {"min": 1}},  # 未知嵌套键
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(wake_mod, "_launchctl", lambda *a, **k: True)
+    monkeypatch.setattr(wake_mod.sys, "platform", "darwin")
+    wake_main(
+        [
+            "install",
+            "--agent",
+            "ZC",
+            "--adapter",
+            "generic-webhook",
+            "--webhook-url",
+            "http://127.0.0.1:9/h",
+            "--root",
+            str(root),
+            "--launch-agents-dir",
+            str(tmp),
+            "--no-activate",
+        ]
+    )
+    saved = json.loads((root / "wake.json").read_text(encoding="utf-8"))
+    assert saved["webhook"]["custom_header"] == "X-Token: abc", "webhook 未知子键必须保留"
+    assert saved["webhook"]["url"] == "http://127.0.0.1:9/h"  # 已知子键照常
+    assert saved["jev"]["custom_gate"] == {"min": 1}, "jev 未知子键必须保留"
+    assert saved["jev"]["enabled"] is False
+
+
 def test_run_once_legacy_letter_does_not_poison_drain(env):
     """A stale-format letter (no id field) must not KeyError-poison the whole
     drain round — letters after it still get woken (09-25: one legacy letter

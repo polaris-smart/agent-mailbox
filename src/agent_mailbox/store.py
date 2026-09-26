@@ -479,11 +479,10 @@ class MailStore:
             mid_base = _msg_id()
             for rid in recipients:
                 self._validate_id(rid)
-                if dedupe:
-                    existing = self._find_dupe(rid, msg_hash, windows["dedup_ttl"], now)
-                    if existing is not None:
-                        out.append({"to": rid, "deduped": True, "existing_id": existing})
-                        continue
+                pre_existing = self._find_dupe(rid, msg_hash, windows["dedup_ttl"], now)
+                if dedupe and pre_existing is not None:
+                    out.append({"to": rid, "deduped": True, "existing_id": pre_existing})
+                    continue
                 inbox = self._inbox_dir(rid)
                 msg = {
                     "id": f"{mid_base}-{rid.lower()}",
@@ -498,6 +497,11 @@ class MailStore:
                     "created_at": _now_iso(),
                     "semantic_hash": msg_hash,
                 }
+                if pre_existing is not None:
+                    # t-38②：调用侧 dedupe=False 豁免落箱的信，若箱内已有同
+                    # hash 非终态信，则为重复件——照常落箱留痕，但不重发 wake
+                    # （原信的唤醒已覆盖它；双 wake = 收件人白跑一轮）。
+                    msg["wake_suppressed_dup"] = pre_existing
                 (inbox / f"{msg['id']}.json").write_text(
                     json.dumps(msg, ensure_ascii=False, indent=1), encoding="utf-8"
                 )
@@ -524,7 +528,11 @@ class MailStore:
         with open(sent_log, "a", encoding="utf-8") as audit:
             for msg in full:
                 line = {k: msg[k] for k in ("id", "from", "to", "subject", "created_at")}
-                if msg["from"] == msg["to"]:
+                if msg.get("wake_suppressed_dup"):
+                    # t-38②：重复件照常落箱+审计，但不进唤醒面（webhook /
+                    # sampling 都不吃）——suppress 本身留在信体与审计行可查。
+                    line["wake_suppressed_dup"] = True
+                elif msg["from"] == msg["to"]:
                     if echo_on:
                         # opt-in: deliver the self-echo, but prefix the
                         # *notification* subject so receivers can strip it
@@ -541,6 +549,9 @@ class MailStore:
                 else:
                     notify_msgs.append(msg)
                 audit.write(json.dumps(line, ensure_ascii=False) + "\n")
+        # t-38②：sampling 唤醒进料只收非重复件（重复件的 wake 已由原信覆盖；
+        # self-echo 信维持 v0.7 原行为——其抑制在 sampling 侧自己的语义里）。
+        sampling_msgs = [m for m in full if not m.get("wake_suppressed_dup")]
         # outside the file lock: optional webhook wake-up, best-effort.
         # config_root binds the webhook.json lookup to THIS store's root so a
         # custom-root store can never read the production gateway config.
@@ -550,12 +561,13 @@ class MailStore:
             rid: len(self.list_messages(rid, status="pending"))
             for rid in {str(m["to"]) for m in notify_msgs}
         }
-        notify_new_messages(notify_msgs, config_root=self.root, unread_counts=unread)
+        if notify_msgs:  # t-38②：唤醒面全空 → 零通知（连 webhook 都不发）
+            notify_new_messages(notify_msgs, config_root=self.root, unread_counts=unread)
         # v0.7 落箱钩子（sampling 唤醒的进料口）：只投递真正落盘的信；
         # 钩子异常一律兜住——唤醒失败永不影响落箱主链路（铁律）。
-        if self.on_delivered is not None:
+        if sampling_msgs and self.on_delivered is not None:
             try:
-                self.on_delivered(full)
+                self.on_delivered(sampling_msgs)
             except Exception as exc:  # noqa: BLE001 — 钩子失败绝不上抛（落箱主链路铁律）
                 logging.getLogger(__name__).warning("on_delivered hook failed: %s", exc)
         return out

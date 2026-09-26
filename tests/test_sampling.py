@@ -534,7 +534,9 @@ def test_deduped_resend_no_new_sampling(mailroot):
 
 
 def test_new_letter_after_dedupe_false_gets_own_sampling(mailroot):
-    """验收c 边界：dedupe=False 重发是新信（新 msg_id）→ 各采一次、互不串扰。"""
+    """验收c 边界（t-38② 更新裁定）：dedupe=False 同文重发=重复件——照常
+    落箱留痕，但不重发 sampling（原信唤醒已覆盖；双 wake=收件人白跑一轮）。
+    真正的新内容（不同 hash）才各采一次。"""
     state: dict = {}
     cb = make_sampling_cb(state)
     ids: list = []
@@ -547,11 +549,22 @@ def test_new_letter_after_dedupe_false_gets_own_sampling(mailroot):
         await wait_until(lambda: state.get("count") == 1, what="first sampling")
         second = await call_tool(client, "mailbox_send", dict(args))
         ids.append(second["delivered"][0]["id"])
-        await wait_until(lambda: state.get("count") == 2, what="second sampling")
+        await asyncio.sleep(0.6)
+        assert state.get("count") == 1, "重复件不得重发 sampling"
         store = MailStore(mailroot)
-        for mid in ids:
-            log = store.get_letter("WB", mid).get("handled_log") or []
-            assert sum(1 for e in log if e.get("action") == "sampling") == 1
+        dup = store.get_letter("WB", ids[1])
+        assert dup.get("wake_suppressed_dup") == ids[0], "重复件落体必须带抑制标记"
+        # 第一封照常持有自己的 sampling 记录
+        log = store.get_letter("WB", ids[0]).get("handled_log") or []
+        assert sum(1 for e in log if e.get("action") == "sampling") == 1
+        # 真正的新内容（不同 hash）→ 照常各采一次
+        third = await call_tool(
+            client,
+            "mailbox_send",
+            {"from_id": "HS", "to": "WB", "subject": "fresh", "body": "v2", "dedupe": False},
+        )
+        ids.append(third["delivered"][0]["id"])
+        await wait_until(lambda: state.get("count") == 2, what="new-content sampling")
 
     asyncio.run(run_pair(mailroot, body, sampling_cb=cb))
 
