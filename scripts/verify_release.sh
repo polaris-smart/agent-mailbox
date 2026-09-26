@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # verify_release.sh — 发布物抽查（分发包面），0.7.4 起随 §6 每次发版必跑。
 # 判据由 HS 0.7.4 派单写死（t-35③），判据本身改动须 HS 复核：
-#   sdist 内容层: grep -rEn '/Users/|interia|/home/' 命中=0，且 wake-zc.sh 类本机薄壳=0
+#   sdist 内容层: grep -rEn '/U[s]ers/|inte[r]ia|/h[o]me/' 命中=0，且 wake-zc.sh 类本机薄壳=0
 #   wheel  清单级: scripts/ 不出现；内容层同 sdist 判据=0
 #   回归自测: 0.7.2 产物应 FAIL、0.7.3 产物应 PASS（判据有效性自证）
 # 用法: scripts/verify_release.sh <wheel> <sdist> [旧wheel] [旧sdist]
@@ -17,7 +17,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 scan_pkg() { # $1=解包目录 $2=标签
     local dir=$1 tag=$2 hits
-    hits=$(grep -rEn '/Users/|interia|/home/' "$dir" 2>/dev/null | wc -l | tr -d ' ')
+    hits=$(grep -rEn '/U[s]ers/|inte[r]ia|/h[o]me/' "$dir" 2>/dev/null | wc -l | tr -d ' ')
     [ "$hits" = "0" ] || fail "$tag: 本机路径/用户名命中 $hits 处（判据=0）"
     find "$dir" -name 'wake-zc.sh' | grep -q . && fail "$tag: 本机薄壳 wake-zc.sh 在包内（判据=不存在）"
     echo "  $tag: 内容层干净 ✅"

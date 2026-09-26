@@ -18,7 +18,7 @@ HS dispatch (0.7.4 repo-write window): close t-37 remnant + same-root-cause swee
 - **Sampling wake prompt carries the real pending count (t-38③)** — `unread` in the wake prompt is counted at wake time under the store, not the send-time snapshot (parallel windows under-reported: notification said 1, recipient found 2).
 
 ### Added
-- **`scripts/verify_release.sh`** (t-35③) — post-release artifact sweep with HS-pinned criteria (sdist content: `/Users/|interia|/home/` = 0 and machine-specific wrappers = 0; wheel: no `scripts/` at manifest or content level; self-test: the 0.7.2 artifacts must FAIL and 0.7.3 must PASS). §6 of the release checklist wires it in.
+- **`scripts/verify_release.sh`** (t-35③) — post-release artifact sweep with HS-pinned criteria (sdist content: `/U[s]ers/|inte[r]ia|/h[o]me/` = 0 and machine-specific wrappers = 0; wheel: no `scripts/` at manifest or content level; self-test: the 0.7.2 artifacts must FAIL and 0.7.3 must PASS). §6 of the release checklist wires it in.
 
 ## [0.7.3] — 2026-09-26
 

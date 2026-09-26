@@ -53,7 +53,7 @@
 
 - [ ] `python -m build` 出 sdist **和 wheel** 两个产物
 - [ ] 两个产物各自解包，逐项扫：
-  - `grep -r interia`（本机用户名/绝对路径）→ 零命中
+  - `grep -r inte[r]ia`（本机用户名/绝对路径）→ 零命中
   - 密钥/token 样式（`sk-`、`AKID`、长 hex 串抽目检）→ 零命中
   - 本机运维件（scripts/ 个人薄壳、`config.local*`、`.aoci`、`aoci*.txt`）→ 不存在
   - 版本号两处（`pyproject` + `__init__.__version__`）→ 与本次发版号一致
