@@ -55,6 +55,22 @@ DEFAULT_COMMAND_TIMEOUT = 300.0  # local-command adapter: hard-kill deadline
 
 # ------------------------------------------------------------------- config
 
+# WakeConfig 认识的顶层键；其余（如 sampling 的 "agents" policy 段）在
+# load→save 往返中原样保留，绝不静默丢弃（t-37）。
+_KNOWN_KEYS = frozenset(
+    {
+        "agent_id",
+        "adapter",
+        "webhook",
+        "command",
+        "timeout",
+        "jev",
+        "retry_interval",
+        "retry_max",
+        "stale_acked",
+    }
+)
+
 
 class WakeConfig:
     """``<root>/wake.json`` — one wake installation per agent id."""
@@ -83,6 +99,10 @@ class WakeConfig:
         self.retry_interval = float(data.get("retry_interval", DEFAULT_RETRY_INTERVAL))
         self.retry_max = int(data.get("retry_max", DEFAULT_RETRY_MAX))
         self.stale_acked = float(data.get("stale_acked", DEFAULT_STALE_ACKED))
+        # 未知顶层键原样保留（t-37）：sampling 的 per-agent policy 走顶层
+        # "agents" 段（sampling.wake_policy_for），本类不认识它——不保留的话
+        # 任何 load→save 往返（wake install 等）都会把它静默抹掉。
+        self._extra = {k: v for k, v in data.items() if k not in _KNOWN_KEYS}
 
     @classmethod
     def load(cls, root: Path) -> WakeConfig | None:
@@ -93,27 +113,33 @@ class WakeConfig:
         return cls(data, Path(root))
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "agent_id": self.agent_id,
-            "adapter": self.adapter,
-            "webhook": {
-                "url": self.webhook_url,
-                "secret": self.webhook_secret,
-                "style": self.webhook_style or "github",
-            },
-            "command": list(self.command),
-            "timeout": self.command_timeout,
-            "jev": {
-                "enabled": self.jev_enabled,
-                "api_key": self.jev_api_key,
-                "endpoint": self.jev_endpoint,
-                "threshold": self.jev_threshold,
-                "timeout": self.jev_timeout,
-            },
-            "retry_interval": self.retry_interval,
-            "retry_max": self.retry_max,
-            "stale_acked": self.stale_acked,
-        }
+        # 已知键重建、未知键（_extra，如 "agents" policy 段）原样带回——
+        # 已知键优先，extra 不覆盖。
+        out: dict[str, Any] = {**self._extra}
+        out.update(
+            {
+                "agent_id": self.agent_id,
+                "adapter": self.adapter,
+                "webhook": {
+                    "url": self.webhook_url,
+                    "secret": self.webhook_secret,
+                    "style": self.webhook_style or "github",
+                },
+                "command": list(self.command),
+                "timeout": self.command_timeout,
+                "jev": {
+                    "enabled": self.jev_enabled,
+                    "api_key": self.jev_api_key,
+                    "endpoint": self.jev_endpoint,
+                    "threshold": self.jev_threshold,
+                    "timeout": self.jev_timeout,
+                },
+                "retry_interval": self.retry_interval,
+                "retry_max": self.retry_max,
+                "stale_acked": self.stale_acked,
+            }
+        )
+        return out
 
     def save(self) -> Path:
         path = self.root / "wake.json"

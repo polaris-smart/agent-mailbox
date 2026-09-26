@@ -233,6 +233,45 @@ def test_wake_cli_install_and_status(env, monkeypatch, capsys):
     assert info["configured"] is True and info["agent_id"] == "ZC"
 
 
+def test_install_preserves_unknown_top_level_keys(env, monkeypatch):
+    """t-37：wake.json 里的 sampling per-agent "agents" policy 段不是
+    WakeConfig 认识的键——load→save（wake install 等）往返必须原样保留，
+    不得静默抹掉（否则 sampling.enabled / forbidden / max_concurrent 全丢）。"""
+    root, _ = env
+    tmp = root / "plist-tmp"
+    policy = {
+        "agents": {
+            "WB": {"sampling": {"enabled": False}, "forbidden": ["git 写操作"], "max_concurrent": 2}
+        },
+        "custom_future_key": {"keep": True},
+    }
+    (root / "wake.json").write_text(
+        json.dumps({**policy, "agent_id": "ZC", "adapter": "generic-webhook"}), encoding="utf-8"
+    )
+    monkeypatch.setattr(wake_mod, "_launchctl", lambda *a, **k: True)
+    monkeypatch.setattr(wake_mod.sys, "platform", "darwin")
+    wake_main(
+        [
+            "install",
+            "--agent",
+            "ZC",
+            "--adapter",
+            "generic-webhook",
+            "--webhook-url",
+            "http://127.0.0.1:9/h",
+            "--root",
+            str(root),
+            "--launch-agents-dir",
+            str(tmp),
+            "--no-activate",
+        ]
+    )
+    saved = json.loads((root / "wake.json").read_text(encoding="utf-8"))
+    assert saved["agents"] == policy["agents"], "sampling policy 段必须原样保留"
+    assert saved["custom_future_key"] == policy["custom_future_key"]
+    assert saved["agent_id"] == "ZC"  # 已知键照常工作
+
+
 def test_run_once_legacy_letter_does_not_poison_drain(env):
     """A stale-format letter (no id field) must not KeyError-poison the whole
     drain round — letters after it still get woken (09-25: one legacy letter
