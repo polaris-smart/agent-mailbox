@@ -1,6 +1,7 @@
 # 发版 checklist（release checklist）
 
 > 目的：根治「每次发版只更英文 README、多语言/CHANGELOG/SKILL.md 全部掉队」——v0.6.0 实测漏项，v0.6.1 被迫纯文档热修补齐。
+> **0.7.x 追加铁律（老板 09-26 定）**：一个版本就该解决一个版本的问题——检查发生在**发布之前**，不在发布之后。0.7.1（aoci 泄漏）、0.7.3（wake-zc.sh 泄漏）两次追发是同一病根（产物检查放在发布后）复发两次，本节 §5.5 前移后此模式关闭。
 > 用法：任何版本号变更，按下表逐项打勾后再 commit + tag。英文 README.md 是唯一全量真源，其余语言跟随它。
 
 ## 0 · 发版前
@@ -42,5 +43,19 @@
 ## 5 · 发版
 
 - [ ] commit：精确路径 `git add <file>...`（禁 `git add -A`）
+- [ ] **本地实包抽查（§5.5，tag 前必过，见下）**
 - [ ] push main → push `vx.y.z` tag（Actions 自动发 PyPI，**勿手动上传**）
 - [ ] 回报：commit SHA + Actions run 链接 + 六 README 锚点 grep 输出 + CHANGELOG 段标题
+
+## 5.5 · 本地实包抽查（发布前，一次做穷尽）
+
+> 0.7.1/0.7.3 两次泄漏追发的根治步骤：**在 build 出真实产物上扫，不是信配置**。
+
+- [ ] `python -m build` 出 sdist **和 wheel** 两个产物
+- [ ] 两个产物各自解包，逐项扫：
+  - `grep -r interia`（本机用户名/绝对路径）→ 零命中
+  - 密钥/token 样式（`sk-`、`AKID`、长 hex 串抽目检）→ 零命中
+  - 本机运维件（scripts/ 个人薄壳、`config.local*`、`.aoci`、`aoci*.txt`）→ 不存在
+  - 版本号两处（`pyproject` + `__init__.__version__`）→ 与本次发版号一致
+- [ ] `pip install` 该 wheel 冒烟（`agent_mailbox --help` 或 import）→ 正常
+- [ ] **全绿才允许 `git tag`**——发布后的线上复扫只是验证，不是检查手段
