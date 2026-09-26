@@ -26,10 +26,19 @@ wake policy schema（wake.json，per-agent 段，改点4；缺省 = 最小权限
           "forbidden": ["禁区列表，逐条注入为硬约束"],
           "require_receipt": true,
           "max_tokens": 512,
-          "max_concurrent": 1
+          "max_concurrent": 1,
+          "sampling": {"enabled": true}
         }
       }
     }
+
+SEP-2577 弃用加固：MCP 官方已于 2026-07-28 弃用 sampling capability
+（MCPDeprecationWarning 在即）。sampling 是**加速通道**而非送达保证——
+信必达的保证自始至终来自 fallback（mailbox_check / wake-daemon /
+webhook / local-command）。宿主侧弃用落地（不再支持 createMessage）时，
+把 per-agent 段的 ``sampling.enabled`` 设 false 即彻底关停本路径；
+``enabled`` 格式错 fail-loud（raise MailboxError，send 钩子兜住落日志、
+信照常落箱）——「想关没关成」比「继续发」危害大，不许静默回落。
 
 per-agent 段按**整键覆盖**合并到 DEFAULT_WAKE_POLICY 上：没写的键保持
 最小权限默认（策略作者只显式放宽他写出来的键）。wake.json 损坏 =
@@ -103,6 +112,11 @@ DEFAULT_WAKE_POLICY: dict[str, Any] = {
     # per-agent 执行锁并发上限（补钉③）：未配置默认 1 —— schema 缺省即锁，
     # 「默认策略=最小权限」同一口径（上一分身未 done，新 sampling 排队不发出）
     "max_concurrent": 1,
+    # sampling 路径开关（SEP-2577 加固）：缺省 true 保持现行行为。MCP 官方
+    # 已于 2026-07-28 弃用 sampling capability（SEP-2577），宿主侧移除落地时
+    # 设 false 即关停该路径。sampling 只是加速通道，信必达的保证来自
+    # fallback（mailbox_check / wake-daemon / webhook / local-command）。
+    "sampling": {"enabled": True},
 }
 
 _POLICY_KEYS = set(DEFAULT_WAKE_POLICY)
@@ -134,6 +148,22 @@ def wake_max_concurrent(policy: dict[str, Any]) -> int:
     if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
         raise MailboxError(f"wake policy max_concurrent must be a positive integer, got {raw!r}")
     return raw
+
+
+def sampling_enabled(policy: dict[str, Any]) -> bool:
+    """sampling 路径开关（SEP-2577 加固）：wake policy ``sampling.enabled``，
+    未配置默认 true（保持现行行为）。
+
+    格式错（sampling 段非对象 / enabled 非 bool）→ fail-loud 抛
+    MailboxError——用户意图是「关」，静默回落 true 等于关不掉，危害大于
+    继续发；由 on_delivered 钩子兜住落日志，信照常落箱走 fallback。
+    """
+    section = policy.get("sampling", {"enabled": True})
+    if not isinstance(section, dict) or not isinstance(section.get("enabled"), bool):
+        raise MailboxError(
+            f"wake policy sampling must be an object with a boolean 'enabled', got {section!r}"
+        )
+    return section["enabled"]
 
 
 def load_wake_policies(root: Path | str) -> dict[str, dict[str, Any]]:
@@ -443,6 +473,25 @@ class SamplingNotifier:
         entry = self._registry.entry_for(agent_id)
         if entry is None or not entry.declared_sampling:
             logger.debug("sampling skip: %s has no sampling-declared connection", agent_id)
+            return False
+        # SEP-2577 加固：per-agent 显式关停 → 不入闸门不发 createMessage，
+        # 信照常落箱走 fallback（mailbox_check / wake-daemon / webhook）。
+        # policy 读取/开关格式错 → 落 sampling.log error 审计（fail-loud
+        # 可见）+ 静默跳过——与 _attempt 的 corrupt-policy 语义同一口径。
+        try:
+            policy, _src = wake_policy_for(store.root, agent_id)
+            enabled = sampling_enabled(policy)
+        except MailboxError as exc:
+            try:
+                append_sampling_log(
+                    store.root,
+                    {"event": "error", "to": agent_id, "msg_id": msg_id, "detail": str(exc)},
+                )
+            except Exception:  # noqa: BLE001 — 审计都失败时只能放弃
+                logger.debug("sampling audit write failed too: %s", exc)
+            return False
+        if not enabled:
+            logger.debug("sampling skip: disabled by wake policy for %s", agent_id)
             return False
         with self._gates_lock:
             gate = self._gate_for(agent_id, entry)

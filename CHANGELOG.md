@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-09-26
+
+Close out every open 0.7 finding (HS review P2 SKILL + P4 items) before any version bump.
+
+### Added
+- **Per-agent sampling kill switch (SEP-2577 hardening)** — MCP deprecated the sampling capability on 2026-07-28; a per-agent `"sampling": {"enabled": false}` section in `wake.json` now disables the path outright (no `createMessage` attempts, letters land via the fallback chain). Malformed values fail loudly into a `sampling.log` error audit — the letter still lands, the misconfiguration is visible. Sampling remains an accelerator, never a delivery guarantee.
+
+### Fixed
+- **`__version__` tracks the release** — `src/agent_mailbox/__init__.py` had stayed at 0.6.2 through the 0.7.0/0.7.1 releases; both version locations now match (release-checklist §1 "two places, no exceptions").
+- **Tool-count consistency** — the six READMEs claimed "17 MCP tools" (counting four built-in MCP primitives `get_prompt`/`list_prompts`/`list_resources`/`read_resource` that `list_tools` never returns); the verified count is 13 registered tools, now stated consistently across README ×6, roadmap, and SKILL.md.
+- **SKILL.md brought current** — in-repo `skills/agent-mailbox/SKILL.md` now documents v0.7: sampling wake, the wake-policy schema (`identity` / `forbidden` / `max_concurrent` / `sampling.enabled`), the local-command adapter, `wake run --adapter`, and the wake delivery chain (sampling → wake-daemon / webhook / next check).
+
 ## [0.7.1] — 2026-09-26
 
 ### Fixed
@@ -96,7 +108,9 @@ Docs-only hotfix: v0.6.0 updated only the English README; every other doc surfac
 - Web board tokens use constant-time comparison (`hmac.compare_digest`, both sites) and persist across reboots (`~/.agent-mail/web_token`, mode 0600; `AGENT_MAIL_WEB_TOKEN` env always wins).
 - `sent.log` auto-rotates one generation past 10 MB (`os.replace` → `sent.log.1`).
 
-[Unreleased]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.1...v0.7.2
+[0.7.1]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/polaris-smart/agent-mailbox/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/polaris-smart/agent-mailbox/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/polaris-smart/agent-mailbox/compare/v0.6.0...v0.6.1

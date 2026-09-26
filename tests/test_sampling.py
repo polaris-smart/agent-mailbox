@@ -250,6 +250,71 @@ def test_undeclared_host_zero_sampling_letter_lands(mailroot):
     asyncio.run(run_pair(mailroot, body))  # 无 sampling_callback = 未声明宿主
 
 
+# ================================================ sampling.enabled 开关（SEP-2577）
+
+
+def test_sampling_enabled_defaults_true_and_garbage_fails():
+    """SEP-2577 加固：enabled 未配置 = true（现行行为）；格式错 fail-loud。"""
+    from agent_mailbox.sampling import sampling_enabled
+    from agent_mailbox.store import MailboxError
+
+    assert sampling_enabled({}) is True
+    assert sampling_enabled({"sampling": {"enabled": True}}) is True
+    assert sampling_enabled({"sampling": {"enabled": False}}) is False
+    with pytest.raises(MailboxError):
+        sampling_enabled({"sampling": "off"})  # 段非对象
+    with pytest.raises(MailboxError):
+        sampling_enabled({"sampling": {"enabled": 1}})  # enabled 非 bool
+
+
+def test_sampling_disabled_by_wake_policy_letter_lands(mailroot):
+    """SEP-2577 加固：宿主已声明 sampling 但 policy enabled=false → 零采样，信照常落箱。"""
+    (mailroot / "wake.json").write_text(
+        json.dumps({"agents": {"WB": {"sampling": {"enabled": False}}}}), encoding="utf-8"
+    )
+    state: dict = {}
+    cb = make_sampling_cb(state)
+
+    async def body(client):
+        await call_tool(client, "mailbox_register", {"agent_id": "WB"})
+        entry = srv._sampling_registry.entry_for("WB")
+        assert entry is not None and entry.declared_sampling is True  # 宿主已声明
+        sent = await call_tool(
+            client, "mailbox_send", {"from_id": "HS", "to": "WB", "subject": "off", "body": "muted"}
+        )
+        registered = sent["delivered"][0]["id"]
+        await asyncio.sleep(0.6)  # 给错误的采样尝试留暴露窗口
+        assert state.get("count", 0) == 0  # 零 createMessage
+        assert read_sampling_log(mailroot) == []  # 零请求/零错误落审计
+        assert MailStore(mailroot).get_letter("WB", registered)["status"] == "pending"
+
+    asyncio.run(run_pair(mailroot, body, sampling_cb=cb))
+
+
+def test_sampling_enabled_garbage_fails_loud_letter_lands(mailroot, caplog):
+    """SEP-2577 加固：enabled 格式错 → fail-loud（on_delivered 钩子兜住落日志），信照常落箱。"""
+    (mailroot / "wake.json").write_text(
+        json.dumps({"agents": {"WB": {"sampling": {"enabled": "yes"}}}}), encoding="utf-8"
+    )
+    state: dict = {}
+    cb = make_sampling_cb(state)
+
+    async def body(client):
+        await call_tool(client, "mailbox_register", {"agent_id": "WB"})
+        sent = await call_tool(
+            client, "mailbox_send", {"from_id": "HS", "to": "WB", "subject": "bad", "body": "cfg"}
+        )
+        registered = sent["delivered"][0]["id"]
+        await wait_until(
+            lambda: any(e.get("event") == "error" for e in read_sampling_log(mailroot)),
+            what="bad-enabled error audit",
+        )
+        assert state.get("count", 0) == 0  # 配置坏了不发 createMessage
+        assert MailStore(mailroot).get_letter("WB", registered)["status"] == "pending"
+
+    asyncio.run(run_pair(mailroot, body, sampling_cb=cb))
+
+
 def test_unbound_recipient_no_sampling_letter_lands(mailroot):
     """能力协商矩阵·离线腿：收件人连接未登记（离线宿主）→ 不采样，信持久化。"""
     state: dict = {}

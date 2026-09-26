@@ -6,7 +6,7 @@
 
 📖 **Docs**: [English](README.md) · [中文](README.zh-CN.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Français](README.fr.md) · [Русский](README.ru.md)
 
-> 🆕 **v0.6.2 — Endurecimento de segurança**: `identity_binding` opcional vincula chamadores MCP a ids de agente via `AGENT_MAIL_TOKEN` — semântica fixada: **não ativado → permitir (a confiança local continua sendo o padrão); token incorreto → rejeitar com `identity mismatch`; config corrompida → falha ruidosa na inicialização**.. Os payloads do webhook agora trazem o `unread_count` do destinatário e o `mailbox_wait` reivindica o correio atomicamente (`acked` + `claimed_by` em uma única passada sob lock), então dois waiters nunca consomem o mesmo lote. Modelo e reporte: [SECURITY.md](SECURITY.md). Detalhes (em inglês): [README.md](README.md)
+> 🆕 **v0.7.x — Atualização de despertar**: **sampling wake** — assim que uma carta chega, o servidor chama o host do destinatário pela própria conexão MCP dele (`sampling/createMessage`), com injeção de política de despertar por agente (modelo de identidade, restrições proibidas, trava de execução por agente), além do **adaptador local-command** para agentes só-CLI (codex) e a sobrescrita `wake run --adapter`. O sampling é um acelerador, nunca uma garantia de entrega: o MCP o descontinuou em 2026-07-28 (SEP-2577), então a v0.7.2 adiciona um interruptor por agente (`"sampling": {"enabled": false}` no `wake.json`) e a cadeia de fallback (wake-daemon / webhook / próxima checagem) mantém a lei de ferro de entrega. 13 ferramentas MCP. Detalhes (em inglês): [README.md](README.md)
 
 ---
 
