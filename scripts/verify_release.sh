@@ -17,9 +17,12 @@ trap 'rm -rf "$WORK"' EXIT
 
 scan_pkg() { # $1=解包目录 $2=标签
     local dir=$1 tag=$2 hits
-    hits=$(grep -rEn '/U[s]ers/|inte[r]ia|/h[o]me/' "$dir" 2>/dev/null | wc -l | tr -d ' ')
+    # 零命中时 grep 退出码 1 × pipefail 会杀脚本 —— 显式 || true 兜住
+    hits=$((grep -rEn '/U[s]ers/|inte[r]ia|/h[o]me/' "$dir" 2>/dev/null || true) | wc -l | tr -d ' ')
     [ "$hits" = "0" ] || fail "$tag: 本机路径/用户名命中 $hits 处（判据=0）"
-    find "$dir" -name 'wake-zc.sh' | grep -q . && fail "$tag: 本机薄壳 wake-zc.sh 在包内（判据=不存在）"
+    if find "$dir" -name 'wake-zc.sh' | grep -q .; then
+        fail "$tag: 本机薄壳 wake-zc.sh 在包内（判据=不存在）"
+    fi
     echo "  $tag: 内容层干净 ✅"
 }
 
