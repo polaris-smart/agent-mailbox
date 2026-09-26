@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.3] — 2026-09-26
+
+### Fixed
+- **sdist hygiene, round two** — the post-release artifact sweep (every release re-checks the published sdist from now on) caught `scripts/wake-zc.sh`, a machine-specific ops wrapper with hardcoded local paths, shipping in the 0.7.0–0.7.2 sdists (the 0.7.1 sweep only covered the AOCI assets it was written for). Now excluded via hatchling `exclude` (the wheel was never affected — it never carried `scripts/`); the repo copy stays, launchd wiring untouched.
+
 ## [0.7.2] — 2026-09-26
 
 Close out every open 0.7 finding (HS review P2 SKILL + P4 items) before any version bump.
@@ -108,7 +113,8 @@ Docs-only hotfix: v0.6.0 updated only the English README; every other doc surfac
 - Web board tokens use constant-time comparison (`hmac.compare_digest`, both sites) and persist across reboots (`~/.agent-mail/web_token`, mode 0600; `AGENT_MAIL_WEB_TOKEN` env always wins).
 - `sent.log` auto-rotates one generation past 10 MB (`os.replace` → `sent.log.1`).
 
-[Unreleased]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.3...HEAD
+[0.7.3]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/polaris-smart/agent-mailbox/compare/v0.6.2...v0.7.0

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-mailbox"
-version = "0.7.2"
+version = "0.7.3"
 description = "Give every local AI agent its own mailbox — one MCP server, register once, message any agent on this machine."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -51,4 +51,4 @@ line-length = 100
 src = ["src", "tests"]
 
 [tool.hatch.build.targets.sdist]
-exclude = [".aoci", "aoci.txt", "aoci.code.txt", "aoci.meta.txt", "aoci.database.txt", "AGENTS.md"]
+exclude = [".aoci", "aoci.txt", "aoci.code.txt", "aoci.meta.txt", "aoci.database.txt", "AGENTS.md", "scripts/wake-zc.sh"]
