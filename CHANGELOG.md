@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.4] — 2026-09-26
+
+HS dispatch (0.7.4 repo-write window): close t-37 remnant + same-root-cause sweep + t-38, then gate. **Built and verified locally; upload held pending HS re-review + boss go.**
+
+### Fixed
+- **`wake install` no longer silently wipes unknown `wake.json` keys (t-37, P0)** — `WakeConfig` round-trips only the keys it knows; the sampling per-agent `agents` policy section (identity / forbidden / `max_concurrent` / `sampling.enabled`) and any future top-level key were being dropped on every `load→save` (install/uninstall paths). Unknown top-level keys are now preserved verbatim. Same root cause at the nested level: unknown keys inside the `webhook` / `jev` sections survive too.
+- **`install()` double `cfg.save()`** collapsed to a single write (t-37 remnant).
+- **Duplicate letters no longer re-wake (t-38②)** — a `dedupe=False` re-send that lands while a same-`semantic_hash` non-terminal letter is already in the recipient's inbox is delivered and audited, but marked `wake_suppressed_dup` and excluded from the wake face (webhook notification AND sampling). Behavior change: `dedupe=False` same-content re-sends each got their own sampling wake before; now only the first does. Fresh content (different hash) always wakes.
+- **Zero-notification sends post no webhook** — when every landed letter is a duplicate, no empty webhook round-trip happens.
+- **Sampling wake prompt carries the real pending count (t-38③)** — `unread` in the wake prompt is counted at wake time under the store, not the send-time snapshot (parallel windows under-reported: notification said 1, recipient found 2).
+
+### Added
+- **`scripts/verify_release.sh`** (t-35③) — post-release artifact sweep with HS-pinned criteria (sdist content: `/Users/|interia|/home/` = 0 and machine-specific wrappers = 0; wheel: no `scripts/` at manifest or content level; self-test: the 0.7.2 artifacts must FAIL and 0.7.3 must PASS). §6 of the release checklist wires it in.
+
 ## [0.7.3] — 2026-09-26
 
 ### Fixed
@@ -113,7 +127,8 @@ Docs-only hotfix: v0.6.0 updated only the English README; every other doc surfac
 - Web board tokens use constant-time comparison (`hmac.compare_digest`, both sites) and persist across reboots (`~/.agent-mail/web_token`, mode 0600; `AGENT_MAIL_WEB_TOKEN` env always wins).
 - `sent.log` auto-rotates one generation past 10 MB (`os.replace` → `sent.log.1`).
 
-[Unreleased]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.3...HEAD
+[Unreleased]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.4...HEAD
+[0.7.4]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.0...v0.7.1
