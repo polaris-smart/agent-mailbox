@@ -59,3 +59,13 @@
   - 版本号两处（`pyproject` + `__init__.__version__`）→ 与本次发版号一致
 - [ ] `pip install` 该 wheel 冒烟（`agent_mailbox --help` 或 import）→ 正常
 - [ ] **全绿才允许 `git tag`**——发布后的线上复扫只是验证，不是检查手段
+
+## 6 · 发布后抽查（发布当天，§5.5 的线上验证面）
+
+> 判据由 HS 0.7.4 派单写死（t-35③）；工具=`scripts/verify_release.sh`。
+> 结论口径必须带「（**分发包面**）」限定——仓面是否清理是老板拍板项，勿对外夸大。
+
+- [ ] 从 PyPI 下载**线上** sdist + wheel（不是本地 dist/）
+- [ ] `scripts/verify_release.sh <线上wheel> <线上sdist>` → PASS
+- [ ] 抽查新版前一版产物 → 应 FAIL（判据有效性自证，判据改动须 HS 复核）
+- [ ] PyPI 页面核：latest 版本号 / yanked=false / digest 与 build 一致
