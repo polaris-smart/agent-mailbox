@@ -21,6 +21,11 @@ from mcp.server.mcpserver import MCPServer
 
 from .store import MailboxError, MailStore, ghost_open_limit, load_identity_binding
 
+# v0.7.5 §3.1: unified subcommands routed before the legacy flag parser.
+# Only an exact positional-token match routes here, so every legacy
+# invocation (--web / --http / plain stdio / `wake ...`) is untouched.
+CLI_SUBCOMMANDS = ("setup", "discover", "status", "test", "connect", "uninstall")
+
 server = MCPServer(
     "agent-mailbox",
     instructions=(
@@ -379,7 +384,29 @@ def main() -> None:
         wake_main(wake_args)
         return
 
-    parser = argparse.ArgumentParser(prog="agent-mailbox")
+    # `agent-mailbox <subcommand> ...` (v0.7.5 §3.1) — dispatch to the
+    # unified CLI; leading --home/--web/--http pre-flags stay honoured.
+    subcommand = next((a for a in argv if a in CLI_SUBCOMMANDS), None)
+    if subcommand is not None:
+        idx = argv.index(subcommand)
+        import argparse as _argparse2
+
+        pre_parser2 = _argparse2.ArgumentParser(prog="agent-mailbox", add_help=False)
+        pre_parser2.add_argument("--http", type=int, default=None)
+        pre_parser2.add_argument("--web", type=int, default=None)
+        pre_parser2.add_argument("--home", default=None)
+        pre_args2, _ = pre_parser2.parse_known_args(argv[:idx])
+        if pre_args2.home:
+            os.environ["AGENT_MAIL_HOME"] = pre_args2.home
+        from .cli import cli_main
+
+        raise SystemExit(cli_main(argv[idx:]))
+
+    parser = argparse.ArgumentParser(
+        prog="agent-mailbox",
+        epilog="子命令: setup | discover | status | test | connect | uninstall "
+        "(运行 `agent-mailbox <子命令> --help` 查看)",
+    )
     parser.add_argument(
         "--http",
         metavar="PORT",
