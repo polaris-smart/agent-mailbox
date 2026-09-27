@@ -20,6 +20,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Visibility page (`/visibility`, §4.3)**: the four §3.3 switches with their defaults rendered as-is (`owner_sees_all` on, `agent_cross_read` / `sealed_in_human_view` / `external_auto_execute` off), 发信权限 note, and the audit trail shown inline. Changes persist to `config.json` (`visibility` block), append a `visibility_change` audit line, and are wired for real: `agent_cross_read` opens the tool-layer cross-read, `external_auto_execute` opens the wake gate (fail-closed on any config error); `sealed_in_human_view` is hard-locked off.
 - **Owner mailbox APIs**: `GET /api/mail` (decorated letters + roster + counts), `POST /api/mail/send|drafts|drafts/delete`, `POST /api/mail/<id>/read|unread|archive|star|unstar|task|confirm-external`, `POST /api/members`, plus the wizard endpoints `GET /api/status`, `POST /api/discover|test`, `GET /api/setup-summary` — the discover engine calls are injectable so tests stay hermetic. Star/read/draft state lives in `<root>/web_state.json` so the human never edits other members' letters.
 
+## [0.7.4] — 2026-09-26
+
+HS dispatch (0.7.4 repo-write window): close t-37 remnant + same-root-cause sweep + t-38, then gate. **Built and verified locally; upload held pending HS re-review + boss go.**
+
+### Fixed
+- **`wake install` no longer silently wipes unknown `wake.json` keys (t-37, P0)** — `WakeConfig` round-trips only the keys it knows; the sampling per-agent `agents` policy section (identity / forbidden / `max_concurrent` / `sampling.enabled`) and any future top-level key were being dropped on every `load→save` (install/uninstall paths). Unknown top-level keys are now preserved verbatim. Same root cause at the nested level: unknown keys inside the `webhook` / `jev` sections survive too.
+- **`install()` double `cfg.save()`** collapsed to a single write (t-37 remnant).
+- **Duplicate letters no longer re-wake (t-38②)** — a `dedupe=False` re-send that lands while a same-`semantic_hash` non-terminal letter is already in the recipient's inbox is delivered and audited, but marked `wake_suppressed_dup` and excluded from the wake face (webhook notification AND sampling). Behavior change: `dedupe=False` same-content re-sends each got their own sampling wake before; now only the first does. Fresh content (different hash) always wakes.
+- **Zero-notification sends post no webhook** — when every landed letter is a duplicate, no empty webhook round-trip happens.
+- **Sampling wake prompt carries the real pending count (t-38③)** — `unread` in the wake prompt is counted at wake time under the store, not the send-time snapshot (parallel windows under-reported: notification said 1, recipient found 2).
+
+### Added
+- **`scripts/verify_release.sh`** (t-35③) — post-release artifact sweep with HS-pinned criteria (sdist content: `/U[s]ers/|inte[r]ia|/h[o]me/` = 0 and machine-specific wrappers = 0; wheel: no `scripts/` at manifest or content level; self-test: the 0.7.2 artifacts must FAIL and 0.7.3 must PASS). §6 of the release checklist wires it in.
+
+## [0.7.3] — 2026-09-26
+
+### Fixed
+- **sdist hygiene, round two** — the post-release artifact sweep (every release re-checks the published sdist from now on) caught `scripts/wake-zc.sh`, a machine-specific ops wrapper with hardcoded local paths, shipping in the 0.7.0–0.7.2 sdists (the 0.7.1 sweep only covered the AOCI assets it was written for). Now excluded via hatchling `exclude` (the wheel was never affected — it never carried `scripts/`); the repo copy stays, launchd wiring untouched.
+
+## [0.7.2] — 2026-09-26
+
+Close out every open 0.7 finding (HS review P2 SKILL + P4 items) before any version bump.
+
+### Added
+- **Per-agent sampling kill switch (SEP-2577 hardening)** — MCP deprecated the sampling capability on 2026-07-28; a per-agent `"sampling": {"enabled": false}` section in `wake.json` now disables the path outright (no `createMessage` attempts, letters land via the fallback chain). Malformed values fail loudly into a `sampling.log` error audit — the letter still lands, the misconfiguration is visible. Sampling remains an accelerator, never a delivery guarantee.
+
+### Fixed
+- **`__version__` tracks the release** — `src/agent_mailbox/__init__.py` had stayed at 0.6.2 through the 0.7.0/0.7.1 releases; both version locations now match (release-checklist §1 "two places, no exceptions").
+- **Tool-count consistency** — the six READMEs claimed "17 MCP tools" (counting four built-in MCP primitives `get_prompt`/`list_prompts`/`list_resources`/`read_resource` that `list_tools` never returns); the verified count is 13 registered tools, now stated consistently across README ×6, roadmap, and SKILL.md.
+- **SKILL.md brought current** — in-repo `skills/agent-mailbox/SKILL.md` now documents v0.7: sampling wake, the wake-policy schema (`identity` / `forbidden` / `max_concurrent` / `sampling.enabled`), the local-command adapter, `wake run --adapter`, and the wake delivery chain (sampling → wake-daemon / webhook / next check).
+
+## [0.7.1] — 2026-09-26
+
+### Fixed
+- **sdist hygiene** — AOCI cognition assets (`.aoci/`, `aoci*.txt`) and local runtime config no longer ship in the sdist (hatchling exclude + `.gitignore`); in-repo `aoci.code.txt` entries normalized to repo-relative paths (was: absolute local paths).
+
+## [0.7.0] — 2026-09-26
+
+### Added
+- **Sampling wake (MCP `createMessage` reverse call)** — letters sent through the MCP server now wake the recipient host over its existing stdio connection when the host declares `capabilities.sampling`; per-connection capability negotiation, wake-policy injection (identity / task / forbidden actions / require-receipt, force-injected into every sampling request and audited to `sampling.log`), 60s configurable timeout, per-`msg_id` dedup (in-process + `handled_log` persisted), fail-open to the mailbox when the host is offline or undeclared.
+- **Per-agent execution lock** — one in-flight sampling per agent (`max_concurrent`, default 1), FIFO by arrival, released on success/failure/timeout, restart degrades the queued requests to the mailbox fallback (nothing stranded in memory).
+- **`local-command` wake adapter** — for on-demand CLI agents (no resident process): wake triggers a configured argv command (e.g. `codex exec`), argv-array only (no shell), letter content passed via `AGENT_MAIL_*` env vars, 300s timeout with process-group kill.
+- **`wake run --adapter` CLI override** — multi-agent installs share one `wake.json`; each plist picks its own wake path (`--agent codex --adapter local-command`).
+- **AOCI cognition layer** — repository cognition index (baseline / drift / governed entries) established and maintained under AOCI governance.
+
+### Fixed
+- **`mailbox_list` inbox-only blindness** — handled letters live in `archive/`; the unified `list_all_messages` view now spans both (HS: five status queries returned 0 against 877 on-disk letters).
+- **Cross-agent reply thread inheritance** — `reply_to` resolution fell back to a whole-root scan; previously every cross-agent reply minted a fresh thread (v0.6 F2 regression).
+- **Wake drain legacy-letter poisoning** — a stale-format letter (no `id`) raised on the bare `m["id"]` and the fail-open handler skipped every letter after it; the filename stem is now back-filled on read.
+- **`ServerSession` anchoring** — the SDK rebuilds the session per request; the sampling registry now anchors the stable `Connection` object so identity binding survives across requests.
+
 ## [0.6.2] — 2026-09-23
 
 Security hardening + closing three long-open v0.5.x items. Default behavior is unchanged: every new capability is opt-in or additive until configured.
@@ -90,7 +141,12 @@ Docs-only hotfix: v0.6.0 updated only the English README; every other doc surfac
 - Web board tokens use constant-time comparison (`hmac.compare_digest`, both sites) and persist across reboots (`~/.agent-mail/web_token`, mode 0600; `AGENT_MAIL_WEB_TOKEN` env always wins).
 - `sent.log` auto-rotates one generation past 10 MB (`os.replace` → `sent.log.1`).
 
-[Unreleased]: https://github.com/polaris-smart/agent-mailbox/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.4...HEAD
+[0.7.4]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.3...v0.7.4
+[0.7.3]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.2...v0.7.3
+[0.7.2]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.1...v0.7.2
+[0.7.1]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/polaris-smart/agent-mailbox/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/polaris-smart/agent-mailbox/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/polaris-smart/agent-mailbox/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/polaris-smart/agent-mailbox/compare/v0.5.0...v0.6.0

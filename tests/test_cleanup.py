@@ -15,8 +15,8 @@ def _make_root(tmp_path):
     root = tmp_path / "mail"
     inbox = root / "inbox"
     (inbox / "HS").mkdir(parents=True)
-    (inbox / "GHOST").mkdir()               # unregistered agent dir
-    (inbox / "WBTEST").mkdir()              # unregistered, test-named
+    (inbox / "GHOST").mkdir()  # unregistered agent dir
+    (inbox / "WBTEST").mkdir()  # unregistered, test-named
     (inbox / "HS" / "m1.json").write_text(json.dumps({"id": "m1"}), encoding="utf-8")
     (inbox / "WBTEST" / "m2.json").write_text(json.dumps({"id": "m2"}), encoding="utf-8")
     (inbox / "stray.json").write_text("{}", encoding="utf-8")  # orphan letter
@@ -27,12 +27,17 @@ def _make_root(tmp_path):
 def _run_cli(root, *args, stdin=""):
     return subprocess.run(
         [sys.executable, "-m", "agent_mailbox.cleanup", "--root", str(root), *args],
-        capture_output=True, text=True, env=ENV, input=stdin, timeout=30,
+        capture_output=True,
+        text=True,
+        env=ENV,
+        input=stdin,
+        timeout=30,
         check=False,
     )
 
 
 # ------------------------------------------------------------------- scan()
+
 
 def test_scan_lists_residue(tmp_path):
     root = _make_root(tmp_path)
@@ -54,9 +59,7 @@ def test_scan_clean_root(tmp_path):
 def test_scan_test_named_registered_is_review_only(tmp_path):
     root = tmp_path / "mail"
     (root / "inbox" / "TESTDEMO").mkdir(parents=True)
-    (root / "registry.json").write_text(
-        json.dumps({"agents": {"TESTDEMO": {}}}), encoding="utf-8"
-    )
+    (root / "registry.json").write_text(json.dumps({"agents": {"TESTDEMO": {}}}), encoding="utf-8")
     findings = scan(root)
     assert len(findings) == 1
     assert findings[0]["action"].startswith("review only")
@@ -75,6 +78,7 @@ def test_scan_corrupt_registry_aborts(tmp_path):
 
 
 # --------------------------------------------------------------------- CLI
+
 
 def test_cli_dry_run_lists_and_deletes_nothing(tmp_path):
     root = _make_root(tmp_path)

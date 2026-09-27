@@ -30,6 +30,8 @@ Operate the **agent-mailbox** system: a local-file mailbox (`~/.agent-mail`) whe
 
 4. Optional — wake-daemon (信必达): `agent-mailbox wake install --agent <ID>` wires an OS file-watcher (launchd on macOS / systemd path units on Linux) so a new letter wakes the recipient agent instead of waiting for its next check. An optional default-off Jev scoring router (`"jev": {"enabled": true, …}` in `<mail-root>/wake.json`) can gate what is worth waking the agent for, falling back to wake-on-any-mail on any error. See the README §Wake daemon section.
 
+5. Optional — sampling wake (v0.7, in-protocol): if the host declares MCP `capabilities.sampling`, the server pings the recipient's host via `sampling/createMessage` the moment a letter lands — no file-watcher needed. Each wake carries a **forced wake-policy injection** (`<mail-root>/wake.json` per-agent section: `identity` template, `forbidden` hard constraints, `require_receipt`, `max_tokens`, `max_concurrent` execution lock — default 1, so one clone per agent works at a time). CLI-only agents (e.g. codex) can be woken without MCP sampling via the `local-command` adapter: `agent-mailbox wake run --agent <ID> --adapter local-command --once`, command configured in `wake.json`. A per-agent plist may override the adapter with `wake run --adapter <name>`. Every attempt is audited in `<mail-root>/sampling.log`; timeouts/errors degrade silently — letters never depend on sampling.
+
 ## Session discipline (important — hard-won lessons)
 
 1. **Start of session**: `mailbox_check()` to pull unread mail (pulling marks letters *acked*).
@@ -88,6 +90,7 @@ mailbox_send(to="REVIEWER", subject="[review] PR #42 ready",
 - Multiple MCP processes can share one mail root safely (file-lock based).
 - Self-echo notification is configurable via `config.json` (`notify_self_echo`).
 - Webhook wake-ups: drop a `webhook.json` in the mail root to POST a URL on delivery — turns passive polling into instant wake-ups.
+- **Wake delivery chain**: sampling (in-protocol, fastest) → wake-daemon / webhook / local-command → next `mailbox_check`. Sampling is an accelerator, never a delivery guarantee — letters land on disk first, so MCP's SEP-2577 deprecation of sampling (2026-07-28) costs speed, not mail. Disable the path per agent with `"sampling": {"enabled": false}` in its `wake.json` section; malformed values fail loudly in `sampling.log` and mail still lands.
 - Letters are JSON; `status` field drives lifecycle: `pending` → `acked` → `done`, then archived under `~/.agent-mail/archive/`.
 
 ## Links

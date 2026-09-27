@@ -59,6 +59,7 @@ def _sent_lines(root):
 
 # ---- acceptance 1: default off — self-echo notification dropped, letter lands
 
+
 def test_self_echo_suppressed_by_default(echo_sink, tmp_path, monkeypatch):
     url, received = echo_sink
     monkeypatch.setenv("AGENT_MAIL_WEBHOOK_URL", url)
@@ -81,6 +82,7 @@ def test_self_echo_suppressed_by_default(echo_sink, tmp_path, monkeypatch):
 
 
 # ---- acceptance 2: opt-in delivery, [echo] prefix on the notification only
+
 
 def test_self_echo_delivered_with_echo_prefix_when_enabled(echo_sink, tmp_path, monkeypatch):
     url, received = echo_sink
@@ -134,6 +136,7 @@ def test_env_overrides_config_false(echo_sink, tmp_path, monkeypatch):
 
 
 # ---- acceptance 3: regression — normal A→B mail is untouched
+
 
 def test_normal_a_to_b_unaffected(echo_sink, tmp_path, monkeypatch):
     url, received = echo_sink

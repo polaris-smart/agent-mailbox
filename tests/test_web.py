@@ -130,6 +130,7 @@ def test_unknown_endpoint_404(board):
 
 # ------------------------------------------------------------- token lifecycle
 
+
 def test_web_token_persists_across_boots(tmp_path, monkeypatch):
     # two boots with no env → same token, persisted with 0600
     monkeypatch.delenv("AGENT_MAIL_WEB_TOKEN", raising=False)

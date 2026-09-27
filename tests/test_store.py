@@ -14,6 +14,7 @@ def store(tmp_path):
 
 # ------------------------------------------------------------------ register
 
+
 def test_register_new_agent(store):
     card = store.register("HS", owner="Hermes", description="PM & QA")
     assert card["agent_id"] == "HS"
@@ -35,6 +36,7 @@ def test_register_rejects_bad_ids(store, bad):
 
 
 # --------------------------------------------------------------------- send
+
 
 def test_send_and_check_roundtrip(store):
     store.register("HS")
@@ -79,6 +81,7 @@ def test_send_rejects_bad_status(store):
 
 # -------------------------------------------------------------------- reply
 
+
 def test_reply_chain(store):
     store.register("HS")
     store.register("WB")
@@ -120,6 +123,7 @@ def test_plain_send_keeps_subject_verbatim(store):
 
 # ------------------------------------------------------------- sent.log rotate
 
+
 def test_sent_log_rotates_when_over_limit(store):
     store.register("HS")
     store.register("WB")
@@ -143,6 +147,7 @@ def test_sent_log_not_rotated_under_limit(store):
 
 
 # ------------------------------------------------------------------- status
+
 
 def test_set_status_and_archive(store):
     store.register("HS")
@@ -189,6 +194,7 @@ def test_list_archived_supports_reply_lookup(store):
 
 # ------------------------------------------------------------------ safety
 
+
 def test_path_traversal_blocked_on_check(store):
     with pytest.raises(MailboxError):
         store.check("../../etc")
@@ -202,6 +208,7 @@ def test_corrupt_registry_raises(store):
 
 
 # --------------------------------------------------------------- concurrency
+
 
 def test_concurrent_sends_no_corruption(store):
     for aid in ("HS", "WB"):

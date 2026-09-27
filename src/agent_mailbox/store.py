@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import sys
@@ -30,6 +31,7 @@ if sys.platform == "win32":
     import msvcrt
 else:
     import fcntl
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -439,6 +441,11 @@ class MailStore:
         # semantic-hash -> letter paths, per inbox, keyed by directory mtime
         # (缺口2: send-side dedup must not O(N)-scan the box on every send).
         self._dedup_index: dict[str, tuple[int, dict[str, list[Path]]]] = {}
+        # v0.7 sampling 唤醒（改点2）: send() 落箱后的投递钩子，签名
+        # ``(landed_messages) -> None``（landed = 真正写到磁盘的信 dict 列表，
+        # 去重信不含）。默认 None（store 独立使用零行为变化）；MCP server 层
+        # 挂 _wake_on_delivered 做采样寻址。钩子异常由 send() 兜住，绝不影响落箱。
+        self.on_delivered: Callable[[list[dict[str, Any]]], None] | None = None
 
     # ------------------------------------------------------------------ lock
 
@@ -710,11 +717,10 @@ class MailStore:
             mid_base = _msg_id()
             for rid in recipients:
                 self._validate_id(rid)
-                if dedupe:
-                    existing = self._find_dupe(rid, msg_hash, windows["dedup_ttl"], now)
-                    if existing is not None:
-                        out.append({"to": rid, "deduped": True, "existing_id": existing})
-                        continue
+                pre_existing = self._find_dupe(rid, msg_hash, windows["dedup_ttl"], now)
+                if dedupe and pre_existing is not None:
+                    out.append({"to": rid, "deduped": True, "existing_id": pre_existing})
+                    continue
                 inbox = self._inbox_dir(rid)
                 msg = {
                     "id": f"{mid_base}-{rid.lower()}",
@@ -733,6 +739,11 @@ class MailStore:
                 }
                 if sealed:
                     msg["sealed"] = True
+                if pre_existing is not None:
+                    # t-38②：调用侧 dedupe=False 豁免落箱的信，若箱内已有同
+                    # hash 非终态信，则为重复件——照常落箱留痕，但不重发 wake
+                    # （原信的唤醒已覆盖它；双 wake = 收件人白跑一轮）。
+                    msg["wake_suppressed_dup"] = pre_existing
                 (inbox / f"{msg['id']}.json").write_text(
                     json.dumps(msg, ensure_ascii=False, indent=1), encoding="utf-8"
                 )
@@ -759,7 +770,11 @@ class MailStore:
         with open(sent_log, "a", encoding="utf-8") as audit:
             for msg in full:
                 line = {k: msg[k] for k in ("id", "from", "to", "subject", "created_at")}
-                if msg["from"] == msg["to"]:
+                if msg.get("wake_suppressed_dup"):
+                    # t-38②：重复件照常落箱+审计，但不进唤醒面（webhook /
+                    # sampling 都不吃）——suppress 本身留在信体与审计行可查。
+                    line["wake_suppressed_dup"] = True
+                elif msg["from"] == msg["to"]:
                     if echo_on:
                         # opt-in: deliver the self-echo, but prefix the
                         # *notification* subject so receivers can strip it
@@ -781,6 +796,16 @@ class MailStore:
         # skips these letters too. A human confirmation (``confirm_external``)
         # flips origin back to local before any action may fire.
         notify_msgs = [m for m in notify_msgs if m.get("origin") != "external"]
+        # t-38②：sampling 唤醒进料只收非重复件（重复件的 wake 已由原信覆盖；
+        # self-echo 信维持 v0.7 原行为——其抑制在 sampling 侧自己的语义里）。
+        # 合线语义：external 信同样不进 sampling 面——§3.3 执行门承诺 external
+        # 「落地不触发任何唤醒」，drain 侧已 skip_external，此处对齐（取两侧行
+        # 为之交，非新增功能）。
+        sampling_msgs = [
+            m
+            for m in full
+            if not m.get("wake_suppressed_dup") and m.get("origin") != "external"
+        ]
         # outside the file lock: optional webhook wake-up, best-effort.
         # config_root binds the webhook.json lookup to THIS store's root so a
         # custom-root store can never read the production gateway config.
@@ -790,7 +815,15 @@ class MailStore:
             rid: len(self.list_messages(rid, status="pending"))
             for rid in {str(m["to"]) for m in notify_msgs}
         }
-        notify_new_messages(notify_msgs, config_root=self.root, unread_counts=unread)
+        if notify_msgs:  # t-38②：唤醒面全空 → 零通知（连 webhook 都不发）
+            notify_new_messages(notify_msgs, config_root=self.root, unread_counts=unread)
+        # v0.7 落箱钩子（sampling 唤醒的进料口）：只投递真正落盘的信；
+        # 钩子异常一律兜住——唤醒失败永不影响落箱主链路（铁律）。
+        if sampling_msgs and self.on_delivered is not None:
+            try:
+                self.on_delivered(sampling_msgs)
+            except Exception as exc:  # noqa: BLE001 — 钩子失败绝不上抛（落箱主链路铁律）
+                logging.getLogger(__name__).warning("on_delivered hook failed: %s", exc)
         return out
 
     def _dedup_candidates(self, agent_id: str, msg_hash: str) -> list[Path]:
@@ -1190,6 +1223,14 @@ class MailStore:
             else:
                 raise MailboxError(f"message {msg_id!r} not found in {agent_id}'s inbox or archive")
         return path, self._read_msg(path)
+
+    def get_letter(self, agent_id: str, msg_id: str) -> dict[str, Any]:
+        """读一封完整的信（inbox 优先，archive 兜底）——v0.7 sampling 唤醒
+        的去重读（handled_log）与摘要读共用这一个入口。信已不在盘上
+        （被处理/清理）时抛 ``MailboxError``，由采样侧按"无需唤醒"处理。
+        """
+        _, m = self._locate_msg(agent_id, msg_id)
+        return m
 
     def record_handled(
         self, agent_id: str, msg_id: str, action: str, **fields: Any

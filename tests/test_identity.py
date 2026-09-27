@@ -47,6 +47,7 @@ def fresh(tmp_path, monkeypatch):
 
 # ------------------------------------------------- load_identity_binding
 
+
 def test_no_config_file_means_disabled(tmp_path):
     assert load_identity_binding(tmp_path) == {"enabled": False}
 
@@ -93,6 +94,7 @@ def test_corrupt_config_json_fails_loudly(tmp_path):
 
 
 # ------------------------------------------------------- tool-layer check
+
 
 def test_enabled_missing_token_rejected(fresh):
     _write_config(fresh, {"identity_binding": {"enabled": True, "HS": _sha("s3cret")}})
@@ -153,7 +155,10 @@ def test_malformed_config_kills_startup(tmp_path):
     _write_config(root, {"identity_binding": {"enabled": True, "HS": "zz"}})
     result = subprocess.run(
         [sys.executable, "-m", "agent_mailbox.server", "--home", str(root)],
-        capture_output=True, text=True, timeout=30, check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
     )
     assert result.returncode != 0
     assert "identity_binding" in result.stderr + result.stdout

@@ -38,6 +38,7 @@ def store(tmp_path, monkeypatch):
 
 # ------------------------------------------------------------------ 缺口1 hash
 
+
 def test_hash_pinned_formula():
     h = semantic_hash("s", "b")
     assert re.fullmatch(r"[0-9a-f]{64}", h)  # full 64 hex, stored in full
@@ -65,6 +66,7 @@ def test_hash_changes_when_code_body_changes():
 
 
 # --------------------------------------------------------------- 铁2 three paths
+
 
 def test_dupe_blocked_with_zero_side_effects(store):
     """铁2 ①: hit -> blocked, caller sees deduped/existing_id, zero side effects."""
@@ -103,6 +105,7 @@ def test_same_hash_terminal_passes_through(store):
 
 # ------------------------------------------------------------------ window/范围
 
+
 def test_ttl_release_leaves_two_same_hash_letters(store):
     """微点2: after the dedup window a re-send passes — the queue may then
     legitimately hold two same-hash non-terminal letters."""
@@ -136,9 +139,15 @@ def test_legacy_letter_without_hash_never_blocks(store):
     """旧信 null hash 不回填：pre-v0.5 letters cannot match a new hash."""
     p = store.root / "inbox" / "B"
     legacy = {
-        "id": "20260901000000-legacy-b", "from": "A", "to": "B",
-        "subject": "legacy", "body": "legacy", "priority": "normal",
-        "status": "pending", "reply_to": None, "created_at": "2026-09-01T00:00:00Z",
+        "id": "20260901000000-legacy-b",
+        "from": "A",
+        "to": "B",
+        "subject": "legacy",
+        "body": "legacy",
+        "priority": "normal",
+        "status": "pending",
+        "reply_to": None,
+        "created_at": "2026-09-01T00:00:00Z",
     }
     (p / f"{legacy['id']}.json").write_text(json.dumps(legacy), encoding="utf-8")
     out = store.send("A", "B", "legacy", "legacy")
@@ -147,9 +156,7 @@ def test_legacy_letter_without_hash_never_blocks(store):
 
 def test_message_stores_full_hash(store):
     mid = store.send("A", "B", "hash me", "body")[0]["id"]
-    m = json.loads(
-        (store.root / "inbox" / "B" / f"{mid}.json").read_text(encoding="utf-8")
-    )
+    m = json.loads((store.root / "inbox" / "B" / f"{mid}.json").read_text(encoding="utf-8"))
     assert m["semantic_hash"] == semantic_hash("hash me", "body")
 
 
@@ -164,6 +171,7 @@ def test_broadcast_dedupes_per_recipient(store):
 
 # ------------------------------------------------------------------ 铁1 pin
 
+
 def test_iron1_defaults_satisfy_reap_below_dedup():
     assert REAP_TTL_DEFAULT < DEDUP_TTL_DEFAULT
     assert load_window_config(Path("/nonexistent-root-for-test")) == {
@@ -175,11 +183,11 @@ def test_iron1_defaults_satisfy_reap_below_dedup():
 @pytest.mark.parametrize(
     "cfg",
     [
-        '{"reap_ttl": 86400}',               # reap >= default dedup
+        '{"reap_ttl": 86400}',  # reap >= default dedup
         '{"dedup_ttl": 3600, "reap_ttl": 3600}',  # equal — must fail loudly
         '{"dedup_ttl": 3600, "reap_ttl": 7200}',
         '{"reap_ttl": 0}',
-        'not json at all',
+        "not json at all",
     ],
 )
 def test_iron1_config_violation_fails_loudly(tmp_path, cfg):
@@ -207,6 +215,7 @@ def test_iron1_valid_override_accepted(tmp_path):
 
 # ------------------------------------------------------------------ index
 
+
 def test_index_sees_letters_from_other_instances(tmp_path):
     """缺口2: two MailStore instances on one root dedupe against each other —
     the snapshot refreshes off the inbox directory mtime."""
@@ -220,3 +229,36 @@ def test_index_sees_letters_from_other_instances(tmp_path):
     # and after the letter is done'd by the other instance, s2 lets it through
     s2.set_status("B", s2.list_messages("B")[0]["id"], "done")
     assert "deduped" not in s2.send("A", "B", "cross", "process")[0]
+
+
+# ------------------------------------------------------- t-38② 重复件不重发 wake
+
+
+def test_dedupe_false_resend_suppresses_wake_for_dup(store):
+    """t-38②：dedupe=False 落箱的重复件照常落盘留痕，但不再发 wake 通知
+    （webhook notify 面剔除 + 信体带 wake_suppressed_dup 标记）——双 wake
+    = 收件人白跑一轮（HS 第10会话实证）。"""
+    first = store.send("A", "B", "sync", "same content")
+    assert len(store.notified) == 1  # 原信发一次 wake
+    before = len(store.notified[-1])
+
+    second = store.send("A", "B", "sync", "same content", dedupe=False)
+    # 信照常落箱（调用侧显式豁免）
+    assert "deduped" not in second[0]
+    letters = store.list_messages("B", status="pending")
+    dups = [m for m in letters if m.get("wake_suppressed_dup")]
+    assert len(dups) == 1 and dups[0]["wake_suppressed_dup"] == first[0]["id"]
+    # 但不产生新的 wake 通知
+    assert len(store.notified) == 1
+    assert len(store.notified[-1]) == before
+
+
+def test_dedupe_false_resend_fires_wake_when_no_prior(store):
+    """dedupe=False 豁免只在箱内确有同 hash 非终态信时才抑制 wake；箱内无
+    原信（首投/原信已终态）照常唤醒。"""
+    store.send("A", "B", "fresh", "once")
+    assert len(store.notified) == 1
+    # 原信 done（终态）→ 同文再发不算重复件，wake 照发
+    store.set_status("B", store.list_messages("B")[0]["id"], "done")
+    store.send("A", "B", "fresh", "once", dedupe=False)
+    assert len(store.notified) == 2

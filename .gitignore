@@ -8,3 +8,8 @@ dist/
 .test-mail2/
 .mimosa/
 .claude-flow/
+
+# AOCI 运行态与本机私有配置（09-26：sdist 泄漏审查后排除）
+.aoci/config.local.json
+.aoci/ledger.jsonl
+.aoci/verify_history*

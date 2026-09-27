@@ -29,6 +29,7 @@ def fresh_server(tmp_path, monkeypatch):
 
 # ------------------------------------------------------------ store.claim
 
+
 def test_second_claim_never_sees_claimed_mail(tmp_path):
     store = MailStore(root=tmp_path / "mail")
     store.register("A")
@@ -77,6 +78,7 @@ def test_reclaim_round_restores_claimed_mail(tmp_path):
 
 
 # ------------------------------------------------------- mailbox_wait tool
+
 
 def test_wait_single_waiter_behavior_unchanged(fresh_server):
     fresh_server.mailbox_register("B")

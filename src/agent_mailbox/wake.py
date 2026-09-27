@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -49,9 +50,27 @@ WAKE_LABEL = "com.polaris-smart.agent-mailbox-wake"  # + "-<agent>" per instance
 DEFAULT_RETRY_INTERVAL = 60.0
 DEFAULT_RETRY_MAX = 5
 DEFAULT_STALE_ACKED = 600.0  # count semantics v2: acked older than this counts
+DEFAULT_COMMAND_TIMEOUT = 300.0  # local-command adapter: hard-kill deadline
 
 
 # ------------------------------------------------------------------- config
+
+# WakeConfig 认识的顶层键；其余（如 sampling 的 "agents" policy 段）在
+# load→save 往返中原样保留，绝不静默丢弃（t-37）。
+_KNOWN_KEYS = frozenset(
+    {
+        "agent_id",
+        "adapter",
+        "webhook",
+        "command",
+        "timeout",
+        "jev",
+        "retry_interval",
+        "retry_max",
+        "stale_acked",
+    }
+)
+
 
 class WakeConfig:
     """``<root>/wake.json`` — one wake installation per agent id."""
@@ -64,15 +83,41 @@ class WakeConfig:
         self.webhook_url = str(webhook.get("url", ""))
         self.webhook_secret = str(webhook.get("secret", ""))
         self.webhook_style = str(webhook.get("style", "")) or None
+        # t-37 同根因·嵌套层：webhook/jev 段的未知子键也原样保留。
+        self._webhook_extra = (
+            {k: v for k, v in webhook.items() if k not in ("url", "secret", "style")}
+            if isinstance(webhook, dict)
+            else {}
+        )
+        # local-command adapter: argv list only — a bare string is rejected
+        # (there is no shell-concatenation wake path, ever).
+        raw_command = data.get("command")
+        self.command = (
+            [str(a) for a in raw_command] if isinstance(raw_command, (list, tuple)) else []
+        )
+        self.command_timeout = float(data.get("timeout", DEFAULT_COMMAND_TIMEOUT))
         jev = data.get("jev") or {}
         self.jev_enabled = bool(jev.get("enabled", False))
         self.jev_api_key = str(jev.get("api_key", ""))
         self.jev_endpoint = str(jev.get("endpoint", ""))
         self.jev_threshold = float(jev.get("threshold", 3.0))
         self.jev_timeout = float(jev.get("timeout", 3.0))
+        self._jev_extra = (
+            {
+                k: v
+                for k, v in jev.items()
+                if k not in ("enabled", "api_key", "endpoint", "threshold", "timeout")
+            }
+            if isinstance(jev, dict)
+            else {}
+        )
         self.retry_interval = float(data.get("retry_interval", DEFAULT_RETRY_INTERVAL))
         self.retry_max = int(data.get("retry_max", DEFAULT_RETRY_MAX))
         self.stale_acked = float(data.get("stale_acked", DEFAULT_STALE_ACKED))
+        # 未知顶层键原样保留（t-37）：sampling 的 per-agent policy 走顶层
+        # "agents" 段（sampling.wake_policy_for），本类不认识它——不保留的话
+        # 任何 load→save 往返（wake install 等）都会把它静默抹掉。
+        self._extra = {k: v for k, v in data.items() if k not in _KNOWN_KEYS}
 
     @classmethod
     def load(cls, root: Path) -> WakeConfig | None:
@@ -83,31 +128,39 @@ class WakeConfig:
         return cls(data, Path(root))
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "agent_id": self.agent_id,
-            "adapter": self.adapter,
-            "webhook": {
-                "url": self.webhook_url,
-                "secret": self.webhook_secret,
-                "style": self.webhook_style or "github",
-            },
-            "jev": {
-                "enabled": self.jev_enabled,
-                "api_key": self.jev_api_key,
-                "endpoint": self.jev_endpoint,
-                "threshold": self.jev_threshold,
-                "timeout": self.jev_timeout,
-            },
-            "retry_interval": self.retry_interval,
-            "retry_max": self.retry_max,
-            "stale_acked": self.stale_acked,
-        }
+        # 已知键重建、未知键（_extra，如 "agents" policy 段）原样带回——
+        # 已知键优先，extra 不覆盖。
+        out: dict[str, Any] = {**self._extra}
+        out.update(
+            {
+                "agent_id": self.agent_id,
+                "adapter": self.adapter,
+                "webhook": {
+                    **self._webhook_extra,
+                    "url": self.webhook_url,
+                    "secret": self.webhook_secret,
+                    "style": self.webhook_style or "github",
+                },
+                "command": list(self.command),
+                "timeout": self.command_timeout,
+                "jev": {
+                    **self._jev_extra,
+                    "enabled": self.jev_enabled,
+                    "api_key": self.jev_api_key,
+                    "endpoint": self.jev_endpoint,
+                    "threshold": self.jev_threshold,
+                    "timeout": self.jev_timeout,
+                },
+                "retry_interval": self.retry_interval,
+                "retry_max": self.retry_max,
+                "stale_acked": self.stale_acked,
+            }
+        )
+        return out
 
     def save(self) -> Path:
         path = self.root / "wake.json"
-        path.write_text(
-            json.dumps(self.to_dict(), ensure_ascii=False, indent=1), encoding="utf-8"
-        )
+        path.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=1), encoding="utf-8")
         return path
 
 
@@ -117,6 +170,7 @@ def default_python() -> str:
 
 
 # ----------------------------------------------------------------- adapters
+
 
 class WakeAdapter:
     """Delivery interface for one harness's wake mechanism."""
@@ -150,6 +204,104 @@ class GenericWebhookAdapter(HermesAdapter):
     name = "generic-webhook"
 
 
+def _kill_group(proc: subprocess.Popen) -> None:
+    """Timeout = hard kill. On POSIX the child was started with
+    ``start_new_session`` so killing its process group also takes any
+    grandchildren it spawned; elsewhere kill the direct child. Never raises —
+    a kill racing an already-exited process is normal life."""
+    try:
+        if hasattr(os, "killpg"):
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        else:
+            proc.kill()
+    except OSError:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    finally:
+        try:
+            proc.communicate(timeout=5)  # reap — no zombies left behind
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+
+
+class LocalCommandAdapter(WakeAdapter):
+    """On-demand CLI agents (``codex`` etc.) have no resident process to POST
+    — waking them means running a configured local command that pulls them
+    onto the mailbox (老板 09-25 令: all-agent mail auto-trigger). Exit 0 =
+    delivered; non-zero exit, timeout kill, or spawn failure all return False
+    so the drain's retry path keeps the letter (信不丢).
+
+    Injection posture (硬约束): the command is an argv *list* executed
+    without a shell — never a concatenated string — and letter content rides
+    only ``AGENT_MAIL_*`` environment variables, never command-line arguments.
+    """
+
+    name = "local-command"
+
+    def __init__(self, command: list[str], timeout: float = DEFAULT_COMMAND_TIMEOUT) -> None:
+        self.command = [str(a) for a in (command or [])]
+        self.timeout = max(1.0, float(timeout or DEFAULT_COMMAND_TIMEOUT))
+
+    def deliver(self, msg: dict[str, Any]) -> bool:
+        if not self.command or not all(isinstance(a, str) and a for a in self.command):
+            # Misconfigured (empty or string-form command): nothing was run —
+            # return False so the retry path keeps the letter visible.
+            print(
+                "[agent-mailbox wake] local-command: no valid argv list configured",
+                file=sys.stderr,
+                flush=True,
+            )
+            return False
+        env = dict(os.environ)
+        env.update(
+            {
+                # Letter content travels via env only — execve passes these
+                # verbatim, no shell ever parses them.
+                "AGENT_MAIL_MSG_ID": str(msg.get("id", "")),
+                "AGENT_MAIL_AGENT_ID": str(msg.get("to", "")),
+                "AGENT_MAIL_SUBJECT": str(msg.get("subject", "")),
+                "AGENT_MAIL_MSG_BODY": str(msg.get("body", "") or ""),
+            }
+        )
+        kwargs: dict[str, Any] = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "env": env,
+        }
+        if os.name == "posix":
+            kwargs["start_new_session"] = True  # own group: killpg below takes grandchildren
+        try:
+            proc = subprocess.Popen(self.command, **kwargs)
+        except OSError as exc:  # binary missing etc. — retry path, 信不丢
+            print(
+                f"[agent-mailbox wake] local-command spawn failed: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return False
+        try:
+            proc.communicate(timeout=self.timeout)
+        except subprocess.TimeoutExpired:
+            _kill_group(proc)
+            print(
+                f"[agent-mailbox wake] local-command timed out after {self.timeout:g}s (killed)",
+                file=sys.stderr,
+                flush=True,
+            )
+            return False
+        if proc.returncode != 0:
+            print(
+                f"[agent-mailbox wake] local-command exit {proc.returncode}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return False
+        return True
+
+
 class ClaudeCodeAdapter(WakeAdapter):
     """Claude Code has no gateway to POST — fall back to a terminal bell and
     a desktop notification (best-effort, never raises). The adapter slot is
@@ -174,9 +326,9 @@ def _desktop_notify(title: str, body: str) -> None:
     try:
         if sys.platform == "darwin":
             subprocess.run(
-                ["osascript", "-e",
-                 f'display notification "{body}" with title "{title}"'],
-                check=False, timeout=5,
+                ["osascript", "-e", f'display notification "{body}" with title "{title}"'],
+                check=False,
+                timeout=5,
             )
         elif sys.platform == "linux":
             subprocess.run(["notify-send", title, body], check=False, timeout=5)
@@ -185,6 +337,8 @@ def _desktop_notify(title: str, body: str) -> None:
 
 
 def make_adapter(cfg: WakeConfig) -> WakeAdapter:
+    if cfg.adapter == "local-command":
+        return LocalCommandAdapter(cfg.command, cfg.command_timeout)
     if cfg.adapter == "claude-code":
         return ClaudeCodeAdapter()
     if cfg.adapter == "generic-webhook":
@@ -195,6 +349,7 @@ def make_adapter(cfg: WakeConfig) -> WakeAdapter:
 
 
 # -------------------------------------------------------------------- jev
+
 
 def jev_decide(cfg: WakeConfig, msg: dict[str, Any]) -> dict[str, Any] | None:
     """Ask the Jev scoring API whether this letter deserves a wake-up.
@@ -208,12 +363,15 @@ def jev_decide(cfg: WakeConfig, msg: dict[str, Any]) -> dict[str, Any] | None:
     import urllib.error
     import urllib.request
 
-    payload = json.dumps({
-        "subject": msg.get("subject", ""),
-        "body": (msg.get("body", "") or "")[:4000],
-        "from": msg.get("from", ""),
-        "priority": msg.get("priority", "normal"),
-    }, ensure_ascii=False).encode("utf-8")
+    payload = json.dumps(
+        {
+            "subject": msg.get("subject", ""),
+            "body": (msg.get("body", "") or "")[:4000],
+            "from": msg.get("from", ""),
+            "priority": msg.get("priority", "normal"),
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
     req = urllib.request.Request(
         cfg.jev_endpoint,
         data=payload,
@@ -235,9 +393,7 @@ def jev_decide(cfg: WakeConfig, msg: dict[str, Any]) -> dict[str, Any] | None:
         return None  # fail-open: caller wakes regardless
 
 
-def jev_gate(
-    cfg: WakeConfig, msg: dict[str, Any], log_path: Path
-) -> tuple[bool, str]:
+def jev_gate(cfg: WakeConfig, msg: dict[str, Any], log_path: Path) -> tuple[bool, str]:
     """Jev routing with the fail-open iron law applied.
 
     Runs the scoring call on a worker thread bounded by ``jev_timeout`` — the
@@ -288,6 +444,7 @@ def jev_gate(
 
 
 # ------------------------------------------------------------------- drain
+
 
 def should_wake(msg: dict[str, Any], now: float, stale_acked: float) -> bool:
     """Count semantics v2: every pending letter counts; an acked letter only
@@ -340,8 +497,13 @@ def run_once(
     (fail-open iron law). Returns a stats dict for logging/tests.
     """
     stats: dict[str, Any] = {
-        "scanned": 0, "due": 0, "woke": 0, "skipped_woken": 0,
-        "failed": 0, "jev_skipped": 0, "skipped_external": 0,
+        "scanned": 0,
+        "due": 0,
+        "woke": 0,
+        "skipped_woken": 0,
+        "failed": 0,
+        "jev_skipped": 0,
+        "skipped_external": 0,
     }
     try:
         store = store or MailStore(root)
@@ -357,6 +519,13 @@ def run_once(
                 m = json.loads(p.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue  # partially-written letters wait for the next round
+            if isinstance(m, dict) and not m.get("id"):
+                # Legacy letter (pre-id format): the filename stem *is* the id
+                # in the canonical scheme. Without the back-fill the bare
+                # m["id"] further down poisoned the whole drain round
+                # (KeyError → fail-open skipped every letter after it),
+                # 09-25: one stale-format letter starved the entire inbox.
+                m["id"] = p.stem
             if m.get("origin") == "external" and not _external_auto_execute(root):
                 # v0.7.5 外部来源执行门: external mail lands but never wakes
                 # anyone — an owner must confirm it (confirm_external) first,
@@ -378,8 +547,11 @@ def run_once(
                     try:
                         store.record_handled(cfg.agent_id, m["id"], "jev_skip", note=reason)
                     except Exception as exc:  # noqa: BLE001
-                        print(f"[agent-mailbox wake] jev_skip mark failed (fail-open): {exc}",
-                              file=sys.stderr, flush=True)
+                        print(
+                            f"[agent-mailbox wake] jev_skip mark failed (fail-open): {exc}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
                     continue
             delivered = False
             for attempt in range(1, cfg.retry_max + 1):
@@ -396,15 +568,20 @@ def run_once(
                 # success marks the letter woken (idempotent dedup): later
                 # rounds skip it even after a reclaim cycles acked->pending.
                 store.record_handled(
-                    cfg.agent_id, m["id"], "wake",
+                    cfg.agent_id,
+                    m["id"],
+                    "wake",
                     note=getattr(adapter, "name", "adapter"),
                 )
                 stats["woke"] += 1
             # else: every attempt failed — leave the letter un-marked so the
             # next WatchPaths trigger re-drains it. 信不丢。
     except Exception as exc:  # noqa: BLE001 — total fail-open: never raise out of drain
-        print(f"[agent-mailbox wake] drain round failed (fail-open): {exc}",
-              file=sys.stderr, flush=True)
+        print(
+            f"[agent-mailbox wake] drain round failed (fail-open): {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
     return stats
 
 
@@ -420,6 +597,7 @@ def run(root: Path, cfg: WakeConfig, poll_interval: float = 2.0, once: bool = Fa
 
 # ------------------------------------------------------- install / uninstall
 
+
 def plist_body(cfg: WakeConfig, python_exe: str, root: Path) -> str:
     """launchd plist for one agent's wake (WatchPaths on its inbox).
 
@@ -428,8 +606,15 @@ def plist_body(cfg: WakeConfig, python_exe: str, root: Path) -> str:
     """
     inbox = Path(root) / "inbox" / cfg.agent_id
     program = [
-        python_exe, "-m", "agent_mailbox.wake", "run",
-        "--root", str(Path(root)), "--agent", cfg.agent_id, "--once",
+        python_exe,
+        "-m",
+        "agent_mailbox.wake",
+        "run",
+        "--root",
+        str(Path(root)),
+        "--agent",
+        cfg.agent_id,
+        "--once",
     ]
     prog_xml = "".join(f"        <string>{a}</string>\n" for a in program)
     return f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -461,8 +646,7 @@ def systemd_unit_body(cfg: WakeConfig, python_exe: str, root: Path) -> dict[str,
     PathChanged=) triggering a oneshot service. Returns {filename: body}."""
     inbox = Path(root) / "inbox" / cfg.agent_id
     exec_line = (
-        f"{python_exe} -m agent_mailbox.wake run "
-        f"--root {Path(root)} --agent {cfg.agent_id} --once"
+        f"{python_exe} -m agent_mailbox.wake run --root {Path(root)} --agent {cfg.agent_id} --once"
     )
     return {
         f"{WAKE_LABEL}-{cfg.agent_id}.path": f"""[Unit]
@@ -527,18 +711,17 @@ def install(
         for name, body in systemd_unit_body(cfg, py, cfg.root).items():
             (target / name).write_text(body, encoding="utf-8")
             out["files"].append(str(target / name))
-        out["activate_cmd"] = (
-            f"systemctl --user enable --now {WAKE_LABEL}-{cfg.agent_id}.path"
-        )
+        out["activate_cmd"] = f"systemctl --user enable --now {WAKE_LABEL}-{cfg.agent_id}.path"
         if activate:
             out["activated"] = _launchctl(
                 "--user", "enable", "--now", f"{WAKE_LABEL}-{cfg.agent_id}.path"
             )
     else:
-        raise SystemExit(f"wake install: unsupported platform {sys.platform!r} "
-                         "(run `agent-mailbox wake run` manually instead)")
-    cfg.save()
-    out["config"] = str(cfg.save())
+        raise SystemExit(
+            f"wake install: unsupported platform {sys.platform!r} "
+            "(run `agent-mailbox wake run` manually instead)"
+        )
+    out["config"] = str(cfg.save())  # 单次写入（HS 派单项①：双调清理）
     return out
 
 
@@ -573,6 +756,7 @@ def uninstall(
 
 
 # ----------------------------------------------------------------------- CLI
+
 
 def _cmd_install(args: argparse.Namespace) -> None:
     root = Path(args.root or os.environ.get("AGENT_MAIL_HOME", Path.home() / ".agent-mail"))
@@ -627,8 +811,7 @@ def _cmd_status(args: argparse.Namespace) -> None:
         info["adapter"] = cfg.adapter
         info["jev_enabled"] = cfg.jev_enabled
         if sys.platform == "darwin":
-            plist = (Path.home() / "Library" / "LaunchAgents"
-                     / f"{WAKE_LABEL}-{cfg.agent_id}.plist")
+            plist = Path.home() / "Library" / "LaunchAgents" / f"{WAKE_LABEL}-{cfg.agent_id}.plist"
             info["plist_installed"] = plist.exists()
     print(json.dumps(info, ensure_ascii=False))
 
@@ -637,9 +820,16 @@ def _cmd_run(args: argparse.Namespace) -> None:
     root = Path(args.root or os.environ.get("AGENT_MAIL_HOME", Path.home() / ".agent-mail"))
     cfg = WakeConfig.load(root)
     if cfg is None:
-        raise SystemExit(f"wake run: no wake.json in {root} — run `agent-mailbox wake install` first")
+        raise SystemExit(
+            f"wake run: no wake.json in {root} — run `agent-mailbox wake install` first"
+        )
     if args.agent:
         cfg.agent_id = args.agent
+    if getattr(args, "adapter", ""):
+        # per-agent plist override: multi-agent installs share one wake.json,
+        # each plist passes --adapter to pick its own wake path (HS=hermes
+        # stays untouched, codex=local-command).
+        cfg.adapter = args.adapter
     if not cfg.agent_id:
         raise SystemExit("wake run: no agent_id in wake.json — pass --agent")
     run(root, cfg, once=args.once)
@@ -653,19 +843,26 @@ def wake_main(argv: list[str] | None = None) -> None:
 
     p_inst = sub.add_parser("install", help="install the OS file-watcher integration")
     p_inst.add_argument("--agent", default="", help="agent inbox to watch")
-    p_inst.add_argument("--adapter", default="", help="hermes | claude-code | generic-webhook")
+    p_inst.add_argument(
+        "--adapter", default="", help="hermes | claude-code | generic-webhook | local-command"
+    )
     p_inst.add_argument("--webhook-url", default="")
     p_inst.add_argument("--webhook-secret", default="")
     p_inst.add_argument("--jev", action="store_true", help="enable the Jev router (default off)")
     p_inst.add_argument("--jev-api-key", default="")
     p_inst.add_argument("--jev-endpoint", default="")
     p_inst.add_argument("--root", default="", help="mail root (default ~/.agent-mail)")
-    p_inst.add_argument("--launch-agents-dir", default=None,
-                        help="override ~/Library/LaunchAgents (tests/tmp)")
-    p_inst.add_argument("--systemd-dir", default=None,
-                        help="override ~/.config/systemd/user (tests/tmp)")
-    p_inst.add_argument("--no-activate", action="store_true",
-                        help="write files only, do not load into launchd/systemd")
+    p_inst.add_argument(
+        "--launch-agents-dir", default=None, help="override ~/Library/LaunchAgents (tests/tmp)"
+    )
+    p_inst.add_argument(
+        "--systemd-dir", default=None, help="override ~/.config/systemd/user (tests/tmp)"
+    )
+    p_inst.add_argument(
+        "--no-activate",
+        action="store_true",
+        help="write files only, do not load into launchd/systemd",
+    )
     p_inst.set_defaults(func=_cmd_install)
 
     p_un = sub.add_parser("uninstall", help="remove the OS integration for one agent")
@@ -678,6 +875,11 @@ def wake_main(argv: list[str] | None = None) -> None:
     p_run = sub.add_parser("run", help="run one drain round (--once) or loop")
     p_run.add_argument("--agent", default="")
     p_run.add_argument("--root", default="")
+    p_run.add_argument(
+        "--adapter",
+        default="",
+        help="override wake.json adapter (e.g. local-command for per-agent plist wake)",
+    )
     p_run.add_argument("--once", action="store_true", help="one round then exit (WatchPaths mode)")
     p_run.set_defaults(func=_cmd_run)
 
