@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none" role="img" aria-label="agent-mailbox">
+  <title>agent-mailbox</title>
+  <!-- 信封（mailbox） -->
+  <rect x="6" y="18" width="32" height="23" rx="3.5" stroke="#4A6FA5" stroke-width="3.2"/>
+  <path d="M7.4 21.2 22 31.6 36.6 21.2" stroke="#4A6FA5" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round"/>
+  <!-- 电波（wake） -->
+  <path d="M29.5 18A8.5 8.5 0 0 1 38 9.5" stroke="#1D2026" stroke-width="3.2" stroke-linecap="round"/>
+  <path d="M23 18A15 15 0 0 1 38 3" stroke="#1D2026" stroke-width="3.2" stroke-linecap="round" opacity="0.45"/>
+</svg>

@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/brand/png/logo-readme.png" width="360" alt="agent-mailbox"></p>
+
 # agent-mailbox
 
 [![polaris-smart/agent-mailbox MCP server](https://glama.ai/mcp/servers/polaris-smart/agent-mailbox/badges/score.svg)](https://glama.ai/mcp/servers/polaris-smart/agent-mailbox)

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="96" viewBox="0 0 420 96" fill="none" role="img" aria-label="agent-mailbox">
+  <title>agent-mailbox</title>
+  <g transform="translate(16 20)">
+    <rect x="6" y="18" width="32" height="23" rx="3.5" stroke="#7195CD" stroke-width="3.2"/>
+    <path d="M7.4 21.2 22 31.6 36.6 21.2" stroke="#7195CD" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M29.5 18A8.5 8.5 0 0 1 38 9.5" stroke="#E3E6EE" stroke-width="3.2" stroke-linecap="round"/>
+    <path d="M23 18A15 15 0 0 1 38 3" stroke="#E3E6EE" stroke-width="3.2" stroke-linecap="round" opacity="0.45"/>
+  </g>
+  <text x="86" y="60" font-family="Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
+        font-size="34" font-weight="700" letter-spacing="-0.6" fill="#E3E6EE">agent<tspan fill="#7195CD">-mailbox</tspan></text>
+</svg>
