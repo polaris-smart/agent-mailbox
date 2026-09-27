@@ -3,48 +3,41 @@
 # agent-mailbox
 
 [![polaris-smart/agent-mailbox MCP server](https://glama.ai/mcp/servers/polaris-smart/agent-mailbox/badges/score.svg)](https://glama.ai/mcp/servers/polaris-smart/agent-mailbox)
+[![npm](https://img.shields.io/npm/v/agent-mailbox)](https://www.npmjs.com/package/agent-mailbox)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**给每一个本地 AI Agent 一个专属信箱。** 一个 stdio MCP server，零守护进程，每封信一个 JSON 文件。外加内建任务看板：卡片移动即唤醒负责人，还有给人类用的零依赖 Web 看板。
+**给你的 AI agent 一个真正的信箱——而你，是主人。** 不同 CLI（Claude Code、Codex、Gemini CLI、Hermes、WorkBuddy…）上的 agent 在同一台机器上异步互发消息：有送达保证、有唤醒、有一个人类级的三栏收件箱，每一段对话都尽收眼底。零依赖、零云端、零 API key。
 
-📖 **文档**: [English](README.md) · [中文](README.zh-CN.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Français](README.fr.md) · [Русский](README.ru.md)
+> **📊 生产实测**：18 天多 agent 日常软件开发，5 个 agent 之间收发 1,676+ 封信——日均约 93 封，零丢信。
 
-> 🆕 **v0.7.x —— 唤醒升级**：**sampling 唤醒**——信一落箱，server 就经宿主自己的 MCP 连接发 `sampling/createMessage` 调起收件人，附带 per-agent 唤醒策略强制注入（身份模板/禁区硬约束/执行锁——同一 agent 同时只有一个分身在途）；CLI 型 agent（codex 等）走 **local-command 唤醒适配器**（纯 argv、内容走环境变量、killpg 强杀超时），多 agent 共享 wake.json 时可用 `wake run --adapter` 各取所需。sampling 只是加速通道不是送达保证：MCP 已于 2026-07-28 弃用（SEP-2577），v0.7.2 加 per-agent 关停开关（wake.json 里 `"sampling": {"enabled": false}`），信必达铁律始终由 fallback 链（wake-daemon / webhook / 下次 check）兜底。v0.7.4 加固发版链路：`wake install` 不再抹掉未知 `wake.json` 键（sampling 策略段升级存活——P0）、重复信不再重复唤醒、`scripts/verify_release.sh` 发版前对真实产物抽查。v0.7.5 落地信任模型：成员带 kind（owner 人 / agent / guest 外部来源）并在工具层强制执行、密封信只有收件 agent 自己能读正文、外部来源执行门（external 信落地不触发任何唤醒，owner 确认后才放行）、/setup 三步向导、/mail 三栏人用信箱与 /visibility 可见性页。14 个 MCP 工具。上一版：[Wake daemon](#wake-daemon信必达新信落盘即唤醒)
+| 三栏信箱 | setup 向导（自动发现） |
+|---|---|
+| <img src="docs/screenshots/mailbox-threepane.png" alt="三栏信箱" width="100%"/> | <img src="docs/screenshots/setup-wizard.png" alt="setup 向导" width="100%"/> |
+
+其他文档：[English](README.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Français](README.fr.md) · [Русский](README.ru.md)
 
 ---
 
-## 问题
+## 三步安装
 
-在同一台机器上跑多个 AI agent——Claude Code、Hermes、你自己的脚本——它们之间没有互相留言的办法。要么互相等待，要么你本人在各个窗口之间复制粘贴，充当人肉交换机。
-
-## 方案
-
-一个信箱就是一个普通 JSON 文件目录：
-
-```
-~/.agent-mail/
-  registry.json                agent_id → {owner, description, created_at}
-  inbox/HS/20260905-….json     每封信一个文件
-  archive/HS/…
-  tasks.json                   任务看板（{"next_id", "tasks": {id: 卡片}}）
-```
-
-Agent 通过一个小型 stdio MCP server 读写它。没有 broker 进程、不开端口、没有数据库、默认零网络。任意多个 MCP 宿主进程共享同一个邮件根目录（文件锁保护）。
-
-![agent-mailbox 架构图](docs/architecture.png)
-
-## 快速开始
-
-**前置条件** —— 一次性：安装 [uv](https://docs.astral.sh/uv/)（macOS/Linux：`curl -LsSf https://astral.sh/uv/install.sh | sh`；Windows：`powershell -c "irm https://astral.sh/uv/install.ps1 | iex"`）。其余全部由 `uvx` 运行，无需再装任何东西。
-
-### 1 · 在你的 MCP 宿主里注册 server
-
-Claude Code：
+**前置条件**——一次性：安装 [uv](https://docs.astral.sh/uv/)（`curl -LsSf https://astral.sh/uv/install.sh | sh`，Windows 用 `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"`）。其余一切都由 `uvx` 运行。
 
 ```bash
-claude mcp add agent-mailbox -- uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox
+# 1 · 装上 CLI
+uv tool install git+https://github.com/polaris-smart/agent-mailbox
+
+# 2 · 跑 setup 向导——它会替你发现你的 agent
+agent-mailbox setup          # 在浏览器里打开本地向导
+agent-mailbox setup --yes    # 无头 / 服务器：全默认值，不开浏览器
+
+# 3 · 把 MCP server 注册进你的 agent 宿主
+claude mcp add agent-mailbox -- agent-mailbox        # 或用下方通用 JSON
 ```
 
-通用 MCP 宿主（JSON 配置）：
+向导自动扫四个层面——**装了什么**（PATH 里的 CLI、/Applications、配置目录）→ **谁已接入**（各 MCP 配置 + 信箱名册）→ **怎么唤醒每一个**（`Info.plist` 里的应用 URL scheme、按*可执行文件路径*解析的监听端口、可用的命令）→ **并逐条测试通道**——真发一封信验一遍。你一个字都不用敲；认不出的东西它会诚实地报 `unrecognized`，绝不瞎猜。
+
+<details>
+<summary>通用 MCP 宿主 JSON（任意宿主）</summary>
 
 ```json
 {
@@ -57,184 +50,154 @@ claude mcp add agent-mailbox -- uvx --from git+https://github.com/polaris-smart/
 }
 ```
 
-提示：在该 agent 的环境里设一次 `AGENT_MAIL_ID=HS`（或任意 id），之后所有工具自动以它署名收发，无需每次传 `agent_id`。
+提示：在某个 agent 的环境里设一次 `AGENT_MAIL_ID=<id>`，之后所有工具都自动以它署名收发。
+</details>
 
-### 2 · Agent 注册一次即可
+## 工作原理
 
-```json
-{ "tool": "mailbox_register", "arguments": { "agent_id": "HS", "owner": "Hermes", "description": "PM & QA" } }
+![一封信的旅程](docs/diagrams/how-it-works.png)
+
+一个信箱就是一个纯 JSON 文件目录——每封信一个文件，能 `cat`、能 grep、完完全全属于你：
+
+```
+~/.agent-mail/
+  registry.json               agent_id → {kind, owner, description}
+  inbox/HS/20260905-….json    每封信一个文件
+  archive/HS/…
+  tasks.json                  任务看板
+  audit.log                   每一次可见性变更，追加留痕
 ```
 
-注册幂等。注册后即可被所有人寻址——包括一个叫 `boss`、由你亲自翻看的人类信箱。
+agent 们通过一个小型 stdio MCP server（14 个工具）交谈。没有 broker 进程、不开端口、没有数据库、默认零网络。任意多个 MCP 宿主安全共享同一个邮件根目录（flock 保护）。
 
-### 3 · 发信、收信、回信
+**唤醒沉睡的 agent。** 信一落箱，信箱就通过收件人宿主自己的 MCP 连接发一个 ping（MCP sampling）——由宿主*自己的* LLM 读信并行动，全程受强制 wake-policy 约束（身份、任务、硬禁区清单）。**信箱本身零模型依赖、不持有任何 API key**——智能是从 agent 本来就跑着的那个宿主借来的；per-agent 开关随时可关停 sampling。纯 CLI 型 agent（codex…）改走 local-command 适配器。sampling 只是加速器，永远不是送达保证：它失败了，信照样落箱，下一次 check 照样送达。
 
-```json
-{ "tool": "mailbox_send", "arguments": { "to": "HS", "subject": "deploy ready", "body": "v0.1.0 已就绪，请验收。" } }
-{ "tool": "mailbox_check", "arguments": {} }
-{ "tool": "mailbox_reply", "arguments": { "msg_id": "20260905-…-hs", "body": "验收通过，标记 done。" } }
-```
+## 人，才是主人
 
-`mailbox_check` 取走待读信件并标记 `acked`。生命周期：`pending → acked → done`，之后可归档。每封信都是一个可以 `cat` 的 JSON 文件——老板直接看收件箱。
+![权限模型](docs/diagrams/permission-model.png)
 
-### 4 · 等信而不是轮询
+- **owner（你）**——尽收眼底：三栏 Web 信箱里既有你的收件箱，也有*全部* agent 之间的往来流量。你读信、回信、接任务（「需要你拍板」）、拨动可见性开关——每一次变更都落进 `audit.log`。
+- **agent**——只有自己的收件箱。跨箱读取在工具层直接得到结构化的 `permission denied`，绝不返回一个安静的空结果。
+- **guest**——跨设备/外部来件人需要配对令牌；**外部来源的信照样落箱，但在你确认之前不唤醒任何东西**（prompt injection 门）。
+- **密封信**——正文只有收件 agent 自己的工具能读；所有人类视图只显示元数据。「主人看得到一切」绝不能变成一条泄密通道。
+- **注意力三档**——发件人给信标 `decision` / `report` / `archive`；默认只有「需要你拍板」的那一档会 ping 你。
 
-`mailbox_wait` 长轮询阻塞直到有新信——作为回 合的最后一个动作调用：
+三栏信箱（`agent-mailbox --web 8900`，stdlib `http.server`，依旧零依赖）有文件夹、一块监控所有 agent 流量的监控栏、带逐通道状态点的成员名册、逐信操作（回信 / 转任务卡 / 归档）、键盘快捷键（`j/k` 移动 · `e` 归档 · `r` 回信 · `t` 任务 · `/` 搜索），空状态不是一页白板，而是一个动作（「给你的 agent 写下第一封信」）。
 
-```json
-{ "tool": "mailbox_wait", "arguments": { "timeout_seconds": 25 } }
-```
+## 为什么不直接用 MCP / Slack / 裸文件？
 
-## 任务看板
+| 方案 | 跨 CLI | 异步 | 唤醒 | 人类收件箱 | 依赖 |
+|---|---|---|---|---|---|
+| **agent-mailbox** | ✅ 任意 MCP 宿主 | ✅ 收件箱持久 | ✅ sampling + daemon | ✅ 三栏 + 看板 | **0** |
+| 裸 MCP 工具 | ❌ 每 CLI 各自会话 | ❌ 重启即丢 | ❌ | ❌ | — |
+| Slack/Discord bot | ✅ | ✅ | ✅ | ❌ | API token、云端 |
+| 共享文件 + 约定 | ✅ | ⚠️ 各自为政 | ❌ 手动 | ❌ | 你自己的加锁代码 |
 
-任务卡存于 `<邮件根>/tasks.json`（纯 JSON，与信件共用同一把文件锁）。状态机严格：`todo→doing→review→done`，非相邻移动被拒（除非 `force=True`）；`done` 为终态。建卡或挪卡都会给负责人发一封普通信箱消息（`[task#t-12 → review] …`）——看板动作经由既有信箱唤醒对应 agent，零轮询、零 webhook。自己挪自己的卡不发信，`notify=False` 可关闭。
-
-**Web 看板（给人类）。** `agent-mailbox --web 8643` 在 `127.0.0.1` 上提供一个零依赖看板（stdlib `http.server` + 单个内嵌 HTML，无框架）：四条泳道对应状态机，拖卡到相邻列即移动，表单可直接建卡；一键切换深浅主题。鉴权用 bearer token——设 `AGENT_MAIL_WEB_TOKEN` 固定之，否则每次启动生成新 token 并打印（打开 `http://127.0.0.1:8643/?token=…`）。看板身份为 `boss`：人类拖卡/建卡同样自动给负责人发信唤醒。页面每 5 秒自动刷新。
-
-## 唤醒离线的 agent（一行配置）
-
-如果收信 agent 根本没在运行，`mailbox_send` 可以在新信落盘的瞬间 POST 一个 webhook——无需守护进程、无需轮询、无需额外进程：
-
-```json
-// ~/.agent-mail/webhook.json   (chmod 600)
-{ "url": "http://localhost:8644/webhooks/agent-mailbox", "secret": "…" }
-```
-
-密钥自己生成一次：`openssl rand -hex 32`。省略则发未签名 POST（本地测试足够；是否强制验签由接收方决定）。
-
-宿主的 webhook 处理器收到：
-
-```json
-{ "event": "agent_mailbox_new_message", "event_type": "agent_mailbox_new_message", "message": { "id": "…", "from": "ZC", "to": "HS", "subject": "…", "body": "…" } }
-```
-
-……然后唤醒该 agent，agent 到达后调用 `mailbox_check`。集成到此为止。
-
-- 签名 `X-Hub-Signature-256: sha256=<hmac>`（GitHub 格式——Hermes gateway 和多数 webhook 消费方都认）。
-- 签名风格可用环境变量 `AGENT_MAIL_SIGNATURE_STYLE` 切换：`github`（默认，`X-Hub-Signature-256: sha256=<hex>`）/ `generic`（`X-Webhook-Signature: <hex>`，无前缀）/ `slack`（`X-Slack-Signature: v0=<hex>`；本实现不发送 ts 字段，接收方请勿按 Slack 完整基串 `v0:ts:body` 校验）。
-- 目标被锁定：仅 http/https、默认只允许环回/私网地址、拒绝重定向、绕过系统代理。
-- 环境变量 `AGENT_MAIL_WEBHOOK_URL` / `AGENT_MAIL_WEBHOOK_SECRET` 优先于配置文件。不配置 = 完全离线。
-
-## Wake daemon（信必达）：新信落盘即唤醒
-
-上面的 webhook 需要一个已经在监听的网关。wake daemon 补上另一半：**收件侧**——当信落盘时，把 agent 的宿主真正拉进一个会话。一条命令安装：
+## CLI 与工具
 
 ```bash
-agent-mailbox wake install --agent ZC            # 用 webhook.json 作为 POST 目标
-agent-mailbox wake install --agent ALICE --adapter claude-code    # 终端响铃 + 桌面通知
-agent-mailbox wake install --agent BOB --adapter generic-webhook --webhook-url https://… --webhook-secret …
-agent-mailbox wake status / uninstall ZC
+agent-mailbox setup [--yes]     # 三步向导（发现 → 测试 → 完成）
+agent-mailbox discover [--json] # 只打印发现报告
+agent-mailbox status [--json]   # 服务 + 各成员通道健康度
+agent-mailbox test <member>     # 发一封测试信，等回执
+agent-mailbox connect <name>    # 把成员接入（写前备份）
+agent-mailbox uninstall         # 还原每一个动过的配置（diff = 0）
+agent-mailbox --web 8900        # 人类信箱 + 看板（localhost + token）
 ```
 
-- **触发方式**：launchd `WatchPaths`（macOS）/ systemd `PathChanged=` path unit（Linux）监听 `~/.agent-mail/inbox/<agent>/`；任何变更都会启动一轮清信（`python -m agent_mailbox.wake run --once`）。
-- **适配器**：`hermes`（POST 网关 webhook；签名风格自动适配 github/generic/slack）、`generic-webhook`（你的 URL + 密钥）、`claude-code`（终端响铃 + 桌面通知；更丰富的 hooks 预留中）。未知取值回落 hermes——唤醒胜过沉默。
-- **可靠性三件套**（2026-09-22 事故复盘产品化）：POST 失败在一轮内按 60s×5 重试，仍失败则**不标记**该信，由下一轮文件监听触发补投——唤醒侧永不丢信；信件 `handled_log` 中的 `wake` 条目保证每封信**至多唤醒一次**（幂等）；计数口径 v2 对全部 `pending` 加上超过 600s 的 `acked` 信件唤醒（处理方半途死掉的情形），刚 acked 的新信保持安静。
-- **fail-open 铁律**：daemon 是独立进程，只读信件文件、经 store 加锁 API 追加。wake 挂了，信照常落盘，下一次 `mailbox_check` 照常送达——发送路径上没有任何东西依赖它。
-- **Jev 路由器（可选，默认关闭）**：在 `<邮件根>/wake.json` 设 `"jev": {"enabled": true, "api_key": …, "endpoint": …}`（或 `wake install --jev --jev-api-key …`）。信件异步打分（Noul 门控：现在有人需要行动吗？分数：紧急度 0–10，低于阈值归入每日摘要），不阻塞唤醒主路径；Jev 超时/出错立即回落「有信即醒」。决策连同分数记入 `<邮件根>/wake-jev.log`；`api_key` 绝不进日志。纯 stdlib——`pip install agent-mailbox[jev]` 现在即可安装，extra 为将来的原生客户端预留。
-
-> ⚠️ macOS 安装会写 `~/Library/LaunchAgents/com.polaris-smart.agent-mailbox-wake-<agent>.plist` 并执行 `launchctl load`；Linux 在 `~/.config/systemd/user` 下写用户 unit 并启用 path unit。用 `--no-activate` 只生成文件不加载。
-
-### Threads（v0.6.0，一等公民）
-
-每封信现在都带 `thread_id`：新发的信铸造一个，回信继承原信的；`mailbox_thread(thread)` 按**跨所有 agent**（inbox + archive）的时间序回放整段对话。`mailbox_list` 支持 `thread` 过滤。旧信按归一化主题启发式归组（剥掉堆叠的 `Re:`/`Fwd:`）——12 层深的 "Re: Re: …" 链归并为一个 thread；无法匹配的孤信保持 `null`，缺口可见。当一个 thread 累积超过 5 封未办结（非 done）信件时，`mailbox_check` 返回 `ghost_warning`——在「acked 沉底」这种失效模式吃掉整条线程之前把它暴露出来。
-
-### 自回声防护（默认开启）
-
-`send` 产生「发件人 = 收通知人」的通知（自回声）**默认不投递**：信件照常落盘，`mailbox_list` / `mailbox_check` 不受影响，只是不再唤醒发件人自己；丢弃动作在 `sent.log` 里记 `echo_suppressed: true` 留痕，可一行 grep 定谳。设 `notify_self_echo: true`（邮件根 `~/.agent-mail/config.json`）或环境变量 `AGENT_MAIL_NOTIFY_SELF_ECHO` 恢复投递——恢复后自回声**通知**的主题带 `[echo] ` 前缀（信件原文主题不变，便于正则剥离）。
-
-## 工具一览
+<details>
+<summary><b>全部 14 个 MCP 工具</b></summary>
 
 | 工具 | 说明 |
 |------|------|
 | `mailbox_register(agent_id, owner?, description?)` | 认领信箱；幂等 |
-| `mailbox_send(to, subject, body, priority?)` | `to` = 单个 id、列表或 `"all"`；`dedupe?`（默认 true）抑制同哈希重复投递 |
+| `mailbox_send(to, subject, body, priority?, attention?, sealed?, links?)` | `to` = 单个 id / 列表 / `"all"`；默认去重 |
 | `mailbox_check(agent_id?, mark?)` | 取走待读信（→ `acked`） |
-| `mailbox_reply(msg_id, body)` | 自动路由回原发件人（豁免去重） |
-| `mailbox_list(agent_id?, status?, thread?)` | 列出信件，可按状态 / thread 过滤 |
-| `mailbox_thread(thread)` | 跨 agent 按时间序回放整条线程（thread_id 或任意 msg id） |
+| `mailbox_reply(msg_id, body)` | 自动路由回发件人（豁免去重） |
+| `mailbox_list(agent_id?, status?, thread?)` | 按条件列出信件 |
+| `mailbox_thread(thread)` | 跨 agent 按最旧优先回放整条线程 |
 | `mailbox_done(msg_id)` | 标记已办 |
-| `mailbox_broadcast(subject, body)` | 发给所有已注册 agent；`dedupe?` 按收件人生效 |
+| `mailbox_broadcast(subject, body)` | 发给所有已注册 agent |
 | `mailbox_whoami()` | agent 目录 + 邮件根路径 |
 | `mailbox_wait(agent_id?, timeout_seconds?)` | 长轮询等新信 |
-| `task_create(title, assignee, due?)` | 建任务卡（初始 `todo`）；自动发信通知负责人 |
-| `task_move(task_id, status, assignee?, note?, force?)` | 沿 `todo→doing→review→done` 移卡（跳步需 `force`）；挪卡即自动给负责人发信 |
-| `task_list(assignee?, status?)` | 列任务卡，可过滤 |
+| `mailbox_confirm_external(msg_id)` | owner 确认外部来源信放行执行 |
+| `task_create(title, assignee, due?)` | 任务卡；自动发信通知负责人 |
+| `task_move(task_id, status, …)` | `todo→doing→review→done`（跳步需 `force`） |
+| `task_list(assignee?, status?)` | 列出任务卡 |
 
-身份：显式传 `agent_id`，或每个 agent 设一次 `AGENT_MAIL_ID`。
+</details>
 
-## 可选：给人类看的桌面通知
+## 可靠性，速览
 
-配套 watcher 把每封新信打印成 JSON 行并弹出桌面通知（macOS / Linux / Windows）。它从不在 agent 唤醒路径上——agent 不需要它：
+送达保证就是产品本身。亮点：**重复抑制**（semantic hash，24h 窗内同信重发返回 `{"deduped": true}`，零副作用）、**半办结补偿**（两段式 handled-log + `resume_plan`：process / replay / finalize / skip）、接入唤醒循环的**过期 acked 回收**、连续 N 轮无进展后的**唤醒熔断**、**自回声防护**，以及带 ghost 线程告警的**一等公民 threads**。唤醒侧铁律 fail-open：wake 挂了，信照落。
 
-```bash
-uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox-watch --notify boss
-```
+<details>
+<summary><b>唤醒系统细节</b></summary>
 
-以服务方式常驻：
+- **Wake daemon** —— `agent-mailbox wake install --agent ID` 在收件箱上写 launchd `WatchPaths`（macOS）/ systemd `PathChanged=`（Linux）unit；任何变更触发一轮清信。适配器：`hermes`（网关 webhook，签名自动适配）、`generic-webhook`、`claude-code`（响铃 + 桌面通知）、local-command（纯 argv、内容走环境变量、killpg 强杀超时——给 codex 这类用）。POST 失败按 5×60s 重试后重新排队；`handled_log` 里的 wake 条目保证每封信至多唤醒一次；计数口径 v2 对全部 pending + 超过 600s 的 acked 唤醒。
+- **Sampling 策略** —— `wake.json` 里 per-agent 段携带 identity / task / forbidden / `require_receipt` / `max_concurrent`；`wake install` 升级时保留未知键（你的策略升级存活）。per-agent 关停开关：`"sampling": {"enabled": false}`。MCP 已于 2026-07-28 弃用 sampling（SEP-2577）——fallback 链（wake-daemon / webhook / 下次 check）守住信必达铁律。
+- **Webhook** —— `~/.agent-mail/webhook.json` 对每封落箱信发 POST（HMAC 签名，github/generic/slack 三种风格），目标锁定环回/私网，拒绝重定向。
+- **Jev 路由器（可选，默认关）**——打分门控唤醒 + 每日摘要归批；任何失败都 fail-open。
+- **发版有抽查** —— `scripts/verify_release.sh` 在每个 tag 前对真实 sdist + wheel 查路径/身份泄漏。
 
-| 平台 | 安装 | 验证 |
-|------|------|------|
-| macOS (launchd) | `scripts/install-watch-macos.sh --notify boss` | `tail -f ~/.agent-mail/watch.log` |
-| Linux (systemd user) | `scripts/install-watch-linux.sh …` | `journalctl --user -u agent-mailbox-watch -f` |
-| Windows (schtasks) | `scripts\install-watch-windows.ps1` | `schtasks /Query /TN AgentMailboxWatch /V` |
+</details>
 
-## 维护：清理测试残留（cleanup）
+## 兼容你的 agent CLI
 
-```bash
-python -m agent_mailbox.cleanup --dry-run              # 只列不删（默认行为即是 dry-run）
-python -m agent_mailbox.cleanup --dry-run --root ~/.agent-mail
-python -m agent_mailbox.cleanup --yes                  # 真删：需显式 --yes，且要求交互二次确认
-```
+只要会说 MCP stdio，就能宿一个信箱——也就是说，全部都行。
 
-扫描邮件根，列出**疑似测试残留**：registry 外 agent 的 `inbox/` / `archive/` 目录、`NEWBIE` / `WBTEST` 等测试命名目录、孤儿信件（散落在 `inbox/` / `archive/` 顶层的文件、解析失败的 JSON、中断原子写遗留的 `*.tmp`）。每条输出路径 + 大小 + 判定理由；`--dry-run`（及不带旗标的默认行为）零删除；`--yes` 才真删并要求输入 `yes` 确认。已注册但测试命名的目录仅提示（review only），不随 `--yes` 删除。
+| Agent CLI | 注册方式 |
+|-----------|-----------------|
+| Claude Code | `claude mcp add agent-mailbox -- agent-mailbox` |
+| Codex CLI | `~/.codex/config.toml` → `[mcp_servers.agent-mailbox]` |
+| Gemini CLI / Qwen Code | `settings.json` → `"mcpServers": { … }` |
+| OpenCode | `opencode.json` → `"mcp": { … }` |
+| Hermes / WorkBuddy / 任意 MCP 宿主 | 同上方通用 JSON |
 
-## 设计原则
+## 给 AI agent（把这一节直接交给你的 agent）
 
-- **本地优先** —— `~/.agent-mail/` 下的纯 JSON 文件。无 SMTP、无 IMAP、无域名、无云端中继、默认零网络。
-- **注册即寻址** —— `mailbox_register("HS")` 一步完成；注册后即被所有人可见可达。
-- **零外部依赖** —— 只有 `mcp`。存储是单个 Python 文件，`flock` 原子写保护；多个 MCP 宿主进程安全共享一个邮件根。
-- **人类可读** —— 每封信都是一个小 JSON 文件，`cat` 即全文。老板直接看收件箱。
-- **尊重既有身份** —— 每个 agent 的环境里设一次 `AGENT_MAIL_ID`，工具自动署名收发。
+如果你是一个 AI agent，因为用户说了句「装 agent-mailbox」才读到这里：跑 `agent-mailbox setup --yes`，按上方 JSON 注册 MCP server，挑一个 id，设 `AGENT_MAIL_ID=<id>`，调一次 `mailbox_register`，用 `mailbox_whoami` 验证。这台机器上的所有 agent 从此都能给你发信。哪怕你的用户不读英文，你也读英文——命令在任何一份文档里都一字不差。
+
+> **🆕 v0.7.x 更新速览** —— v0.7.5 落地信任模型（owner/agent/guest 在工具层强制执行）、密封信、外部来源执行门、带四层自动发现的 /setup 三步向导、/mail 三栏人类信箱与 /visibility 页。v0.7.4 加固发版链路（wake.json 未知键保留、重复信不再重复唤醒、发版物抽查）。v0.7.2 新增 per-agent sampling 关停开关（SEP-2577）。v0.7.0 引入 sampling 唤醒 + local-command 适配器。14 个 MCP 工具。完整历史：[Roadmap](#roadmap)
 
 ## 安全说明
 
-- 邮件根在你的家目录下；除非你主动启用 webhook（默认锁定环回/私网目标），消息永不离开这台机器。
-- agent id 严格校验（`[A-Za-z0-9_-]`，≤64 字符）——无路径穿越。
-- 存储为追加式原子写 + 文件锁；崩溃的写入者不会损坏注册表。
-- webhook 负载带 HMAC 签名；校验方应使用常数时间比较。
-- 防篡改回执（ed25519）在 roadmap 上。
+- 邮件根在你的家目录下；除非你主动启用 webhook（默认锁定环回/私网），信件永不离开这台机器。
+- agent id 严格校验——无路径穿越。发现是只读的；`connect` 写前备份配置；`uninstall` 还原后跑字节级 diff 校验。
+- 无 API key、无模型凭据、无遥测——信箱手里一样都没有。
+- 签名回执（ed25519）在 roadmap 上。
 
 ## 开发
 
 ```bash
 git clone https://github.com/polaris-smart/agent-mailbox && cd agent-mailbox
 uv venv && uv pip install -e ".[dev]"
-pytest
+pytest          # 361 个测试
+ruff check src tests
 ```
 
 ## 升级
 
-用 `uv tool upgrade agent-mailbox` 升级（或按你原有的安装方式重新拉取）。
+`uv tool upgrade agent-mailbox`（或按你原来的安装方式重新拉取）。
 
-⚠️ **升级后请重启 agent 会话（或重连 MCP 客户端）**——MCP 工具列表在会话启动时枚举，因此新工具（现在是 14 个，原来是 9 个）只有在重启后才会出现。无需改任何配置；`tasks.json` 在首次使用时自动创建。
+⚠️ **升级后请重启 agent 会话（或重连 MCP 客户端）**——MCP 工具列表在会话启动时枚举，新工具（现在 14 个，原为 9 个）重启后才会出现。
 
 ## Roadmap
 
-- **v0.7.5**（当前）—— 信任模型：成员带 kind（owner 人 / agent / guest 外部来源），工具层强制执行（互看给结构化 permission denied，绝不静默空结果）；密封信正文只有收件 agent 自己的工具能读（其余人只见元数据，`redacted: "sealed"`）；外部来源执行门——external 信落地不触发任何唤醒（webhook 与 sampling 都跳过），owner 用 mailbox_confirm_external 确认后才放行；信带 attention 三档；/setup 三步向导、/mail 三栏人用信箱（文件夹/监控/名册/逐信动作）与 /visibility 可见性页（落 config.json + audit.log）。
+- **v0.7.5**（当前）—— 信任模型：成员带 kind（owner 人 / agent / guest 外部来源），工具层强制执行（互看给结构化 `permission denied`，绝不静默空结果）；密封信正文只有收件 agent 自己的工具能读（其余人只见元数据 + `redacted: "sealed"`）；外部来源执行门——external 信落地不触发任何唤醒（webhook 与 sampling 都跳过），owner 用 `mailbox_confirm_external` 确认后才放行；信带注意力三档；/setup 三步向导、/mail 三栏人类信箱（文件夹/监控/名册/逐信动作）与 /visibility 可见性页（落 `config.json` + `audit.log`）。
 - **v0.7.4** —— 唤醒加固：`wake install` 不再静默抹掉未知 `wake.json` 键（per-agent sampling 策略段升级存活——P0）；重复信不再重复唤醒（`wake_suppressed_dup`）；sampling 唤醒提示词携带真实 pending 数；`scripts/verify_release.sh` 发版前对 sdist + wheel 按钉死判据抽查。
 - **v0.7.3** —— sdist 卫生二轮：发布物抽查抓到 `scripts/wake-zc.sh`（含本机绝对路径的运维薄壳）随 0.7.0–0.7.2 的 sdist 发布；现经 hatchling `exclude` 排除——wheel 从未携带，仓库副本保留（launchd 引用不动）。
-- **v0.7.2** —— SEP-2577 加固 + 发版卫生：**per-agent sampling 关停开关**（per-agent `wake.json` 段 `"sampling": {"enabled": false}`——MCP 已于 2026-07-28 弃用 sampling capability；取值格式错响亮失败落 `sampling.log` error 审计，信从不依赖 sampling）；**sdist 卫生**（AOCI 资产 + 本机路径泄漏经 hatchling `exclude` + `.gitignore` 销账）；`__version__` 与 pyproject 版本对齐。
-- **v0.7.0** —— 唤醒升级：**sampling 唤醒**（server 经宿主自身 MCP 连接反向 createMessage——policy 强制注入/per-agent 执行锁/60s 超时/逐信去重/未声明回落信箱）、**local-command 唤醒适配器**（纯 argv、内容走环境变量、killpg 强杀超时，面向 codex 这类按需 CLI）、`wake run --adapter` 覆盖。13 个 MCP 工具。
-- **v0.6.2** —— 安全加固 + v0.5.x 收口：**SECURITY.md**（GitHub Security Advisory 报漏渠道、支持版本、公开言明的本机信任安全模型）；**identity binding**（`config.json` 可选 `identity_binding`：被绑定的 agent id 必须出示 `AGENT_MAIL_TOKEN`——sha256 + `hmac.compare_digest` 常量时间比较——否则调用以 `identity mismatch` 拒绝；默认关闭、未绑定身份行为不变，配置损坏启动即响亮失败）；**webhook 负载 `unread_count`**（通知时点收件人 pending 计数，顶层字段、纯增量）；**`mailbox_wait` 认领语义**（锁内原子 `claim()`：信返回即 `acked` + `claimed_by`，第二个 waiter 永不重复消费同一批，过期认领随 acked→pending 回收一并清除）。
+- **v0.7.2** —— SEP-2577 加固 + 发版卫生：**per-agent sampling 关停开关**（per-agent `wake.json` 段 `"sampling": {"enabled": false}`——MCP 已于 2026-07-28 弃用 sampling capability；取值格式错响亮失败落 `sampling.log`，信从不依赖 sampling）；**sdist 卫生**（AOCI 资产 + 本机路径泄漏经 hatchling `exclude` + `.gitignore` 销账）；`__version__` 与 pyproject 版本对齐。
+- **v0.7.0** —— 唤醒升级：**sampling 唤醒**（server 经宿主自身 MCP 连接反向 `createMessage`——wake-policy 强制注入 / per-agent 执行锁 / 60s 超时 / 逐信去重 / 未声明回落信箱）、**local-command 唤醒适配器**（纯 argv、内容走环境变量、killpg 强杀超时，面向 codex 这类按需 CLI）、`wake run --adapter` 覆盖。13 个 MCP 工具。
+- **v0.6.2** —— 安全加固 + v0.5.x 收口：**SECURITY.md**（GitHub Security Advisory 报漏渠道、支持版本、公开言明的本机信任模型）；**identity binding**（`config.json` 可选 `identity_binding`：被绑定的 agent id 必须出示 `AGENT_MAIL_TOKEN`——sha256 + `hmac.compare_digest` 常量时间比较——否则调用以 `identity mismatch` 拒绝；默认关闭、未绑定身份行为不变，配置损坏启动即响亮失败）；**webhook 负载 `unread_count`**（通知时点收件人 pending 计数，顶层字段、纯增量）；**`mailbox_wait` 认领语义**（锁内原子 `claim()`：信返回即 `acked` + `claimed_by`，第二个 waiter 永不重复消费同一批，过期认领随 acked→pending 回收一并清除）。
 - **v0.6.0** —— 爆款批：**wake daemon**（`agent-mailbox wake install`——launchd WatchPaths / systemd PathChanged 触发一轮清信；hermes / generic-webhook / claude-code 三适配器；POST 失败 5×60s 重试后留待下轮触发补投，`handled_log` wake 条目保证每封信至多唤醒一次，计数口径 v2 = 全部 pending + acked>600s；端到端 fail-open 铁律）；**一等公民 threads**（发信铸造 `thread_id`、回信继承，`mailbox_thread` 跨 agent 时间序回放，`--thread` 列表过滤，旧信 Re: 链主题键回填，超 5 封未办结 ghost 线程告警）；**Jev 分流旁路**（可选默认关闭的打分插件：Noul 门控唤醒，低于阈值归入每日摘要，任何失败即回落有信即醒，决策连同分数留痕，纯 stdlib 藏在 `[jev]` extra 后）。13 个 MCP 工具。
-- **v0.5.0** —— 源自 2026-09-13 事故（任务 t-6）的生命周期加固：**投递侧去重**（`semantic_hash`，24h 窗内同哈希非终态重复投递返回 `{"deduped": true, "existing_id"}` 零副作用；`dedupe: false` 豁免；代码围栏原文哈希、仅收件箱范围、hash→inbox 索引）；**半办结补偿**（`record_handled` 两段式 intent/outcome API 作为 `handled_log` 唯一写入方 + `resume_plan` 四行判定表：process / replay / finalize / skip）；**过期 acked 回收**（`reap_stale_acked` / `python -m agent_mailbox.reap`）接入唤醒循环（先回收后计数、fail-open），并强制铁1——`reap_ttl`（3600s）必须严格小于 `dedup_ttl`（24h），违例在配置加载时响亮失败；**唤醒熔断**——连续 N 轮无进展即锁存熔断文件并停止发起清信轮（backoff 拉长间隔，熔断止血）。
-- **v0.5.x（开放）**—— 仍跟踪自 t-6 复盘：状态过滤（"pending 或 acked" 视图）、唤醒路由（网关订阅 `to` 过滤；在本仓库之外）。已于 v0.6.2 兑现：~~身份绑定~~、~~webhook 负载 `unread_count`~~、~~`mailbox_wait` 认领语义~~。
-- **v0.4.0** —— 功能批：webhook 签名风格可配（`AGENT_MAIL_SIGNATURE_STYLE`：github 默认 / generic / slack）；自回声防护（`from == 收通知人` 的通知默认不投递，`sent.log` 记 `echo_suppressed` 留痕，`notify_self_echo` / `AGENT_MAIL_NOTIFY_SELF_ECHO` 恢复投递并给通知主题加 `[echo] ` 前缀，信件原文主题不变）；新增 `cleanup --dry-run` 维护命令（扫描测试残留只列不删，`--yes` 真删需二次确认）。
-- **v0.3.1** —— 小修批：回信主题不再堆积 `Re: Re:`（首答/二次回复/大小写混写均归一为单个 `Re:`）；Web 看板 token 改常数时间比较（`hmac.compare_digest`）并跨重启持久化（`~/.agent-mail/web_token`，0600，env `AGENT_MAIL_WEB_TOKEN` 永远优先）；`sent.log` 超 10MB 自动轮转一代（`sent.log.1`）。
-- **v0.3.0**—— 任务看板 + Web 看板：`task_create` / `task_move` / `task_list`，严格 todo→doing→review→done 状态机；建卡/挪卡自动给负责人发信，看板动作零轮询唤醒 agent。`--web 8643` 提供 token 保护的零依赖看板 UI，人类拖卡走同一唤醒链路。消息 + 任务 + 唤醒 + 看板，依旧零依赖。
-- **v0.5.0+** —— 可能：更深的看板集成（Kaneo 作为参考/竞品）。届时再议。
-- **后续** —— 联邦：streamable HTTP transport 让其他机器上的 agent 接入（Tailscale/LAN 友好）；签名回执（ed25519）防篡改投递。
-- **v1.0.0** —— 跨组织桥：本地会话经标准邮件基础设施触达其他机器与组织的 agent，信箱生命周期不变。
+- **v0.5.0** —— 源自 2026-09-13 事故（任务 t-6）的生命周期加固：**投递侧去重**（`semantic_hash`，24h 窗内同哈希非终态重复投递返回 `{"deduped": true, "existing_id"}` 零副作用；`dedupe: false` 豁免；代码围栏原文哈希、仅收件箱范围、hash→inbox 索引）；**半办结补偿**（`record_handled` 两段式 intent/outcome API 作为 `handled_log` 唯一写入方 + `resume_plan` 四行判定表：process / replay / finalize / skip）；**过期 acked 回收**（先期以 `reap_stale_acked` / `python -m agent_mailbox.reap` 落地）接入唤醒循环（先回收后计数、fail-open），并强制铁1——`reap_ttl`（3600s）必须严格小于 `dedup_ttl`（24h），违例在配置加载时响亮失败；**唤醒熔断**——连续 N 轮无进展即锁存熔断文件并停止发起清信轮（backoff 拉长间隔，熔断止血）。
+- **v0.5.x（开放）**—— 仍跟踪自 t-6 复盘：状态过滤（「pending 或 acked」视图）、唤醒路由（网关订阅 `to` 过滤；在本仓库之外）。已于 v0.6.2 兑现：~~身份绑定~~、~~webhook 负载 `unread_count`~~、~~`mailbox_wait` 认领语义~~。
+- **v0.4.0** —— 功能批：webhook 签名风格可配（`AGENT_MAIL_SIGNATURE_STYLE`：github 默认 / generic / slack）；自回声防护（发件人 = 收通知人的通知默认不投递，`sent.log` 记 `echo_suppressed` 留痕，`notify_self_echo` / `AGENT_MAIL_NOTIFY_SELF_ECHO` 恢复投递并给通知主题加 `[echo] ` 前缀，信件原文主题不变）；新增 `cleanup --dry-run` 维护命令（扫描测试残留只列不删，`--yes` 真删需二次确认）。
+- **v0.3.1** —— 小修批：回信主题不再堆积 `Re: Re:`（首答 / 二次回复 / 大小写混写均归一为单个 `Re:`）；Web 看板 token 改常数时间比较（`hmac.compare_digest`）并跨重启持久化（`~/.agent-mail/web_token`，0600，env `AGENT_MAIL_WEB_TOKEN` 永远优先）；`sent.log` 超 10MB 自动轮转一代（`sent.log.1`）。
+- **v0.3.0** —— 任务看板 + Web 看板：`task_create` / `task_move` / `task_list`，严格 todo→doing→review→done 状态机；建卡/挪卡自动给负责人发信，看板动作零轮询唤醒 agent。`--web 8643` 提供 token 保护的零依赖看板 UI，人类拖卡走同一唤醒链路。消息 + 任务 + 唤醒 + 看板，依旧零依赖。
+- **Next** —— channels（主题频道带订阅名册，owner 可见）；联邦：streamable HTTP transport 让其他机器上的 agent 接入（Tailscale/LAN 友好）；签名回执（ed25519）防篡改投递。
+- **v1.0.0** —— 跨组织桥：本地 threads 经标准邮件基础设施触达其他机器与组织的 agent，信箱生命周期不变。
 
 ## 许可
 
