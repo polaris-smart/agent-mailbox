@@ -2,12 +2,17 @@
 
 Run:  ``agent-mailbox --web 8643``  →  http://127.0.0.1:8643/?token=…
 
-Built on ``http.server`` plus one embedded HTML page — no framework, no build
+Built on ``http.server`` plus embedded HTML pages — no framework, no build
 step. Auth is a bearer token: set ``AGENT_MAIL_WEB_TOKEN`` for a stable one,
 otherwise a fresh token is generated per boot and printed to stdout. The
 token holder acts as agent ``boss``: cards created or dragged on the board go
 through the normal task tools, so every move still auto-messages (and wakes)
 the assignee.
+
+v0.7.5 adds the human product surface (任务书 §4), all under the same token:
+
+- ``/mail``       三栏真邮箱 (§4.2): folders / monitoring / members / actions,
+                  plus the §3.6 empty-mailbox call-to-action.
 """
 
 from __future__ import annotations
@@ -15,13 +20,27 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import re
 import secrets
 import socketserver
+import tempfile
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .store import MailboxError, MailStore, redact_sealed
+from .store import (
+    ATTENTION_TIERS,
+    MailboxError,
+    MailStore,
+    redact_sealed,
+)
+from .webpages import MAILBOX_PAGE
+
+# The human acts on the mail root as this owner id (§3.3: 人是主人). It is in
+# OWNER_IDS, so its default kind is "owner" — the confirmation/audit gates
+# accept it without extra registration.
+OWNER_ID = "boss"
 
 PAGE = """<!doctype html>
 <html lang="en">
@@ -269,6 +288,181 @@ def _brand_dir() -> Path | None:
     return None
 
 
+# ------------------------------------------------------------ owner state
+# Per-root UI state (stars / read marks for monitored letters / drafts). This
+# is deliberately OUTSIDE the letter files: the human must not modify other
+# members' letters (§3.3 人的动作边界), so monitoring read/star state lives in
+# our own <root>/web_state.json instead of in the letters themselves.
+
+def _load_web_state(root: str | os.PathLike[str]) -> dict:
+    try:
+        data = json.loads((Path(root) / "web_state.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    return {
+        "starred": [str(x) for x in (data.get("starred") or [])],
+        "read": [str(x) for x in (data.get("read") or [])],
+        "drafts": [d for d in (data.get("drafts") or []) if isinstance(d, dict)],
+    }
+
+
+def _save_web_state(root: str | os.PathLike[str], state: dict) -> None:
+    fd, tmp = tempfile.mkstemp(dir=Path(root), suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, Path(root) / "web_state.json")
+
+
+def _state_toggle(root: str | os.PathLike[str], key: str, msg_id: str, add: bool) -> dict:
+    state = _load_web_state(root)
+    ids = [x for x in state[key] if x != msg_id]
+    if add:
+        ids.append(msg_id)
+    state[key] = ids
+    _save_web_state(root, state)
+    return state
+
+
+# ---------------------------------------------------------- discover glue
+# The wizard and the 体检 view call the real discover.py engine. Module-level
+# indirection keeps tests hermetic: they monkeypatch _run_discover/_run_test_letter
+# instead of probing the real machine. Reports are memoized per root for 60 s
+# so the mailbox polling never re-runs lsof/ps on every refresh.
+
+_REPORT_TTL = 60.0
+_REPORTS: dict[str, dict] = {}
+
+
+def _run_discover(root: str | os.PathLike[str], *, save: bool) -> dict:
+    from .discover import build_report, default_context
+
+    report = build_report(default_context(Path(root)), save=save)
+    _REPORTS[str(Path(root))] = {"at": time.monotonic(), "report": report}
+    return report
+
+
+def _cached_report(root: str | os.PathLike[str]) -> dict | None:
+    hit = _REPORTS.get(str(Path(root)))
+    if hit and time.monotonic() - hit["at"] <= _REPORT_TTL:
+        return hit["report"]
+    return None
+
+
+def _undeliverable_members(report: dict) -> set[str]:
+    """Members whose every known wake channel is broken — letters addressed to
+    them are tagged 未送达 (§4.2). Empty for members with no channels: no
+    channel found ≠ channel broken, and the brief forbids guessing."""
+    bad: set[str] = set()
+    for m in report.get("members", []):
+        chans = m.get("channels") or []
+        if chans and all(c.get("status") == "broken" for c in chans):
+            bad.add(str(m.get("member")))
+    return bad
+
+
+def _member_cards(store: MailStore) -> list[dict]:
+    """左栏「成员」名单: registry + boss + 已发现未注册的成员，each with a
+    channel-status dot from the cached discover report (idle=未实测 when no
+    scan has run yet). Discovered-but-unregistered members still show up —
+    the roster must reflect what discovery found, not just who registered."""
+    report = _cached_report(store.root) or {}
+    channels = {m.get("member"): (m.get("channels") or []) for m in report.get("members", [])}
+    reg = store.registry().get("agents", {})
+    out = []
+    for aid in sorted(set(reg) | {OWNER_ID} | set(channels)):
+        card = reg.get(aid) if isinstance(reg.get(aid), dict) else {}
+        chans = channels.get(aid) or []
+        statuses = [c.get("status") for c in chans]
+        if statuses and all(s == "broken" for s in statuses):
+            dot = "bad"
+        elif "broken" in statuses:
+            dot = "warn"
+        elif "ok" in statuses:
+            dot = "ok"
+        else:
+            dot = "idle"
+        out.append(
+            {
+                "id": aid,
+                "kind": store.kind_of(aid),
+                "description": card.get("description", ""),
+                "dot": dot,
+                "channels": chans,
+            }
+        )
+    return out
+
+
+def _mailbox_payload(store: MailStore) -> dict:
+    """GET /api/mail — everything the 三栏 mailbox renders in one call.
+
+    Sealed letters are redacted here (metadata only — never a human-view
+    body, §3.3); monitored letters carry read/star state from web_state.json
+    (the human never edits other members' letters); ``undeliverable`` comes
+    from the cached discover report when one has been run.
+    """
+    owner = OWNER_ID
+    state = _load_web_state(store.root)
+    starred = set(state["starred"])
+    read_marks = set(state["read"])
+    report = _cached_report(store.root) or {}
+    bad = _undeliverable_members(report)
+    letters = []
+    for raw in store.owner_view():
+        m = redact_sealed(dict(raw), reader=owner)
+        mid = str(m.get("id", ""))
+        to = str(m.get("to", ""))
+        frm = str(m.get("from", ""))
+        mine_to = to == owner
+        if mine_to:
+            read = m.get("status") != "pending"
+        elif frm == owner:
+            read = True  # 自己写的信没有未读一说
+        else:
+            read = mid in read_marks
+        letters.append(
+            {
+                **m,
+                "monitor": not mine_to and frm != owner,
+                "starred": mid in starred,
+                "read": read,
+                "undeliverable": to in bad,
+            }
+        )
+    counts = {
+        "inbox": sum(1 for x in letters if x["to"] == owner and not x["_archived"]),
+        "sent": sum(1 for x in letters if x["from"] == owner),
+        "archived": sum(1 for x in letters if x["to"] == owner and x["_archived"]),
+        "monitor": sum(1 for x in letters if x["monitor"]),
+        "undelivered": sum(1 for x in letters if x["undeliverable"]),
+        "sealed": sum(1 for x in letters if x.get("redacted") == "sealed"),
+        "starred": len(starred),
+        "drafts": len(state["drafts"]),
+    }
+    attention_unread = sum(
+        1
+        for x in letters
+        if x["to"] == owner
+        and not x["_archived"]
+        and x.get("status") == "pending"
+        and x.get("attention") == "decision"
+    )
+    return {
+        "owner": owner,
+        "letters": letters,
+        "members": _member_cards(store),
+        "starred": state["starred"],
+        "drafts": state["drafts"],
+        "counts": counts,
+        "attention_unread": attention_unread,
+    }
+
+
+_MAIL_ACTION_RE = re.compile(r"^/api/mail/([^/]+)/(read|unread|archive|star|unstar|task|confirm-external)$")
+
+
 # Brand assets under the repo's assets/brand/: explicit allow-list only (no
 # globbing, no path traversal). Public on purpose — favicons and the header
 # logo must load before/without the bearer token.
@@ -344,6 +538,9 @@ class _BoardHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             return self._deny()
         path = urlparse(self.path).path
+        # v0.7.5 human pages (§4) — same token gate as the board
+        if path == "/mail":
+            return self._send(200, MAILBOX_PAGE.encode("utf-8"), "text/html; charset=utf-8")
         if path == "/api/tasks":
             return self._json(200, {"tasks": self.store.task_list()})
         # v0.7.5 human (owner) view of the mail itself: every letter under the
@@ -359,6 +556,9 @@ class _BoardHandler(BaseHTTPRequestHandler):
             except MailboxError as e:
                 return self._json(404, {"error": str(e)})
             return self._json(200, {"message": redact_sealed(m)})
+        # ---- v0.7.5 mailbox / wizard / visibility APIs ----
+        if path == "/api/mail":
+            return self._json(200, _mailbox_payload(self.store))
         self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
 
     def do_POST(self) -> None:
@@ -385,9 +585,132 @@ class _BoardHandler(BaseHTTPRequestHandler):
                     note=str(data.get("note", "") or ""),
                 )
                 return self._json(200, {"task": task})
+            return self._post_mail_api(path)
         except MailboxError as e:
             return self._json(400, {"error": str(e)})
         self._json(404, {"error": f"no such endpoint: {path}"})
+
+    # ------------------------------------------------- v0.7.5 mail APIs
+
+    def _post_mail_api(self, path: str) -> None:
+        """All v0.7.5 POST endpoints (the human acts as the owner ``boss``)."""
+        store = self.store
+        root = store.root
+        if path == "/api/mail/send":
+            data = self._body()
+            to = str(data.get("to", "")).strip()
+            subject = str(data.get("subject", "")).strip() or "(无主题)"
+            body = str(data.get("body", ""))
+            if not body.strip():
+                return self._json(400, {"error": "信正文不能为空（写一句再发）"})
+            attention = str(data.get("attention") or "decision")
+            if attention not in ATTENTION_TIERS:
+                return self._json(
+                    400, {"error": f"attention must be one of {ATTENTION_TIERS}"}
+                )
+            sent = store.send(
+                OWNER_ID,
+                to,
+                subject,
+                body,
+                reply_to=str(data.get("reply_to") or "") or None,
+                attention=attention,
+                sealed=bool(data.get("sealed")),
+            )
+            draft_id = str(data.get("draft_id") or "")
+            if draft_id:
+                self._draft_delete(draft_id)
+            return self._json(200, {"delivered": sent})
+        if path == "/api/mail/drafts":
+            data = self._body()
+            state = _load_web_state(root)
+            drafts = state["drafts"]
+            did = str(data.get("id") or "")
+            entry = {
+                "id": did or f"d-{int(time.time() * 1000)}",
+                "to": str(data.get("to", "")),
+                "subject": str(data.get("subject", "")),
+                "body": str(data.get("body", "")),
+                "attention": str(data.get("attention") or "decision"),
+                "sealed": bool(data.get("sealed")),
+                "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z",
+            }
+            drafts = [d for d in drafts if d.get("id") != entry["id"]]
+            drafts.insert(0, entry)
+            state["drafts"] = drafts[:100]
+            _save_web_state(root, state)
+            return self._json(200, {"draft": entry, "count": len(state["drafts"])})
+        if path == "/api/mail/drafts/delete":
+            self._draft_delete(str(self._body().get("id") or ""))
+            return self._json(200, {"deleted": True})
+        if path == "/api/members":
+            data = self._body()
+            card = store.register(
+                str(data.get("id", "")),
+                description=str(data.get("description", "") or ""),
+                kind=str(data.get("kind", "") or ""),
+            )
+            return self._json(200, {"member": card})
+        action = _MAIL_ACTION_RE.match(path)
+        if action is None:
+            return self._json(404, {"error": f"no such endpoint: {path}"})
+        return self._mail_action(action.group(1), action.group(2))
+
+    def _draft_delete(self, draft_id: str) -> None:
+        if not draft_id:
+            return
+        state = _load_web_state(self.store.root)
+        state["drafts"] = [d for d in state["drafts"] if d.get("id") != draft_id]
+        _save_web_state(self.store.root, state)
+
+    def _mail_action(self, msg_id: str, action: str) -> None:
+        store = self.store
+        root = store.root
+        owner = OWNER_ID
+        try:
+            letter = store.find_letter(msg_id)
+        except MailboxError as e:
+            return self._json(404, {"error": str(e)})
+        mine = letter.get("to") == owner
+        # §3.3 人的动作边界：人只读监看 agent 之间的信——改信件本体的动作
+        # 只允许在自己的（boss 的）信上；监看读点/星标走 web_state，不动信。
+        if action == "star":
+            state = _state_toggle(root, "starred", msg_id, True)
+            return self._json(200, {"starred": msg_id in state["starred"]})
+        if action == "unstar":
+            state = _state_toggle(root, "starred", msg_id, False)
+            return self._json(200, {"starred": msg_id in state["starred"]})
+        if action == "read":
+            if mine and letter.get("status") == "pending":
+                store.set_status(owner, msg_id, "acked")
+            else:
+                _state_toggle(root, "read", msg_id, True)
+            return self._json(200, {"read": True})
+        if action == "unread":
+            if mine:
+                store.set_status(owner, msg_id, "pending")
+            _state_toggle(root, "read", msg_id, False)
+            return self._json(200, {"read": False})
+        if action == "archive":
+            if not mine:
+                return self._json(
+                    403, {"error": "只读监看：agent 之间的信不能由人归档；要发话就写一封信或派任务卡"}
+                )
+            store.set_status(owner, msg_id, "done")
+            n = store.archive_done(owner)
+            return self._json(200, {"archived": n})
+        if action == "task":
+            data = self._body()
+            assignee = str(data.get("assignee", "")).strip()
+            if not assignee:
+                return self._json(400, {"error": "assignee required"})
+            title = str(letter.get("subject") or "(无主题)")[:120]
+            task = store.task_create(title, assignee, owner, notify=True)
+            return self._json(200, {"task": task})
+        if action == "confirm-external":
+            m = store.confirm_external(msg_id, by=owner)
+            return self._json(200, {"message": m["id"], "origin": m.get("origin")})
+        return self._json(404, {"error": f"no such action: {action}"})
 
 
 class LoopbackServer(ThreadingHTTPServer):

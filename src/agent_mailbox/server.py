@@ -116,12 +116,14 @@ def _read_scope(me: str, target: str) -> None:
     if not me or me == target:
         return
     kind = _store_instance().kind_of(me)
-    if kind in ("agent", "guest"):
-        if not load_visibility(_store_instance().root).get("agent_cross_read"):
-            raise MailboxError(
-                f"permission denied: {me!r} ({kind}) may only read its own mailbox, "
-                f"not {target!r}'s"
-            )
+    if (
+        kind in ("agent", "guest")
+        and not load_visibility(_store_instance().root).get("agent_cross_read")
+    ):
+        raise MailboxError(
+            f"permission denied: {me!r} ({kind}) may only read its own mailbox, "
+            f"not {target!r}'s"
+        )
 
 
 def _effective_reader(me: str, target: str) -> str:
