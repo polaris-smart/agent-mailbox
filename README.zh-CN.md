@@ -8,7 +8,7 @@
 
 📖 **文档**: [English](README.md) · [中文](README.zh-CN.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Français](README.fr.md) · [Русский](README.ru.md)
 
-> 🆕 **v0.7.x —— 唤醒升级**：**sampling 唤醒**——信一落箱，server 就经宿主自己的 MCP 连接发 `sampling/createMessage` 调起收件人，附带 per-agent 唤醒策略强制注入（身份模板/禁区硬约束/执行锁——同一 agent 同时只有一个分身在途）；CLI 型 agent（codex 等）走 **local-command 唤醒适配器**（纯 argv、内容走环境变量、killpg 强杀超时），多 agent 共享 wake.json 时可用 `wake run --adapter` 各取所需。sampling 只是加速通道不是送达保证：MCP 已于 2026-07-28 弃用（SEP-2577），v0.7.2 加 per-agent 关停开关（wake.json 里 `"sampling": {"enabled": false}`），信必达铁律始终由 fallback 链（wake-daemon / webhook / 下次 check）兜底。v0.7.4 加固发版链路：`wake install` 不再抹掉未知 `wake.json` 键（sampling 策略段升级存活——P0）、重复信不再重复唤醒、`scripts/verify_release.sh` 发版前对真实产物抽查。13 个 MCP 工具。上一版：[Wake daemon](#wake-daemon信必达新信落盘即唤醒)
+> 🆕 **v0.7.x —— 唤醒升级**：**sampling 唤醒**——信一落箱，server 就经宿主自己的 MCP 连接发 `sampling/createMessage` 调起收件人，附带 per-agent 唤醒策略强制注入（身份模板/禁区硬约束/执行锁——同一 agent 同时只有一个分身在途）；CLI 型 agent（codex 等）走 **local-command 唤醒适配器**（纯 argv、内容走环境变量、killpg 强杀超时），多 agent 共享 wake.json 时可用 `wake run --adapter` 各取所需。sampling 只是加速通道不是送达保证：MCP 已于 2026-07-28 弃用（SEP-2577），v0.7.2 加 per-agent 关停开关（wake.json 里 `"sampling": {"enabled": false}`），信必达铁律始终由 fallback 链（wake-daemon / webhook / 下次 check）兜底。v0.7.4 加固发版链路：`wake install` 不再抹掉未知 `wake.json` 键（sampling 策略段升级存活——P0）、重复信不再重复唤醒、`scripts/verify_release.sh` 发版前对真实产物抽查。v0.7.5 落地信任模型：成员带 kind（owner 人 / agent / guest 外部来源）并在工具层强制执行、密封信只有收件 agent 自己能读正文、外部来源执行门（external 信落地不触发任何唤醒，owner 确认后才放行）、/setup 三步向导、/mail 三栏人用信箱与 /visibility 可见性页。14 个 MCP 工具。上一版：[Wake daemon](#wake-daemon信必达新信落盘即唤醒)
 
 ---
 
@@ -216,11 +216,12 @@ pytest
 
 用 `uv tool upgrade agent-mailbox` 升级（或按你原有的安装方式重新拉取）。
 
-⚠️ **升级后请重启 agent 会话（或重连 MCP 客户端）**——MCP 工具列表在会话启动时枚举，因此新工具（现在是 13 个，原来是 9 个）只有在重启后才会出现。无需改任何配置；`tasks.json` 在首次使用时自动创建。
+⚠️ **升级后请重启 agent 会话（或重连 MCP 客户端）**——MCP 工具列表在会话启动时枚举，因此新工具（现在是 14 个，原来是 9 个）只有在重启后才会出现。无需改任何配置；`tasks.json` 在首次使用时自动创建。
 
 ## Roadmap
 
-- **v0.7.4**（当前）—— 唤醒加固：`wake install` 不再静默抹掉未知 `wake.json` 键（per-agent sampling 策略段升级存活——P0）；重复信不再重复唤醒（`wake_suppressed_dup`）；sampling 唤醒提示词携带真实 pending 数；`scripts/verify_release.sh` 发版前对 sdist + wheel 按钉死判据抽查。
+- **v0.7.5**（当前）—— 信任模型：成员带 kind（owner 人 / agent / guest 外部来源），工具层强制执行（互看给结构化 permission denied，绝不静默空结果）；密封信正文只有收件 agent 自己的工具能读（其余人只见元数据，`redacted: "sealed"`）；外部来源执行门——external 信落地不触发任何唤醒（webhook 与 sampling 都跳过），owner 用 mailbox_confirm_external 确认后才放行；信带 attention 三档；/setup 三步向导、/mail 三栏人用信箱（文件夹/监控/名册/逐信动作）与 /visibility 可见性页（落 config.json + audit.log）。
+- **v0.7.4** —— 唤醒加固：`wake install` 不再静默抹掉未知 `wake.json` 键（per-agent sampling 策略段升级存活——P0）；重复信不再重复唤醒（`wake_suppressed_dup`）；sampling 唤醒提示词携带真实 pending 数；`scripts/verify_release.sh` 发版前对 sdist + wheel 按钉死判据抽查。
 - **v0.7.3** —— sdist 卫生二轮：发布物抽查抓到 `scripts/wake-zc.sh`（含本机绝对路径的运维薄壳）随 0.7.0–0.7.2 的 sdist 发布；现经 hatchling `exclude` 排除——wheel 从未携带，仓库副本保留（launchd 引用不动）。
 - **v0.7.2** —— SEP-2577 加固 + 发版卫生：**per-agent sampling 关停开关**（per-agent `wake.json` 段 `"sampling": {"enabled": false}`——MCP 已于 2026-07-28 弃用 sampling capability；取值格式错响亮失败落 `sampling.log` error 审计，信从不依赖 sampling）；**sdist 卫生**（AOCI 资产 + 本机路径泄漏经 hatchling `exclude` + `.gitignore` 销账）；`__version__` 与 pyproject 版本对齐。
 - **v0.7.0** —— 唤醒升级：**sampling 唤醒**（server 经宿主自身 MCP 连接反向 createMessage——policy 强制注入/per-agent 执行锁/60s 超时/逐信去重/未声明回落信箱）、**local-command 唤醒适配器**（纯 argv、内容走环境变量、killpg 强杀超时，面向 codex 这类按需 CLI）、`wake run --adapter` 覆盖。13 个 MCP 工具。

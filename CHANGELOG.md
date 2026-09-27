@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.5] — 2026-09-26
+
+The trust-model release (PR A brand/CLI + PR B identity & permissions + PR C wizard/mailbox/visibility), merged with the 0.7.4 wake-hardening line (`v07-sampling-wake`) onto `release/v0.7.5`. **Ships together with [0.7.4] below** — 0.7.4 was built, gated and verified locally but never uploaded, so PyPI jumps 0.7.3 → 0.7.5 (legal skip; both entries kept with their own anchors). Tool count: 13 → 14 registered MCP tools (`mailbox_confirm_external` joins).
+
 ### Added
 
 - **Identity & permission model (v0.7.5 §3.3)**: members now carry a `kind` (`owner` 人 / `agent` 本机 agent / `guest` 外部来源) on their registry card — legacy cards resolve to the historical behavior (`boss` → owner, everything else → agent). Tool-layer enforcement: `agent`/`guest` callers reading another member's mailbox get a structured `permission denied` (never a silent empty result); owners read all traffic; an unset `AGENT_MAIL_ID` keeps local trust so existing scripts are unchanged.
@@ -22,7 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [0.7.4] — 2026-09-26
 
-HS dispatch (0.7.4 repo-write window): close t-37 remnant + same-root-cause sweep + t-38, then gate. **Built and verified locally; upload held pending HS re-review + boss go.**
+HS dispatch (0.7.4 repo-write window): close t-37 remnant + same-root-cause sweep + t-38, then gate. **Built and verified locally; upload held pending HS re-review + boss go.** 随 0.7.5 首发合入（merged into `release/v0.7.5` — this entry ships to PyPI as part of the 0.7.5 release, not as a standalone 0.7.4 upload）.
 
 ### Fixed
 - **`wake install` no longer silently wipes unknown `wake.json` keys (t-37, P0)** — `WakeConfig` round-trips only the keys it knows; the sampling per-agent `agents` policy section (identity / forbidden / `max_concurrent` / `sampling.enabled`) and any future top-level key were being dropped on every `load→save` (install/uninstall paths). Unknown top-level keys are now preserved verbatim. Same root cause at the nested level: unknown keys inside the `webhook` / `jev` sections survive too.
