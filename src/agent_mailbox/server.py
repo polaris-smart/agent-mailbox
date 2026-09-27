@@ -24,6 +24,7 @@ from .store import (
     MailStore,
     ghost_open_limit,
     load_identity_binding,
+    load_visibility,
     redact_sealed,
 )
 
@@ -107,15 +108,20 @@ def _read_scope(me: str, target: str) -> None:
     members see all traffic (sealed bodies still redact for them), and an
     unset caller id keeps the historical local-trust behavior so existing
     scripts keep working unchanged.
+
+    The §4.3 visibility switch ``agent_cross_read`` may open agents' cross
+    reading (“公开抄送”); it defaults to off, so the enforced behavior is
+    unchanged unless the operator flips it (which is audited).
     """
     if not me or me == target:
         return
     kind = _store_instance().kind_of(me)
     if kind in ("agent", "guest"):
-        raise MailboxError(
-            f"permission denied: {me!r} ({kind}) may only read its own mailbox, "
-            f"not {target!r}'s"
-        )
+        if not load_visibility(_store_instance().root).get("agent_cross_read"):
+            raise MailboxError(
+                f"permission denied: {me!r} ({kind}) may only read its own mailbox, "
+                f"not {target!r}'s"
+            )
 
 
 def _effective_reader(me: str, target: str) -> str:
@@ -310,7 +316,11 @@ def mailbox_thread(thread: str) -> dict:
             "messages": [],
         }
     msgs = view.get("messages", [])
-    if me and st.kind_of(me) in ("agent", "guest"):
+    if (
+        me
+        and st.kind_of(me) in ("agent", "guest")
+        and not load_visibility(st.root).get("agent_cross_read")
+    ):
         scoped = [m for m in msgs if m.get("from") == me or m.get("to") == me]
         if not scoped:
             return {

@@ -271,6 +271,51 @@ def default_kind(agent_id: str) -> str:
     return "owner" if (agent_id or "") in OWNER_IDS else "agent"
 
 
+# v0.7.5 §3.3/§4.3 可见性开关: the four UI-facing switches. The defaults ARE
+# the §3.3 permission model — absence of the block (or of any key) resolves to
+# them, so legacy roots and legacy config.json files keep the exact enforced
+# behavior. ``sealed_in_human_view`` is a hard rule (密封信内容不进任何人类
+# 视图): it can never be switched on through set_visibility().
+VISIBILITY_DEFAULTS: dict[str, bool] = {
+    "owner_sees_all": True,  # 主人可见全部往来（自己的收件箱 + agent 之间的信）
+    "agent_cross_read": False,  # agent 之间互看＝关（开了就是“公开抄送”）
+    "sealed_in_human_view": False,  # 密封信只留元数据（防“全可见”变泄密通道）
+    "external_auto_execute": False,  # 外部来源信默认只显示、不触发动作
+}
+HARD_OFF_VISIBILITY = frozenset({"sealed_in_human_view"})
+
+
+def load_visibility(root: Path) -> dict[str, bool]:
+    """Read the optional ``visibility`` block from ``<root>/config.json``.
+
+    Returns the four §3.3 switches with their defaults filled in. A malformed
+    block (non-object, unknown key, non-boolean value, corrupt file) raises
+    ``MailboxError`` loudly — same doctrine as ``load_identity_binding``: a
+    half-written security boundary must never silently degrade to "disabled".
+    """
+    try:
+        cfg = json.loads((Path(root) / "config.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return dict(VISIBILITY_DEFAULTS)
+    except (OSError, json.JSONDecodeError) as e:
+        raise MailboxError(f"corrupt config.json: {e}") from e
+    if not isinstance(cfg, dict):
+        raise MailboxError("corrupt config.json: must be an object")
+    vis = cfg.get("visibility")
+    if vis is None:
+        return dict(VISIBILITY_DEFAULTS)
+    if not isinstance(vis, dict):
+        raise MailboxError("config.json: visibility must be an object")
+    out = dict(VISIBILITY_DEFAULTS)
+    for key, val in vis.items():
+        if key not in VISIBILITY_DEFAULTS:
+            raise MailboxError(f"config.json: unknown visibility key {key!r}")
+        if not isinstance(val, bool):
+            raise MailboxError(f"config.json: visibility.{key} must be a boolean")
+        out[key] = val
+    return out
+
+
 def redact_sealed(m: dict[str, Any], *, reader: str = "") -> dict[str, Any]:
     """Metadata-only view of a sealed letter for anyone but its recipient.
 
@@ -531,6 +576,48 @@ class MailStore:
     def registry(self) -> dict[str, Any]:
         with self._locked():
             return self._read_registry()
+
+    def set_visibility(self, changes: dict[str, bool], *, by: str = "") -> dict[str, bool]:
+        """Merge §4.3 visibility switches into ``config.json`` (preserving
+        every other key) and append a ``visibility_change`` audit line —
+        可见性本身也要留痕 (§3.3).
+
+        Unknown keys / non-boolean values raise. ``sealed_in_human_view``
+        can never be switched on (§3.3 hard rule). A change that resolves to
+        the current value is a no-op (no write, no audit line). Returns the
+        full post-change state with defaults filled in.
+        """
+        unknown = sorted(k for k in changes if k not in VISIBILITY_DEFAULTS)
+        if unknown:
+            raise MailboxError(f"unknown visibility keys: {unknown}")
+        bad = sorted(k for k, v in changes.items() if not isinstance(v, bool))
+        if bad:
+            raise MailboxError(f"visibility values must be booleans: {bad}")
+        if changes.get("sealed_in_human_view"):
+            raise MailboxError(
+                "sealed_in_human_view cannot be enabled: 密封信内容不进任何人类视图 (§3.3 硬规则)"
+            )
+        current = load_visibility(self.root)
+        changed = {k: v for k, v in changes.items() if current.get(k) != v}
+        vis = {**current, **changed}
+        if changed:
+            with self._locked():
+                path = self.root / "config.json"
+                try:
+                    cfg = json.loads(path.read_text(encoding="utf-8"))
+                except FileNotFoundError:
+                    cfg = {}
+                except (OSError, json.JSONDecodeError) as e:
+                    raise MailboxError(f"corrupt config.json: {e}") from e
+                if not isinstance(cfg, dict):
+                    raise MailboxError("corrupt config.json: must be an object")
+                cfg["visibility"] = vis
+                fd, tmp = tempfile.mkstemp(dir=self.root, suffix=".tmp")
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(cfg, f, ensure_ascii=False, indent=1)
+                os.replace(tmp, path)
+            self.audit("visibility_change", by=by, changes=changed)
+        return vis
 
     def send(
         self,
@@ -1249,6 +1336,39 @@ class MailStore:
             if p.name == name:
                 return m
         raise MailboxError(f"message {msg_id!r} not found under {self.root}")
+
+    def audit_entries(self, action: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        """Read back ``audit.log`` (JSONL), oldest→newest, optionally filtered
+        by ``action``, capped to the newest ``limit`` entries. Missing log or
+        corrupt lines are tolerated (skipped) — the trail is append-only and
+        read-back must never take the UI down."""
+        try:
+            lines = (self.root / "audit.log").read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        out: list[dict[str, Any]] = []
+        for line in lines:
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if action is None or entry.get("action") == action:
+                out.append(entry)
+        return out[-max(0, limit) :]
+
+    def owner_view(self) -> list[dict[str, Any]]:
+        """Every letter annotated with its placement (§4.2 human mailbox).
+
+        Adds ``_archived`` (True when the letter lives under ``archive/``).
+        Sealed redaction stays the caller's job, as with :meth:`all_letters` —
+        no human view may see a sealed body.
+        """
+        out: list[dict[str, Any]] = []
+        for p, m in self._iter_all_letters():
+            archived = len(p.parts) >= 3 and p.parts[-3] == "archive"
+            out.append({**m, "_archived": archived})
+        out.sort(key=lambda m: m.get("created_at", ""), reverse=True)
+        return out
 
     def confirm_external(self, msg_id: str, *, by: str) -> dict[str, Any]:
         """Human confirmation for an external letter (§3.3 执行门挂点).

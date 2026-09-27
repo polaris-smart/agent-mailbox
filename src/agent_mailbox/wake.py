@@ -42,7 +42,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .store import MailStore, _now_iso
+from .store import MailStore, _now_iso, load_visibility
 from .webhook import post_message
 
 WAKE_LABEL = "com.polaris-smart.agent-mailbox-wake"  # + "-<agent>" per instance
@@ -314,6 +314,18 @@ def _already_woken(m: dict[str, Any]) -> bool:
     return any(e.get("action") == "wake" for e in (m.get("handled_log") or []))
 
 
+def _external_auto_execute(root: Path) -> bool:
+    """§4.3 可见性开关 ``external_auto_execute``（默认关＝执行门开着）.
+
+    Fail-closed on any problem: a corrupt config must widen no gate, so any
+    error reading the switch keeps external mail non-executing (the default).
+    """
+    try:
+        return bool(load_visibility(Path(root)).get("external_auto_execute"))
+    except Exception:  # noqa: BLE001 — fail-closed: the gate stays shut
+        return False
+
+
 def run_once(
     root: Path,
     cfg: WakeConfig,
@@ -345,10 +357,12 @@ def run_once(
                 m = json.loads(p.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue  # partially-written letters wait for the next round
-            if m.get("origin") == "external":
+            if m.get("origin") == "external" and not _external_auto_execute(root):
                 # v0.7.5 外部来源执行门: external mail lands but never wakes
                 # anyone — an owner must confirm it (confirm_external) first,
                 # which flips origin back to local and lets later rounds act.
+                # The §4.3 visibility switch can open the gate, but any read
+                # failure keeps it shut (fail-closed).
                 stats["skipped_external"] += 1
                 continue
             stats["due"] += 1 if should_wake(m, ref, cfg.stale_acked) else 0
