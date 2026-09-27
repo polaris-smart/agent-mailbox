@@ -12,11 +12,10 @@ import threading
 import pytest
 
 from agent_mailbox import server, web
-from agent_mailbox import store as store_mod
 from agent_mailbox.store import MailStore, load_visibility
 from agent_mailbox.wake import WakeConfig, run_once
 from agent_mailbox.web import VISIBILITY_PAGE, _BoardHandler, _mailbox_payload
-from agent_mailbox.webpages import MAILBOX_PAGE
+from agent_mailbox.webpages import MAILBOX_PAGE, SETUP_PAGE
 
 TOKEN = "prc-token-1"
 
@@ -91,8 +90,10 @@ def test_mailbox_page_structure(board):
     assert "任务卡＝要人动手的活" in html
 
 
-def test_visibility_page_structure():
-    # §4.3 四组开关 + 发信权限 + 留痕说明（可 curl 验证）
+def test_setup_and_visibility_pages_structure():
+    assert "发现你的智能体" in SETUP_PAGE and "测一下" in SETUP_PAGE and "完事" in SETUP_PAGE
+    assert "不自动处理来信" in SETUP_PAGE  # 模型是可选功能，不是必答题
+    assert "全部测一遍" in SETUP_PAGE  # 结果+下一步成对出现的承载表
     for key in ("owner_sees_all", "agent_cross_read", "sealed_in_human_view",
                 "external_auto_execute"):
         assert key in VISIBILITY_PAGE
@@ -100,7 +101,7 @@ def test_visibility_page_structure():
 
 
 def test_human_pages_require_token(board):
-    for path in ("/mail", "/visibility", "/api/mail", "/api/visibility"):
+    for path in ("/mail", "/setup", "/visibility", "/api/mail", "/api/visibility"):
         assert _req(board, path, token=None)[0] == 401
 
 
@@ -355,6 +356,7 @@ def test_agent_cross_read_switch_wires_tool_layer(root, store, monkeypatch):
 
 
 def test_external_auto_execute_switch_wires_wake(root, store, monkeypatch):
+    from agent_mailbox import store as store_mod
 
     store.register("B")
     notified = []
@@ -386,3 +388,79 @@ def test_external_auto_execute_switch_wires_wake(root, store, monkeypatch):
     store.set_visibility({"external_auto_execute": True}, by="boss")
     stats = run_once(root, cfg, adapter=rec)
     assert stats["skipped_external"] == 0 and rec.calls == [ext[0]["id"]]
+
+
+# --------------------------------------------------------------- wizard (§4.1)
+
+FAKE_REPORT = {
+    "generated_at_local": "2026-09-27 10:00:00 +0800",
+    "members": [
+        {
+            "member": "ZC",
+            "kind": "cli",
+            "connected": True,
+            "channels": [{"type": "command", "status": "ok", "value": "/usr/bin/zcode",
+                          "source": "PATH"}],
+        },
+        {
+            "member": "WB",
+            "kind": "app",
+            "connected": True,
+            "channels": [{"type": "webhook", "status": "broken", "reason": "断",
+                          "next_step": "起服务"}],
+        },
+    ],
+    "supported": ["claude", "codex"],
+}
+
+
+def test_discover_endpoint_uses_real_engine_glue(store, board, monkeypatch):
+    calls = []
+
+    def fake_discover(root, *, save):
+        calls.append((str(root), save))
+        return FAKE_REPORT
+
+    monkeypatch.setattr(web, "_run_discover", fake_discover)
+    status, out = _req(board, "/api/status")
+    assert status == 200 and out["members"][0]["member"] == "ZC"
+    assert calls and calls[0][1] is False  # status 不重写指纹
+    status, out = _req(board, "/api/discover", method="POST", body={})
+    assert status == 200 and out["supported"] == ["claude", "codex"]
+    assert calls[-1][1] is True  # 向导扫描默认落指纹（与 CLI discover 一致）
+
+
+def test_test_endpoint_returns_result_plus_next_step(store, board, monkeypatch):
+    calls = []
+
+    def fake_test(root, member, timeout):
+        calls.append((str(root), member, timeout))
+        return {"member": member, "ok": False, "stage": "timeout", "elapsed_s": 15.0,
+                "reason": "没等到回执", "next_step": "修一下唤醒通道"}
+
+    monkeypatch.setattr(web, "_run_test_letter", fake_test)
+    status, out = _req(board, "/api/test", method="POST", body={"member": "WB"})
+    assert status == 200
+    assert out["ok"] is False and out["next_step"] == "修一下唤醒通道"  # 结果+下一步成对
+    assert calls[0][1] == "WB" and calls[0][2] == 15.0
+    assert _req(board, "/api/test", method="POST", body={})[0] == 400
+
+
+def test_setup_summary_endpoint(store, board, monkeypatch):
+    monkeypatch.setattr(web, "_REPORTS", {str(store.root): {"at": 10**12, "report": FAKE_REPORT}})
+    status, out = _req(board, "/api/setup-summary")
+    assert status == 200
+    assert out["registered"] == 1 and out["discovered"] == 2
+    assert out["model"] == {
+        "auto": False, "label": "不自动处理来信",
+        "note": "可选功能——收发信件本身不需要任何模型",
+    }
+    assert [b["member"] for b in out["broken"]] == ["WB"]
+    assert out["wake"]["configured"] is False  # 未装 wake.json → 如实报未安装
+    (store.root / "wake.json").write_text(
+        json.dumps({"agent_id": "ZC", "adapter": "hermes",
+                    "webhook": {"url": "http://127.0.0.1:1/hook"}}),
+        encoding="utf-8",
+    )
+    _, out = _req(board, "/api/setup-summary")
+    assert out["wake"]["configured"] is True and out["wake"]["agent_id"] == "ZC"

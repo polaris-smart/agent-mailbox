@@ -1,10 +1,11 @@
 """Embedded HTML pages for the v0.7.5 human UI (任务书 §4).
 
-Pages, straight off the HS 视觉原型 (same palette --accent #4a6fa5 /
+Three pages, straight off the HS 视觉原型 (same palette --accent #4a6fa5 /
 墨黑 #1d2026 / 米白 #f4f5f7, same light+dark token sets) — the prototypes are
 the single visual reference, so the CSS below is theirs, lightly trimmed:
 
 - :data:`MAILBOX_PAGE`  — 三栏真邮箱 (原型 agent-mailbox-mailbox-v4-threepane)
+- :data:`SETUP_PAGE`    — 3 步接入向导 (原型 agent-mailbox-setup-wizard-v2)
 - :data:`VISIBILITY_PAGE` — 可见性页 (原型 agent-mailbox-mailbox-v3 的 perm 页)
 
 Pure inline HTML/CSS/JS on top of ``fetch`` — no framework, no build step, no
@@ -618,6 +619,284 @@ document.addEventListener("keydown", e => {
 
 reload();
 setInterval(() => { if (document.visibilityState === "visible") reload(false).catch(() => {}); }, 5000);
+</script>
+</body>
+</html>
+"""
+
+SETUP_PAGE = """<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent-mailbox · 接入向导</title>
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
+<style>
+  :root{
+    --bg:#f4f5f7; --panel:#fff; --card:#fff; --line:#e3e6ec; --line-soft:#eceef2;
+    --text:#1d2026; --dim:#6e7585; --accent:#4a6fa5; --accent-ink:#fff;
+    --ok:#629c72; --warn:#b8904f; --bad:#b4524e; --bad-bg:#faf1f0; --bad-line:#e6cfcd;
+    --ok-bg:#f1f7f2; --ok-line:#cfe3d3; --warn-bg:#fbf6ee; --warn-line:#ecdfc7;
+    --chip:#eef0f4; --chip-ink:#5a6172; --shadow:0 2px 8px rgba(29,32,38,.08);
+  }
+  html[data-theme="dark"]{
+    --bg:#101216; --panel:#171a20; --card:#1d2129; --line:#282d38; --line-soft:#21252e;
+    --text:#e3e6ee; --dim:#8a91a4; --accent:#7195cd; --accent-ink:#101216;
+    --ok:#7db389; --warn:#c7a266; --bad:#d4807c; --bad-bg:#2a2021; --bad-line:#4a3234;
+    --ok-bg:#1a2029; --ok-line:#2e4436; --warn-bg:#221f18; --warn-line:#4a3f2a;
+    --chip:#242935; --chip-ink:#98a0b2; --shadow:0 2px 8px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:13px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1000px;margin:0 auto;padding:0 24px 64px}
+  header{display:flex;gap:8px 14px;align-items:center;padding:20px 0 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  header .logo{height:36px;vertical-align:middle}
+  header .logo.dark{display:none}
+  html[data-theme="dark"] header .logo:not(.dark){display:none}
+  html[data-theme="dark"] header .logo.dark{display:inline}
+  .dim{color:var(--dim);font-size:12px}
+  .chip{background:var(--chip);color:var(--chip-ink);border-radius:999px;padding:2px 9px;font-size:11px;font-weight:600}
+  .spacer{flex:1}
+  button{font:inherit;border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:6px;padding:6px 13px;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+  button.small{padding:3px 10px;font-size:12px}
+  button.ghost{background:transparent}
+  button:disabled{opacity:.5;cursor:default}
+  .steps{display:flex;gap:10px;align-items:center;margin:16px 0 0;flex-wrap:wrap}
+  .step{display:flex;gap:9px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:5px 13px 5px 6px;font-weight:600;cursor:pointer}
+  .step .n{width:20px;height:20px;border-radius:50%;background:var(--chip);color:var(--chip-ink);display:grid;place-items:center;font-size:11px}
+  .step.on{border-color:var(--accent)} .step.on .n{background:var(--accent);color:var(--accent-ink)}
+  .arrow{color:var(--dim)}
+  section{display:none;padding-top:18px} section.on{display:block}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px 18px;box-shadow:var(--shadow);margin-bottom:14px}
+  .card h2{font-size:13px;font-weight:600;margin:0 0 4px}
+  .hint{margin:0 0 14px}
+  table{width:100%;border-collapse:collapse}
+  th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);font-weight:600}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;vertical-align:1px}
+  .dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)} .dot.warn{background:var(--warn)} .dot.idle{background:var(--dim)}
+  .src{display:inline-block;background:var(--chip);color:var(--chip-ink);border-radius:4px;padding:1px 6px;font-size:10px;margin:2px 3px 0 0;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:top}
+  .note{margin-top:10px;padding:10px 12px;border-radius:6px;background:var(--bad-bg);border:1px solid var(--bad-line);font-size:12px}
+  .note.warn{background:var(--warn-bg);border-color:var(--warn-line)}
+  .note.ok{background:var(--ok-bg);border-color:var(--ok-line)}
+  code{background:var(--chip);border-radius:4px;padding:1px 5px;font-size:12px}
+  details{margin-top:12px;border-top:1px solid var(--line-soft);padding-top:10px}
+  summary{cursor:pointer;color:var(--dim);font-size:12px}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 0}
+  .bar .b{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:7px 11px;font-size:12px}
+  .foot{display:flex;gap:10px;align-items:center;padding-top:6px;flex-wrap:wrap}
+  .prog{height:4px;background:var(--chip);border-radius:2px;overflow:hidden;margin:6px 0 0}
+  .prog i{display:block;height:100%;background:var(--accent);width:33%;transition:width .2s}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1 style="margin:0"><img class="logo" src="/brand/lockup-h-light.svg" alt="agent-mailbox · 接入向导"><img class="logo dark" src="/brand/lockup-h-dark.svg" alt="" aria-hidden="true"></h1>
+    <span class="chip">接入向导</span>
+    <span class="dim">本机 127.0.0.1 · 零依赖 · 探测只读</span>
+    <span class="spacer"></span>
+    <span class="dim">模型：不自动处理来信（可选，随时开）</span>
+  </header>
+
+  <div class="steps">
+    <span class="step on" data-s="0"><span class="n">1</span>发现你的智能体</span><span class="arrow">→</span>
+    <span class="step" data-s="1"><span class="n">2</span>测一下通不通</span><span class="arrow">→</span>
+    <span class="step" data-s="2"><span class="n">3</span>完事</span>
+  </div>
+  <div class="prog"><i id="prog"></i></div>
+
+  <!-- ===== 第 1 步：发现 ===== -->
+  <section class="on" id="s1">
+    <div class="card">
+      <h2 id="s1-title">正在扫描本机…</h2>
+      <p class="hint dim">探测四层：装了没有（PATH / 应用 / 配置目录）· 接了没有（MCP 配置 / 邮箱真名册）· <b>怎么叫醒它</b>（深链协议 / 监听端口 / 可用命令）· 实测通不通（下一步）。探测只读，不动任何人的配置。</p>
+      <div id="s1-body"></div>
+      <div class="foot" style="margin-top:14px">
+        <button class="ghost" id="btn-rescan">重新扫描</button>
+        <span class="spacer"></span>
+        <button class="primary" id="btn-to2">下一步：测一下</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 第 2 步：测一下 ===== -->
+  <section id="s2">
+    <div class="card">
+      <h2>发一封测试信，看谁真的收到</h2>
+      <p class="hint dim">会给每个成员各发一封测试信，等回执（默认 15 秒）。不碰你的真实信件。每行都给<b>结果 + 下一步</b>——断了也有路可走，不只报丧。</p>
+      <div id="s2-body"></div>
+      <div class="note warn">测试信成功 ≠ 以后都行：应用更新、登录过期都会再断。<b>通道体检</b>（信箱左栏）会持续盯着，断了会提醒你 —— 不再出现"静默坏了没人知道"。</div>
+      <div class="foot" style="margin-top:14px"><button class="ghost" id="btn-test-all">全部测一遍</button><span class="spacer"></span><button class="primary" id="btn-to3">下一步：完事</button></div>
+    </div>
+  </section>
+
+  <!-- ===== 第 3 步：完事 ===== -->
+  <section id="s3">
+    <div class="card">
+      <h2>装好了</h2>
+      <p class="hint dim">后台收信服务会盯着信箱并在有新信时叫醒对应智能体（可选安装）。</p>
+      <div id="s3-body" class="bar"></div>
+      <div class="note ok" style="margin-top:14px">现在就给某个智能体写第一封信吧 —— 收发信件本身<b>不需要任何模型</b>。模型只是可选的"要不要邮箱自动替你处理来信"。</div>
+      <div class="foot" style="margin-top:14px">
+        <button class="primary" id="btn-open-mailbox">打开信箱</button>
+        <button class="ghost" id="btn-back-fix">去修待修项</button>
+        <span class="spacer"></span><span class="dim">高级：模型 / 体检 / 服务详情在信箱左栏</span>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+const token = new URLSearchParams(location.search).get("token") || localStorage.getItem("mb_token") || "";
+localStorage.setItem("mb_token", token);
+const hdr = { "Authorization": "Bearer " + token, "Content-Type": "application/json" };
+const TOKEN = token;
+
+const rootEl = document.documentElement;
+rootEl.dataset.theme = new URLSearchParams(location.search).get("theme") || localStorage.getItem("mb_theme")
+  || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+
+function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML.replace(/"/g, "&quot;"); }
+async function api(path, body) {
+  const res = await fetch(path, body === undefined
+    ? { headers: hdr } : { method: "POST", headers: hdr, body: JSON.stringify(body) });
+  if (!res.ok) { let d2 = res.status + " " + res.statusText; try { d2 = (await res.json()).error || d2; } catch {} throw new Error(d2); }
+  return res.json();
+}
+
+const steps = [...document.querySelectorAll(".step")];
+const secs = [document.getElementById("s1"), document.getElementById("s2"), document.getElementById("s3")];
+function go(i) {
+  steps.forEach((s, j) => s.classList.toggle("on", j === i));
+  secs.forEach((s, j) => s.classList.toggle("on", j === i));
+  document.getElementById("prog").style.width = ((i + 1) / 3 * 100) + "%";
+  window.scrollTo(0, 0);
+  if (i === 2) loadSummary();
+}
+steps.forEach(s => s.onclick = () => go(+s.dataset.s));
+
+let REPORT = null;
+const KIND_LABEL = { cli: "CLI", app: "App", config: "仅配置痕迹", unknown: "未识别" };
+
+function chRow(ch) {
+  const mark = { ok: '<span class="dot ok"></span>', broken: '<span class="dot bad"></span>', unknown: '<span class="dot idle"></span>' }[ch.status] || '<span class="dot idle"></span>';
+  return '<div>' + mark + esc(ch.type) + ' <code>' + esc(ch.value || "") + '</code> ' +
+    (ch.status === "broken" ? '<span class="dim">— ' + esc(ch.reason || "") + '</span>' : '') + '<br>' +
+    '<span class="src" title="' + esc(ch.source || "") + '">来源: ' + esc(ch.source || "-") + '</span></div>';
+}
+
+async function scan() {
+  const btn = document.getElementById("btn-rescan");
+  btn.disabled = true;
+  document.getElementById("s1-title").textContent = "正在扫描本机…（探测只读，不动任何配置）";
+  document.getElementById("s1-body").innerHTML = "";
+  try { REPORT = await api("/api/discover", {}); }
+  catch (err) {
+    document.getElementById("s1-title").textContent = "扫描失败";
+    document.getElementById("s1-body").innerHTML = '<div class="note">' + esc(err.message) + '</div>';
+    btn.disabled = false; return;
+  }
+  btn.disabled = false;
+  const ms = REPORT.members || [];
+  document.getElementById("s1-title").innerHTML = ms.length
+    ? '已自动发现 <b>' + ms.length + '</b> 个智能体 · 全部来自机器实测，无需你填任何东西'
+    : "本机没发现受支持的智能体";
+  if (!ms.length) {
+    document.getElementById("s1-body").innerHTML =
+      '<div class="note warn">一个都没找到？支持清单：<code>' + esc((REPORT.supported || []).join(" ")) + '</code><br>' +
+      '装好其中任意一个后点「重新扫描」；自定义安装路径可先在命令行 <code>agent-mailbox discover --deep 目录</code> 深扫，或手动添加。</div>';
+    return;
+  }
+  const rows = ms.map(m => {
+    const conn = m.connected ? "已接入" : "装了未接";
+    const chans = (m.channels || []).map(chRow).join("") || '<span class="dim">未发现唤醒通道（信只能等人主动取）</span>';
+    const tested = (m.channels || []).map(c => c.status);
+    const stat = tested.includes("broken") ? '<span class="dot bad"></span>有通道断'
+      : tested.includes("ok") ? '<span class="dot ok"></span>通道在位'
+      : '<span class="dot idle"></span>未实测';
+    const stale = m.stale ? '<div class="dim" style="margin-top:4px">⚠ ' + esc(m.stale_note || "发现指纹已变化") + '</div>' : "";
+    return '<tr><td><b>' + esc(m.member) + '</b><div class="dim">' + conn + '</div></td>' +
+      '<td>' + esc(KIND_LABEL[m.kind] || m.kind || "-") + '</td>' +
+      '<td>' + chans + stale + '</td><td>' + stat + '</td></tr>';
+  }).join("");
+  document.getElementById("s1-body").innerHTML =
+    '<table><tr><th style="width:20%">智能体</th><th style="width:11%">形态</th><th>发现的唤醒通道</th><th style="width:15%">实测</th></tr>' + rows + '</table>' +
+    '<details><summary>探测明细（我到底扫了哪些地方）</summary><div class="dim" style="margin-top:8px">PATH / 应用（Info.plist 深链）/ 配置目录 / MCP 配置 / 监听端口（按可执行路径反查，不靠进程名）。每条通道都标了来源，可核对。</div></details>';
+}
+document.getElementById("btn-rescan").addEventListener("click", scan);
+document.getElementById("btn-to2").addEventListener("click", () => { go(1); renderTestRows(); });
+
+/* ===== 第 2 步：测一下（结果 + 下一步成对出现） ===== */
+let TEST_TARGETS = [];
+function renderTestRows() {
+  TEST_TARGETS = ((REPORT && REPORT.members) || []).map(m => m.member);
+  const body = document.getElementById("s2-body");
+  if (!TEST_TARGETS.length) {
+    body.innerHTML = '<div class="note warn">没有可测的成员 —— 先回第 1 步扫描。</div>';
+    return;
+  }
+  body.innerHTML = '<table><tr><th style="width:22%">智能体</th><th>结果</th><th style="width:38%">下一步</th></tr>' +
+    TEST_TARGETS.map(mm =>
+      '<tr id="tr-' + esc(mm) + '"><td><b>' + esc(mm) + '</b></td>' +
+      '<td class="dim" data-cell="result">未测 <button class="small" data-test="' + esc(mm) + '">测一下</button></td>' +
+      '<td class="dim" data-cell="next">—</td></tr>').join("") + '</table>';
+  body.querySelectorAll("[data-test]").forEach(b => b.addEventListener("click", () => runTest(b.dataset.test)));
+}
+
+async function runTest(member) {
+  const tr = document.getElementById("tr-" + member);
+  if (!tr) return;
+  const rc = tr.querySelector('[data-cell="result"]'), nc = tr.querySelector('[data-cell="next"]');
+  rc.innerHTML = '<span class="dim">测试信发送中…（等回执）</span>';
+  try {
+    const r = await api("/api/test", { member, timeout: 15 });
+    if (r.ok) {
+      rc.innerHTML = '<span class="dot ok"></span>' + esc(r.reason) + ' <span class="dim">（' + esc(r.elapsed_s) + 's）</span>';
+      nc.innerHTML = '<span class="dim">' + esc(r.next_step || "无需处理") + '</span>';
+    } else {
+      rc.innerHTML = '<span class="dot bad"></span><b>❌ 没等到回执</b> <span class="dim">（' + esc(r.elapsed_s) + 's）</span>';
+      nc.innerHTML = esc(r.next_step || "") + ' <button class="small" data-test="' + esc(member) + '">修完再测</button>';
+      nc.querySelector("[data-test]").addEventListener("click", () => runTest(member));
+    }
+  } catch (err) {
+    rc.innerHTML = '<span class="dot bad"></span>❌ ' + esc(err.message);
+    nc.innerHTML = '检查服务是否在跑（<code>agent-mailbox --web</code>），然后重试';
+  }
+}
+document.getElementById("btn-test-all").addEventListener("click", async () => {
+  for (const mm of TEST_TARGETS) await runTest(mm);
+});
+document.getElementById("btn-to3").addEventListener("click", () => go(2));
+
+/* ===== 第 3 步：完事 ===== */
+async function loadSummary() {
+  const box = document.getElementById("s3-body");
+  box.innerHTML = '<div class="b dim">汇总中…</div>';
+  let s;
+  try { s = await api("/api/setup-summary"); }
+  catch (err) { box.innerHTML = '<div class="b">加载失败：' + esc(err.message) + '</div>'; return; }
+  const wake = s.wake && s.wake.configured
+    ? '<div class="b"><span class="dot ok"></span>后台收信服务 <b>已开启</b> <span class="dim">（' + esc(s.wake.agent_id || "") + '）</span></div>'
+    : '<div class="b"><span class="dot idle"></span>后台收信服务 <b>未安装</b> <span class="dim">（可选：python -m agent_mailbox.wake install）</span></div>';
+  const brokenN = (s.broken || []).length;
+  const fix = brokenN
+    ? '<div class="b"><span class="dot bad"></span>待修 <b>' + brokenN + '</b> <span class="dim">（' + esc((s.broken || []).map(x => x.member).join("、")) + '）</span></div>'
+    : '<div class="b"><span class="dot ok"></span>待修 <b>0</b></div>';
+  box.innerHTML =
+    wake +
+    '<div class="b">接入智能体 <b>' + s.registered + ' / ' + s.discovered + '</b></div>' +
+    fix +
+    '<div class="b">模型 <b>不自动处理来信</b> <span class="dim">（可选，随时开）</span></div>';
+}
+document.getElementById("btn-open-mailbox").addEventListener("click", () => { location.href = "/mail?token=" + TOKEN; });
+document.getElementById("btn-back-fix").addEventListener("click", () => go(1));
+
+scan();
 </script>
 </body>
 </html>

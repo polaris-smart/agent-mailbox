@@ -13,6 +13,8 @@ v0.7.5 adds the human product surface (任务书 §4), all under the same token:
 
 - ``/mail``       三栏真邮箱 (§4.2): folders / monitoring / members / actions,
                   plus the §3.6 empty-mailbox call-to-action.
+- ``/setup``      3 步接入向导 (§4.1), backed by discover.py (L1–L3 scan,
+                  L4 test letters) — real engine calls, injectable in tests.
 - ``/visibility`` 可见性页 (§4.3): the four §3.3 switches + audit trail.
 """
 
@@ -39,7 +41,7 @@ from .store import (
     load_visibility,
     redact_sealed,
 )
-from .webpages import MAILBOX_PAGE, VISIBILITY_PAGE
+from .webpages import MAILBOX_PAGE, SETUP_PAGE, VISIBILITY_PAGE
 
 # The human acts on the mail root as this owner id (§3.3: 人是主人). It is in
 # OWNER_IDS, so its default kind is "owner" — the confirmation/audit gates
@@ -354,6 +356,12 @@ def _cached_report(root: str | os.PathLike[str]) -> dict | None:
     return None
 
 
+def _run_test_letter(root: str | os.PathLike[str], member: str, timeout: float) -> dict:
+    from .discover import test_member
+
+    return test_member(member, Path(root), timeout=timeout)
+
+
 def _undeliverable_members(report: dict) -> set[str]:
     """Members whose every known wake channel is broken — letters addressed to
     them are tagged 未送达 (§4.2). Empty for members with no channels: no
@@ -545,6 +553,8 @@ class _BoardHandler(BaseHTTPRequestHandler):
         # v0.7.5 human pages (§4) — same token gate as the board
         if path == "/mail":
             return self._send(200, MAILBOX_PAGE.encode("utf-8"), "text/html; charset=utf-8")
+        if path == "/setup":
+            return self._send(200, SETUP_PAGE.encode("utf-8"), "text/html; charset=utf-8")
         if path == "/visibility":
             return self._send(200, VISIBILITY_PAGE.encode("utf-8"), "text/html; charset=utf-8")
         if path == "/api/tasks":
@@ -575,7 +585,56 @@ class _BoardHandler(BaseHTTPRequestHandler):
                     "audit": self.store.audit_entries("visibility_change", limit=10),
                 },
             )
+        if path == "/api/status":
+            # 体检/向导复用：真实调 discover 引擎（save=False，不重写指纹）
+            return self._json(200, _run_discover(self.store.root, save=False))
+        if path == "/api/setup-summary":
+            return self._json(200, self._setup_summary())
         self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _setup_summary(self) -> dict:
+        """向导第 3 步「完事」：服务状态 + 接入数 + 待修项 + 模型口径（§4.1）。"""
+        from .wake import WakeConfig
+
+        report = _cached_report(self.store.root)
+        if report is None:
+            report = _run_discover(self.store.root, save=False)
+        reg = self.store.registry().get("agents", {})
+        broken = [
+            {
+                "member": m.get("member"),
+                "reason": c.get("reason", ""),
+                "next_step": c.get("next_step", ""),
+            }
+            for m in report.get("members", [])
+            for c in (m.get("channels") or [])
+            if c.get("status") == "broken"
+        ]
+        cfg = WakeConfig.load(Path(self.store.root))
+        wake: dict = {"configured": cfg is not None}
+        if cfg is not None:
+            wake.update(agent_id=cfg.agent_id, adapter=cfg.adapter)
+        return {
+            "root": str(self.store.root),
+            "generated_at_local": report.get("generated_at_local"),
+            "registered": len(reg),
+            "discovered": len(report.get("members", [])),
+            "members": [
+                {
+                    "member": m.get("member"),
+                    "kind": m.get("kind"),
+                    "connected": bool(m.get("connected")),
+                }
+                for m in report.get("members", [])
+            ],
+            "broken": broken,
+            "wake": wake,
+            "model": {
+                "auto": False,
+                "label": "不自动处理来信",
+                "note": "可选功能——收发信件本身不需要任何模型",
+            },
+        }
 
     def do_POST(self) -> None:
         if not self._authorized():
@@ -667,6 +726,21 @@ class _BoardHandler(BaseHTTPRequestHandler):
                 kind=str(data.get("kind", "") or ""),
             )
             return self._json(200, {"member": card})
+        if path == "/api/discover":
+            data = self._body()
+            report = _run_discover(root, save=bool(data.get("save", True)))
+            return self._json(200, report)
+        if path == "/api/test":
+            data = self._body()
+            member = str(data.get("member", "")).strip()
+            if not member:
+                return self._json(400, {"error": "member required"})
+            try:
+                timeout = float(data.get("timeout", 15.0))
+            except (TypeError, ValueError):
+                timeout = 15.0
+            result = _run_test_letter(root, member, max(1.0, min(timeout, 120.0)))
+            return self._json(200, result)
         if path == "/api/visibility":
             data = self._body()
             if not isinstance(data, dict) or not data:
