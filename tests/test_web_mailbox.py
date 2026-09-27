@@ -11,9 +11,11 @@ import threading
 
 import pytest
 
-from agent_mailbox import web
-from agent_mailbox.store import MailStore
-from agent_mailbox.web import _BoardHandler, _mailbox_payload
+from agent_mailbox import server, web
+from agent_mailbox import store as store_mod
+from agent_mailbox.store import MailStore, load_visibility
+from agent_mailbox.wake import WakeConfig, run_once
+from agent_mailbox.web import VISIBILITY_PAGE, _BoardHandler, _mailbox_payload
 from agent_mailbox.webpages import MAILBOX_PAGE
 
 TOKEN = "prc-token-1"
@@ -87,6 +89,19 @@ def test_mailbox_page_structure(board):
     # 空状态行动点文案（§3.6）+ 信 vs 任务卡说明（§5⑬）
     assert "给你的 agent 写第一封信" in html
     assert "任务卡＝要人动手的活" in html
+
+
+def test_visibility_page_structure():
+    # §4.3 四组开关 + 发信权限 + 留痕说明（可 curl 验证）
+    for key in ("owner_sees_all", "agent_cross_read", "sealed_in_human_view",
+                "external_auto_execute"):
+        assert key in VISIBILITY_PAGE
+    assert "发信权限" in VISIBILITY_PAGE and "改动会记录在案" in VISIBILITY_PAGE
+
+
+def test_human_pages_require_token(board):
+    for path in ("/mail", "/visibility", "/api/mail", "/api/visibility"):
+        assert _req(board, path, token=None)[0] == 401
 
 
 # ------------------------------------------------------- mailbox API (§4.2)
@@ -268,3 +283,106 @@ def test_undelivered_tag_comes_from_cached_report(store, board, monkeypatch):
     assert letter["undeliverable"] is True  # WB 两条通道全断
     assert payload["counts"]["undelivered"] == 1
     assert payload["members"][0]["id"] == "WB" and payload["members"][0]["dot"] == "bad"
+
+
+# ---------------------------------------------------------- visibility (§4.3)
+
+def test_visibility_defaults_match_spec(store, board):
+    status, out = _req(board, "/api/visibility")
+    assert status == 200
+    assert out["visibility"] == {
+        "owner_sees_all": True,       # 主人全可见
+        "agent_cross_read": False,    # agent 之间互看＝关
+        "sealed_in_human_view": False,  # 密封信只元数据（硬锁）
+        "external_auto_execute": False,  # 外部信不自动执行
+    }
+    assert out["hard_locked"] == ["sealed_in_human_view"]
+    assert out["audit"] == []
+
+
+def test_visibility_post_persists_and_audits(store, board):
+    status, out = _req(
+        board, "/api/visibility", method="POST", body={"agent_cross_read": True}
+    )
+    assert status == 200 and out["visibility"]["agent_cross_read"] is True
+    # 开关状态有落点：config.json 可 grep
+    cfg = json.loads((store.root / "config.json").read_text(encoding="utf-8"))
+    assert cfg["visibility"]["agent_cross_read"] is True
+    # 改动落审计（谁/何时/改了什么）
+    entries = store.audit_entries("visibility_change")
+    assert len(entries) == 1 and entries[0]["by"] == "boss"
+    assert entries[0]["changes"] == {"agent_cross_read": True}
+    _, out = _req(board, "/api/visibility")
+    assert len(out["audit"]) == 1
+
+
+def test_visibility_noop_change_writes_nothing(store, board):
+    assert _req(
+        board, "/api/visibility", method="POST", body={"owner_sees_all": True}
+    )[0] == 200  # already the default
+    assert not (store.root / "config.json").exists()
+    assert store.audit_entries("visibility_change") == []
+
+
+def test_visibility_sealed_switch_is_hard_locked(store, board):
+    status, out = _req(
+        board, "/api/visibility", method="POST", body={"sealed_in_human_view": True}
+    )
+    assert status == 400 and "硬规则" in out["error"]
+    assert load_visibility(store.root)["sealed_in_human_view"] is False
+
+
+def test_visibility_rejects_unknown_and_non_bool(store, board):
+    assert _req(board, "/api/visibility", method="POST", body={"nope": True})[0] == 400
+    assert _req(
+        board, "/api/visibility", method="POST", body={"agent_cross_read": "yes"}
+    )[0] == 400
+    assert _req(board, "/api/visibility", method="POST", body={})[0] == 400
+
+
+def test_agent_cross_read_switch_wires_tool_layer(root, store, monkeypatch):
+    """§4.3 开关是真的：开了 agent_cross_read，agent 可读他人信箱；默认拒绝。"""
+    store.send("A", "B", "hello b", "x")
+    monkeypatch.setenv("AGENT_MAIL_HOME", str(root))
+    monkeypatch.setenv("AGENT_MAIL_ID", "A")
+    monkeypatch.setattr(server, "_store", store)
+    monkeypatch.setattr(server, "_binding", {"enabled": False})
+    with pytest.raises(server.MailboxError, match="permission denied"):
+        server.mailbox_list(agent_id="B")  # 默认关：结构化拒绝
+    store.set_visibility({"agent_cross_read": True}, by="boss")
+    out = server.mailbox_list(agent_id="B")  # 开了：公开抄送
+    assert out["count"] == 1
+
+
+def test_external_auto_execute_switch_wires_wake(root, store, monkeypatch):
+
+    store.register("B")
+    notified = []
+    monkeypatch.setattr(
+        store_mod, "notify_new_messages", lambda msgs, **kw: notified.extend(msgs)
+    )
+    ext = store.send("OUTSIDE", "B", "external", "x", origin="external")
+    cfg = WakeConfig(
+        {
+            "agent_id": "B",
+            "adapter": "generic-webhook",
+            "webhook": {"url": "http://127.0.0.1:9/hook"},
+            "retry_interval": 0,
+        },
+        root,
+    )
+
+    class Rec:
+        def __init__(self):
+            self.calls = []
+
+        def deliver(self, msg):
+            self.calls.append(msg["id"])
+            return True
+
+    rec = Rec()
+    assert run_once(root, cfg, adapter=rec)["skipped_external"] == 1  # 默认关＝门开
+    assert rec.calls == []
+    store.set_visibility({"external_auto_execute": True}, by="boss")
+    stats = run_once(root, cfg, adapter=rec)
+    assert stats["skipped_external"] == 0 and rec.calls == [ext[0]["id"]]

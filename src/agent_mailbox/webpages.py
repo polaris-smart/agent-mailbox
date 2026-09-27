@@ -5,6 +5,7 @@ Pages, straight off the HS 视觉原型 (same palette --accent #4a6fa5 /
 the single visual reference, so the CSS below is theirs, lightly trimmed:
 
 - :data:`MAILBOX_PAGE`  — 三栏真邮箱 (原型 agent-mailbox-mailbox-v4-threepane)
+- :data:`VISIBILITY_PAGE` — 可见性页 (原型 agent-mailbox-mailbox-v3 的 perm 页)
 
 Pure inline HTML/CSS/JS on top of ``fetch`` — no framework, no build step, no
 CDN. Brand assets (favicon / lockup) come from the repo's assets/brand/ via
@@ -617,6 +618,154 @@ document.addEventListener("keydown", e => {
 
 reload();
 setInterval(() => { if (document.visibilityState === "visible") reload(false).catch(() => {}); }, 5000);
+</script>
+</body>
+</html>
+"""
+
+VISIBILITY_PAGE = """<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent-mailbox · 可见性</title>
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
+<style>
+  :root{
+    --bg:#f4f5f7; --panel:#fff; --card:#fff; --line:#e3e6ec; --line-soft:#eceef2;
+    --text:#1d2026; --dim:#6e7585; --accent:#4a6fa5; --accent-ink:#fff;
+    --bad:#b4524e; --bad-bg:#faf1f0; --bad-line:#e6cfcd;
+    --ok-bg:#f1f7f2; --ok-line:#cfe3d3;
+    --chip:#eef0f4; --chip-ink:#5a6172; --shadow:0 2px 8px rgba(29,32,38,.08);
+  }
+  html[data-theme="dark"]{
+    --bg:#101216; --panel:#171a20; --card:#1d2129; --line:#282d38; --line-soft:#21252e;
+    --text:#e3e6ee; --dim:#8a91a4; --accent:#7195cd; --accent-ink:#101216;
+    --bad:#d4807c; --bad-bg:#2a2021; --bad-line:#4a3234;
+    --ok-bg:#1a2029; --ok-line:#2e4436;
+    --chip:#242935; --chip-ink:#98a0b2; --shadow:0 2px 8px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:13px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:860px;margin:0 auto;padding:0 24px 64px}
+  header{display:flex;gap:8px 14px;align-items:center;padding:18px 0 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  header .logo{height:34px;vertical-align:middle}
+  header .logo.dark{display:none}
+  html[data-theme="dark"] header .logo:not(.dark){display:none}
+  html[data-theme="dark"] header .logo.dark{display:inline}
+  .dim{color:var(--dim);font-size:12px}
+  .chip{background:var(--chip);color:var(--chip-ink);border-radius:999px;padding:2px 9px;font-size:11px;font-weight:600}
+  .spacer{flex:1}
+  button{font:inherit;border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:6px;padding:6px 13px;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:15px 17px;box-shadow:var(--shadow);margin-bottom:13px}
+  .card h2{font-size:13px;font-weight:600;margin:0 0 8px}
+  .hint{margin:0 0 12px}
+  .row{display:flex;gap:12px;align-items:center;margin-bottom:11px;flex-wrap:wrap}
+  .row label.lb{width:170px;flex:none;color:var(--dim)}
+  .sw{width:34px;height:19px;border-radius:999px;background:var(--accent);position:relative;flex:none;cursor:pointer;border:none;padding:0}
+  .sw i{position:absolute;top:2px;right:2px;width:15px;height:15px;border-radius:50%;background:#fff}
+  .sw.off{background:var(--chip)} .sw.off i{right:auto;left:2px}
+  .sw[disabled]{opacity:.45;cursor:not-allowed}
+  .note{margin-top:12px;padding:10px 12px;border-radius:6px;background:var(--bad-bg);border:1px solid var(--bad-line);font-size:12px}
+  .note.ok{background:var(--ok-bg);border-color:var(--ok-line)}
+  code{background:var(--chip);border-radius:4px;padding:1px 5px;font-size:12px}
+  .foot{display:flex;gap:10px;align-items:center;padding-top:8px;flex-wrap:wrap}
+  #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 16px;font-size:13px;display:none;max-width:80vw;box-shadow:var(--shadow)}
+  table{width:100%;border-collapse:collapse}
+  th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line-soft);font-size:12px}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1 style="margin:0"><img class="logo" src="/brand/lockup-h-light.svg" alt="agent-mailbox · 可见性"><img class="logo dark" src="/brand/lockup-h-dark.svg" alt="" aria-hidden="true"></h1>
+    <span class="chip">可见性</span>
+    <span class="dim">"真邮箱"的规矩：主人能看全店，agent 只能看自己的格子</span>
+    <span class="spacer"></span>
+    <button onclick="location.href='/mail?token='+TOKEN">← 回信箱</button>
+  </header>
+
+  <div class="card">
+    <h2>谁能看到谁的信</h2>
+    <p class="hint dim">四组开关 + 发信权限。默认值就是 §3.3 的权限模型 —— 改动会留痕（谁在什么时候改的）。</p>
+    <div class="row"><label class="lb">主人（你）</label>
+      <button class="sw" id="sw-owner_sees_all" aria-label="主人可见全部往来"><i></i></button>
+      <span>可见<b>全部往来</b>（你的收件箱 + agent 之间的信）</span></div>
+    <div class="row"><label class="lb">agent 之间互看</label>
+      <button class="sw off" id="sw-agent_cross_read" aria-label="agent 之间互看"><i></i></button>
+      <span class="dim">关 —— 每个 agent 只能看自己的收件箱（默认关，开了就是"公开抄送"，且有留痕）</span></div>
+    <div class="row"><label class="lb">密封信进人类视图</label>
+      <button class="sw off" id="sw-sealed_in_human_view" disabled aria-label="密封信进人类视图（锁定为关）"><i></i></button>
+      <span class="dim"><b>锁定为关</b> —— 密封信只留元数据（谁/何时/几条），内容不进任何人类视图（§3.3 硬规则，防"全可见"变泄密通道）</span></div>
+    <div class="row"><label class="lb">外部来源信自动执行</label>
+      <button class="sw off" id="sw-external_auto_execute" aria-label="外部来源信自动执行"><i></i></button>
+      <span class="dim">关 —— 非本机来源的信默认只显示、不触发动作，先给你看；要执行须你确认（防 prompt injection 管道）</span></div>
+    <div class="row"><label class="lb">发信权限</label>
+      <span class="dim">本机成员（人 + 已注册 agent）；<b>跨设备发信</b>需配对令牌（令牌可撤销、可轮换；0.7.6 提供配对流程）</span></div>
+    <div class="note"><b>最要紧的一条</b>：agent 收到的信里如果有"去执行某件事"的要求（尤其来自外部/陌生来源），默认<b>不自动执行</b>，先变成"待你确认"。信箱不能成为一条"谁都能往你机器里塞指令"的管道。</div>
+    <div class="foot"><span class="dim">改动会记录在案（谁在什么时候改了可见性）—— 可见性本身也要留痕。最近改动：</span></div>
+    <div id="audit"><div class="dim">加载中…</div></div>
+  </div>
+</div>
+<div id="toast"></div>
+<script>
+const token = new URLSearchParams(location.search).get("token") || localStorage.getItem("mb_token") || "";
+localStorage.setItem("mb_token", token);
+const TOKEN = token;
+const hdr = { "Authorization": "Bearer " + token, "Content-Type": "application/json" };
+const rootEl = document.documentElement;
+rootEl.dataset.theme = new URLSearchParams(location.search).get("theme") || localStorage.getItem("mb_theme")
+  || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML.replace(/"/g, "&quot;"); }
+function toast(msg) { const t = document.getElementById("toast"); t.textContent = msg; t.style.display = "block"; setTimeout(() => t.style.display = "none", 4000); }
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? { headers: hdr } : { method: "POST", headers: hdr, body: JSON.stringify(body) });
+  if (!res.ok) { let d2 = res.status + " " + res.statusText; try { d2 = (await res.json()).error || d2; } catch {} throw new Error(d2); }
+  return res.json();
+}
+const NAMES = {
+  owner_sees_all: "主人全可见", agent_cross_read: "agent 之间互看",
+  sealed_in_human_view: "密封信进人类视图", external_auto_execute: "外部来源信自动执行",
+};
+function renderSw(key, on, locked) {
+  const el = document.getElementById("sw-" + key);
+  if (!el) return;
+  el.classList.toggle("off", !on);
+  el.disabled = !!locked;
+}
+function renderAudit(entries) {
+  const box = document.getElementById("audit");
+  if (!entries || !entries.length) { box.innerHTML = '<div class="dim">还没有改动记录（默认值＝权限模型本身）。</div>'; return; }
+  box.innerHTML = '<table><tr><th>时间（本地）</th><th>谁</th><th>改了什么</th></tr>' + entries.map(e2 =>
+    '<tr><td>' + esc(fmtLocal(e2.at)) + '</td><td>' + esc(e2.by || "-") + '</td><td>' +
+    Object.entries(e2.changes || {}).map(([k, v]) => esc(NAMES[k] || k) + " → " + (v ? "开" : "关")).join("；") +
+    '</td></tr>').join("") + '</table>';
+}
+function fmtLocal(iso) { const d = new Date(iso); return isNaN(d) ? String(iso || "") : d.toLocaleString(); }
+async function load() {
+  try {
+    const v = await api("/api/visibility");
+    for (const k of Object.keys(NAMES)) renderSw(k, v.visibility[k], (v.hard_locked || []).includes(k));
+    renderAudit(v.audit);
+  } catch (err) { toast("加载失败：" + err.message); }
+}
+for (const key of Object.keys(NAMES)) {
+  document.getElementById("sw-" + key).addEventListener("click", async () => {
+    const el = document.getElementById("sw-" + key);
+    const next = el.classList.contains("off");
+    try {
+      const out = await api("/api/visibility", { [key]: next });
+      for (const k of Object.keys(NAMES)) renderSw(k, out.visibility[k], (out.hard_locked || []).includes(k));
+      renderAudit(out.audit);
+      toast((NAMES[key]) + " 已" + (next ? "开启" : "关闭") + "（已留痕）");
+    } catch (err) { toast(err.message); }
+  });
+}
+load();
 </script>
 </body>
 </html>

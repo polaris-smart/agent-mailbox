@@ -13,6 +13,7 @@ v0.7.5 adds the human product surface (任务书 §4), all under the same token:
 
 - ``/mail``       三栏真邮箱 (§4.2): folders / monitoring / members / actions,
                   plus the §3.6 empty-mailbox call-to-action.
+- ``/visibility`` 可见性页 (§4.3): the four §3.3 switches + audit trail.
 """
 
 from __future__ import annotations
@@ -31,11 +32,14 @@ from urllib.parse import parse_qs, urlparse
 
 from .store import (
     ATTENTION_TIERS,
+    HARD_OFF_VISIBILITY,
+    VISIBILITY_DEFAULTS,
     MailboxError,
     MailStore,
+    load_visibility,
     redact_sealed,
 )
-from .webpages import MAILBOX_PAGE
+from .webpages import MAILBOX_PAGE, VISIBILITY_PAGE
 
 # The human acts on the mail root as this owner id (§3.3: 人是主人). It is in
 # OWNER_IDS, so its default kind is "owner" — the confirmation/audit gates
@@ -541,6 +545,8 @@ class _BoardHandler(BaseHTTPRequestHandler):
         # v0.7.5 human pages (§4) — same token gate as the board
         if path == "/mail":
             return self._send(200, MAILBOX_PAGE.encode("utf-8"), "text/html; charset=utf-8")
+        if path == "/visibility":
+            return self._send(200, VISIBILITY_PAGE.encode("utf-8"), "text/html; charset=utf-8")
         if path == "/api/tasks":
             return self._json(200, {"tasks": self.store.task_list()})
         # v0.7.5 human (owner) view of the mail itself: every letter under the
@@ -559,6 +565,16 @@ class _BoardHandler(BaseHTTPRequestHandler):
         # ---- v0.7.5 mailbox / wizard / visibility APIs ----
         if path == "/api/mail":
             return self._json(200, _mailbox_payload(self.store))
+        if path == "/api/visibility":
+            return self._json(
+                200,
+                {
+                    "visibility": load_visibility(self.store.root),
+                    "defaults": dict(VISIBILITY_DEFAULTS),
+                    "hard_locked": sorted(HARD_OFF_VISIBILITY),
+                    "audit": self.store.audit_entries("visibility_change", limit=10),
+                },
+            )
         self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
 
     def do_POST(self) -> None:
@@ -651,6 +667,19 @@ class _BoardHandler(BaseHTTPRequestHandler):
                 kind=str(data.get("kind", "") or ""),
             )
             return self._json(200, {"member": card})
+        if path == "/api/visibility":
+            data = self._body()
+            if not isinstance(data, dict) or not data:
+                return self._json(400, {"error": "visibility changes required"})
+            vis = store.set_visibility(data, by=OWNER_ID)
+            return self._json(
+                200,
+                {
+                    "visibility": vis,
+                    "hard_locked": sorted(HARD_OFF_VISIBILITY),
+                    "audit": store.audit_entries("visibility_change", limit=10),
+                },
+            )
         action = _MAIL_ACTION_RE.match(path)
         if action is None:
             return self._json(404, {"error": f"no such endpoint: {path}"})
