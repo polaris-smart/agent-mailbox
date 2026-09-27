@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none" role="img" aria-label="agent-mailbox">
+  <title>agent-mailbox app icon</title>
+  <!-- 徽章式（favicon / 应用图标用；小尺寸下只留信封，去掉电波以免糊） -->
+  <rect width="48" height="48" rx="11" fill="#4A6FA5"/>
+  <rect x="8.5" y="14" width="31" height="21" rx="3.5" stroke="#FFFFFF" stroke-width="3.6"/>
+  <path d="M10 16.9 24 26 38 16.9" stroke="#FFFFFF" stroke-width="3.6" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

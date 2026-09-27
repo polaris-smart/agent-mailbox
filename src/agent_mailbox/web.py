@@ -29,6 +29,9 @@ PAGE = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>agent-mailbox · board</title>
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
 <style>
   /* Less is more: one neutral surface + a status dot per lane.
      Three type sizes only — 15px titles, 13px body, 12px auxiliary.
@@ -67,6 +70,11 @@ PAGE = """<!doctype html>
   header { display:flex; gap:8px 16px; align-items:baseline; padding:16px 24px;
            border-bottom:1px solid var(--line); flex-wrap:wrap; }
   header h1 { letter-spacing:-.01em; }
+  /* brand lockup: 40px (>32px floor for the radio-wave mark); swap art per theme */
+  header h1 .logo { height:40px; vertical-align:middle; }
+  header h1 .logo.dark { display:none; }
+  html[data-theme="dark"] header h1 .logo:not(.dark) { display:none; }
+  html[data-theme="dark"] header h1 .logo.dark { display:inline; }
   header .dim { color:var(--dim); font-size:12px; }
   header .spacer { flex:1; }
   form { display:flex; gap:8px; padding:16px 24px; flex-wrap:wrap; }
@@ -130,7 +138,9 @@ PAGE = """<!doctype html>
 </head>
 <body>
 <header>
-  <h1>agent-mailbox · board</h1>
+  <h1><img class="logo" src="/brand/lockup-h-light.svg" alt="agent-mailbox · board">
+      <img class="logo dark" src="/brand/lockup-h-dark.svg" alt="" aria-hidden="true">
+      <span class="dim">· board</span></h1>
   <span class="dim">drag between adjacent lanes · every move messages the assignee</span>
   <span class="spacer"></span>
   <button id="theme" class="ghost" title="toggle light / dark">◐</button>
@@ -249,6 +259,31 @@ reload().catch(err => toast("load failed: " + err.message));
 """
 
 
+def _brand_dir() -> Path | None:
+    """Locate assets/brand/: repo checkout (editable install) or cwd fallback."""
+    here = Path(__file__).resolve()
+    for base in (*here.parents, Path.cwd()):
+        d = base / "assets" / "brand"
+        if (d / "favicon.ico").is_file():
+            return d
+    return None
+
+
+# Brand assets under the repo's assets/brand/: explicit allow-list only (no
+# globbing, no path traversal). Public on purpose — favicons and the header
+# logo must load before/without the bearer token.
+_BRAND_FILES: dict[str, tuple[str, str]] = {
+    "/favicon.ico": ("favicon.ico", "image/x-icon"),
+    "/favicon.svg": ("favicon.svg", "image/svg+xml"),
+    "/brand/badge.svg": ("svg/badge.svg", "image/svg+xml"),
+    "/brand/lockup-h-light.svg": ("svg/lockup-h-light.svg", "image/svg+xml"),
+    "/brand/lockup-h-dark.svg": ("svg/lockup-h-dark.svg", "image/svg+xml"),
+    "/brand/mark-light.svg": ("svg/mark-light.svg", "image/svg+xml"),
+    "/brand/mark-dark.svg": ("svg/mark-dark.svg", "image/svg+xml"),
+    "/brand/apple-touch-icon.png": ("png/icon-180.png", "image/png"),
+}
+
+
 class _BoardHandler(BaseHTTPRequestHandler):
     store: MailStore
     token: str
@@ -274,8 +309,11 @@ class _BoardHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _json(self, code: int, payload: dict) -> None:
-        self._send(code, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                   "application/json; charset=utf-8")
+        self._send(
+            code,
+            json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            "application/json; charset=utf-8",
+        )
 
     def _deny(self) -> None:
         self._json(401, {"error": "unauthorized: pass ?token=… or Authorization: Bearer …"})
@@ -284,9 +322,25 @@ class _BoardHandler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         return json.loads(self.rfile.read(n) or b"{}")
 
+    def _brand(self, path: str) -> None:
+        entry = _BRAND_FILES.get(path)
+        brand_dir = _brand_dir()
+        if entry is None or brand_dir is None:
+            return self._send(404, b"not found", "text/plain; charset=utf-8")
+        name, ctype = entry
+        f = brand_dir / name
+        if not f.is_file():
+            return self._send(404, b"not found", "text/plain; charset=utf-8")
+        self._send(200, f.read_bytes(), ctype)
+
     # -------------------------------------------------------------- routes
 
     def do_GET(self) -> None:
+        path = urlparse(self.path).path
+        if path in _BRAND_FILES:
+            return self._brand(path)
+        if path.startswith("/brand/"):
+            return self._send(404, b"not found", "text/plain; charset=utf-8")
         if not self._authorized():
             return self._deny()
         path = urlparse(self.path).path
@@ -315,15 +369,19 @@ class _BoardHandler(BaseHTTPRequestHandler):
             if path == "/api/tasks":
                 data = self._body()
                 task = self.store.task_create(
-                    str(data.get("title", "")), str(data.get("assignee", "")),
-                    "boss", str(data.get("due", "") or ""),
+                    str(data.get("title", "")),
+                    str(data.get("assignee", "")),
+                    "boss",
+                    str(data.get("due", "") or ""),
                 )
                 return self._json(200, {"task": task})
             if path.startswith("/api/tasks/") and path.endswith("/move"):
-                tid = path[len("/api/tasks/"):-len("/move")]
+                tid = path[len("/api/tasks/") : -len("/move")]
                 data = self._body()
                 task = self.store.task_move(
-                    tid, str(data.get("status", "")), moved_by="boss",
+                    tid,
+                    str(data.get("status", "")),
+                    moved_by="boss",
                     note=str(data.get("note", "") or ""),
                 )
                 return self._json(200, {"task": task})
@@ -381,10 +439,14 @@ def run_web(port: int = 8643, store: MailStore | None = None) -> None:
     """Serve the board on 127.0.0.1:port until interrupted."""
     store = store or MailStore()
     token = _web_token(store.root)
-    handler = type("BoardHandler", (_BoardHandler,), {
-        "store": store,
-        "token": token,
-    })
+    handler = type(
+        "BoardHandler",
+        (_BoardHandler,),
+        {
+            "store": store,
+            "token": token,
+        },
+    )
     srv = LoopbackServer(("127.0.0.1", port), handler)
     print(f"[agent-mailbox] board: http://127.0.0.1:{port}/?token={token}", flush=True)
     try:
