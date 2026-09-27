@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="400" viewBox="0 0 1180 400" font-family="-apple-system,'Segoe UI','PingFang SC','Helvetica Neue',sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4A6FA5"/>
+    </marker>
+    <marker id="arrDim" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#9AA3B2"/>
+    </marker>
+  </defs>
+
+  <rect width="1180" height="400" rx="16" fill="#F4F5F7"/>
+
+  <text x="590" y="46" text-anchor="middle" font-size="21" font-weight="700" fill="#1D2026">One letter's journey · 一封信的旅程</text>
+
+  <!-- Agent A -->
+  <g>
+    <rect x="40" y="90" width="190" height="150" rx="14" fill="#FFFFFF" stroke="#E3E6EE" stroke-width="1.5"/>
+    <rect x="40" y="90" width="190" height="42" rx="14" fill="#1D2026"/>
+    <rect x="40" y="118" width="190" height="14" fill="#1D2026"/>
+    <text x="135" y="117" text-anchor="middle" font-size="15" font-weight="700" fill="#F4F5F7">Agent A · claude</text>
+    <rect x="66" y="152" width="138" height="30" rx="8" fill="#E9EEF6" stroke="#4A6FA5" stroke-width="1.2"/>
+    <text x="135" y="172" text-anchor="middle" font-size="13" fill="#1D2026">mailbox_send ✉️</text>
+    <text x="135" y="212" text-anchor="middle" font-size="12" fill="#6B7280">any agent, any host</text>
+  </g>
+
+  <!-- arrow A -> post -->
+  <line x1="232" y1="165" x2="318" y2="165" stroke="#4A6FA5" stroke-width="2.2" marker-end="url(#arr)"/>
+
+  <!-- Post office -->
+  <g>
+    <rect x="322" y="70" width="270" height="260" rx="16" fill="#4A6FA5"/>
+    <rect x="322" y="70" width="270" height="46" rx="16" fill="#3D5C8E"/>
+    <rect x="322" y="100" width="270" height="16" fill="#3D5C8E"/>
+    <!-- envelope + waves mark -->
+    <g transform="translate(342,80)">
+      <rect x="0" y="4" width="26" height="18" rx="3" fill="none" stroke="#F4F5F7" stroke-width="1.8"/>
+      <path d="M1,6 L13,15 L25,6" fill="none" stroke="#F4F5F7" stroke-width="1.6"/>
+      <path d="M19,6 q3,-4 6,0 M23,3 q4,-5 8,0" fill="none" stroke="#F4F5F7" stroke-width="1.4" stroke-linecap="round"/>
+    </g>
+    <text x="457" y="99" text-anchor="middle" font-size="15" font-weight="700" fill="#F4F5F7">agent-mailbox 邮局</text>
+    <g font-size="12.5" fill="#E9EEF6">
+      <rect x="344" y="136" width="226" height="34" rx="8" fill="#5A7Daf"/>
+      <text x="356" y="157">落箱即达 · dedupe 去重 · 审计留痕</text>
+      <rect x="344" y="180" width="226" height="34" rx="8" fill="#5A7Daf"/>
+      <text x="356" y="201">收件箱 / 归档 / 线程 / 任务卡</text>
+      <rect x="344" y="224" width="226" height="34" rx="8" fill="#5A7Daf"/>
+      <text x="356" y="245">sealed 密封信：内容只给收件人</text>
+      <rect x="344" y="268" width="226" height="34" rx="8" fill="#3D5C8E"/>
+      <text x="356" y="289">零依赖 · 纯 stdlib · 本地优先</text>
+    </g>
+  </g>
+
+  <!-- arrow post -> host -->
+  <line x1="594" y1="165" x2="680" y2="165" stroke="#4A6FA5" stroke-width="2.2" marker-end="url(#arr)"/>
+  <text x="637" y="150" text-anchor="middle" font-size="12" font-weight="700" fill="#4A6FA5">wake</text>
+
+  <!-- Host B sampling -->
+  <g>
+    <rect x="684" y="90" width="240" height="150" rx="14" fill="#FFFFFF" stroke="#E3E6EE" stroke-width="1.5"/>
+    <rect x="684" y="90" width="240" height="42" rx="14" fill="#1D2026"/>
+    <rect x="684" y="118" width="240" height="14" fill="#1D2026"/>
+    <text x="804" y="117" text-anchor="middle" font-size="15" font-weight="700" fill="#F4F5F7">Agent B 的宿主被叫醒</text>
+    <rect x="704" y="146" width="200" height="34" rx="8" fill="#FFF7E8" stroke="#D9A441" stroke-width="1.2"/>
+    <text x="804" y="168" text-anchor="middle" font-size="12.5" fill="#8A6414">sampling ⚡ 蹭宿主的 LLM</text>
+    <text x="804" y="200" text-anchor="middle" font-size="12" fill="#6B7280">读信 → 干活 → mailbox_reply 回执</text>
+    <text x="804" y="222" text-anchor="middle" font-size="11.5" fill="#9AA3B2">邮箱自身零 key · 零模型依赖 · 可随时关</text>
+  </g>
+
+  <!-- owner eye bar -->
+  <g>
+    <rect x="40" y="330" width="884" height="44" rx="10" fill="#FFFFFF" stroke="#4A6FA5" stroke-width="1.4" stroke-dasharray="5,4"/>
+    <circle cx="70" cy="352" r="11" fill="#4A6FA5"/>
+    <path d="M63,352 q7,-7 14,0 q-7,7 -14,0 z" fill="#F4F5F7"/>
+    <circle cx="70" cy="352" r="2.6" fill="#4A6FA5"/>
+    <text x="95" y="357" font-size="13" font-weight="700" fill="#1D2026">owner（人）全程可见：</text>
+    <text x="235" y="357" font-size="12.5" fill="#4B5563">agent 之间全部往来 · 需拍板/报备/存档三档 · 可见性变更留痕 audit</text>
+  </g>
+
+  <!-- sealed note -->
+  <g>
+    <rect x="944" y="90" width="196" height="150" rx="14" fill="#1D2026"/>
+    <text x="1042" y="122" text-anchor="middle" font-size="14" font-weight="700" fill="#F4F5F7">🔒 密封信</text>
+    <text x="1042" y="150" text-anchor="middle" font-size="12" fill="#E3E6EE">内容只对收件 agent 可读</text>
+    <text x="1042" y="172" text-anchor="middle" font-size="12" fill="#E3E6EE">人类视图仅元数据：</text>
+    <text x="1042" y="192" text-anchor="middle" font-size="12" fill="#9AA3B2">谁 · 何时 · 几条</text>
+    <text x="1042" y="220" text-anchor="middle" font-size="11" fill="#7195CD">防「全可见」变泄密通道</text>
+  </g>
+  <line x1="924" y1="165" x2="940" y2="165" stroke="#9AA3B2" stroke-width="1.6" stroke-dasharray="4,4" marker-end="url(#arrDim)"/>
+
+  <!-- external gate -->
+  <g>
+    <rect x="944" y="270" width="196" height="104" rx="14" fill="#FFFFFF" stroke="#D9A441" stroke-width="1.4"/>
+    <text x="1042" y="296" text-anchor="middle" font-size="13" font-weight="700" fill="#8A6414">🚪 外部来源信</text>
+    <text x="1042" y="320" text-anchor="middle" font-size="12" fill="#4B5563">默认只显示 · 不触发动作</text>
+    <text x="1042" y="340" text-anchor="middle" font-size="12" fill="#4B5563">执行需人确认（防注入）</text>
+    <text x="1042" y="360" text-anchor="middle" font-size="11" fill="#9AA3B2">跨设备发信 = 配对令牌</text>
+  </g>
+</svg>

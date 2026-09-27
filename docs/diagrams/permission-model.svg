@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="360" viewBox="0 0 1180 360" font-family="-apple-system,'Segoe UI','PingFang SC','Helvetica Neue',sans-serif">
+  <rect width="1180" height="360" rx="16" fill="#F4F5F7"/>
+  <text x="590" y="44" text-anchor="middle" font-size="21" font-weight="700" fill="#1D2026">Who sees what · 身份与权限（默认值）</text>
+
+  <!-- owner ring -->
+  <circle cx="420" cy="200" r="140" fill="#4A6FA5" opacity="0.10"/>
+  <circle cx="420" cy="200" r="140" fill="none" stroke="#4A6FA5" stroke-width="2.2"/>
+  <text x="420" y="88" text-anchor="middle" font-size="16" font-weight="700" fill="#4A6FA5">owner · 人（本机主人）</text>
+  <g font-size="13" fill="#1D2026">
+    <text x="420" y="150" text-anchor="middle">👀 可见全部往来</text>
+    <text x="420" y="176" text-anchor="middle">自己的收件箱 + agent 之间的信</text>
+    <text x="420" y="206" text-anchor="middle">只读监看 · 要发话就写一封信</text>
+    <text x="420" y="232" text-anchor="middle">不得改他人信件（审计要求）</text>
+    <text x="420" y="262" text-anchor="middle">密封信 → 只见元数据 🔒</text>
+  </g>
+
+  <!-- agent ring -->
+  <circle cx="420" cy="200" r="78" fill="#7195CD" opacity="0.16"/>
+  <circle cx="420" cy="200" r="78" fill="none" stroke="#7195CD" stroke-width="2"/>
+  <text x="420" y="146" text-anchor="middle" font-size="14" font-weight="700" fill="#3D5C8E">agent · 本机智能体</text>
+  <g font-size="12.5" fill="#1D2026">
+    <text x="420" y="172" text-anchor="middle">📩 仅自己的收件箱</text>
+    <text x="420" y="194" text-anchor="middle">跨箱读取 = API 结构化拒绝</text>
+    <text x="420" y="216" text-anchor="middle">互看 = 关（开了就是公开抄送）</text>
+    <text x="420" y="240" text-anchor="middle">密封信：仅收件人可读</text>
+  </g>
+
+  <!-- guest card -->
+  <g>
+    <rect x="640" y="92" width="250" height="216" rx="16" fill="#FFFFFF" stroke="#E3E6EE" stroke-width="1.5"/>
+    <rect x="640" y="92" width="250" height="44" rx="16" fill="#1D2026"/>
+    <rect x="640" y="120" width="250" height="16" fill="#1D2026"/>
+    <text x="765" y="120" text-anchor="middle" font-size="15" font-weight="700" fill="#F4F5F7">guest · 跨设备 / 外部</text>
+    <g font-size="12.5" fill="#1D2026">
+      <text x="660" y="168">🎫 发信需配对令牌（可撤销）</text>
+      <text x="660" y="196">🚪 外部信默认不触发动作</text>
+      <text x="660" y="224">　 执行须人确认（防注入）</text>
+      <text x="660" y="252">🙈 不可见任何本机内容面</text>
+      <text x="660" y="280" fill="#6B7280">guest 禁广播</text>
+    </g>
+  </g>
+
+  <!-- audit bar -->
+  <g>
+    <rect x="920" y="92" width="220" height="216" rx="16" fill="#1D2026"/>
+    <text x="1030" y="124" text-anchor="middle" font-size="15" font-weight="700" fill="#F4F5F7">📒 变更留痕</text>
+    <g font-size="12.5" fill="#E3E6EE">
+      <text x="1030" y="158" text-anchor="middle">可见性开关改动</text>
+      <text x="1030" y="182" text-anchor="middle">→ audit.log 追加记录</text>
+      <text x="1030" y="212" text-anchor="middle">谁 · 何时 · 改了什么</text>
+      <text x="1030" y="240" text-anchor="middle" fill="#7195CD">界面四开关即改即生效</text>
+      <text x="1030" y="266" text-anchor="middle" fill="#9AA3B2">默认值 = 上面三档</text>
+    </g>
+  </g>
+
+  <!-- left legend -->
+  <g font-size="12" fill="#6B7280">
+    <text x="120" y="330">三档打扰：需你拍板（提醒）· 报备（静默入箱）· 存档（不提醒）—— 默认只提醒第一档</text>
+  </g>
+</svg>
