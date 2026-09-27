@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .store import MailStore
+from .store import MailboxError, MailStore, redact_sealed
 
 PAGE = """<!doctype html>
 <html lang="en">
@@ -289,15 +289,27 @@ class _BoardHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if not self._authorized():
             return self._deny()
-        if urlparse(self.path).path == "/api/tasks":
+        path = urlparse(self.path).path
+        if path == "/api/tasks":
             return self._json(200, {"tasks": self.store.task_list()})
+        # v0.7.5 human (owner) view of the mail itself: every letter under the
+        # root. 密封信 bodies never appear here — metadata only (§3.3), so
+        # "主人全可见" cannot become a credential leak channel.
+        if path == "/api/messages":
+            return self._json(
+                200, {"messages": [redact_sealed(m) for m in self.store.all_letters()]}
+            )
+        if path.startswith("/api/messages/"):
+            try:
+                m = self.store.find_letter(path[len("/api/messages/"):])
+            except MailboxError as e:
+                return self._json(404, {"error": str(e)})
+            return self._json(200, {"message": redact_sealed(m)})
         self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
 
     def do_POST(self) -> None:
         if not self._authorized():
             return self._deny()
-        from .store import MailboxError
-
         path = urlparse(self.path).path
         try:
             if path == "/api/tasks":
