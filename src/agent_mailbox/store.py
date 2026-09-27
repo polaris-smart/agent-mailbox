@@ -16,6 +16,7 @@ can share one mail root safely on macOS/Linux.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -37,6 +38,16 @@ from .webhook import notify_new_messages
 
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MSG_STATUSES = ("pending", "acked", "done")
+
+# v0.7.5 身份/权限模型（任务书 §3.3）: three member kinds plus the letter
+# visibility fields. Legacy letters and legacy registry cards carry none of
+# the new fields — absence resolves to the historical behavior (local agent,
+# local origin, unsealed), so existing mail keeps flowing untouched.
+MEMBER_KINDS = ("owner", "agent", "guest")  # 人 / 本机 agent / 外部来源
+OWNER_IDS = frozenset({"boss"})  # legacy human id(s) on a mail root
+ATTENTION_TIERS = ("decision", "report", "archive")  # 需你拍板 / 报备 / 存档
+ATTENTION_DEFAULT = "decision"  # 默认第一档：只有“需你拍板”值得提醒
+ORIGINS = ("local", "external")
 SENT_LOG_MAX_BYTES = 10 * 1024 * 1024  # rotate sent.log one generation past this
 
 # v0.5.0 delivery-side duplicate suppression (design A) + lifecycle windows.
@@ -202,6 +213,81 @@ def load_identity_binding(root: Path) -> dict[str, Any]:
             )
         table[agent_id] = token_hash
     return table
+
+
+def load_pairing_tokens(root: Path) -> dict[str, str]:
+    """Read the optional ``pairing_tokens`` block from ``<root>/config.json``.
+
+    Schema::
+
+        {"pairing_tokens": {"<token-name>": "<sha256(token) hex>"}}
+
+    Returns ``{name: sha256-hex}``; ``{}`` when the block is absent — and
+    then **no** guest can send, because no valid token exists (跨设备发信
+    默认拒绝). A malformed block raises ``MailboxError`` loudly, same
+    doctrine as ``load_identity_binding``: a half-written gate must never
+    silently degrade to "open". Pairing/rotation flows are 0.7.6 scope —
+    this version ships the field and the validation point only.
+    """
+    try:
+        cfg = json.loads((root / "config.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError) as e:
+        raise MailboxError(f"corrupt config.json: {e}") from e
+    tokens = cfg.get("pairing_tokens")
+    if tokens is None:
+        return {}
+    if not isinstance(tokens, dict):
+        raise MailboxError("config.json: pairing_tokens must be an object")
+    out: dict[str, str] = {}
+    for name, token_hash in tokens.items():
+        if not isinstance(name, str) or not name or len(name) > 64:
+            raise MailboxError(f"config.json: pairing_tokens name {name!r} is invalid")
+        if not isinstance(token_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", token_hash):
+            raise MailboxError(
+                f"config.json: pairing_tokens[{name}] must be a sha256 hex digest"
+            )
+        out[name] = token_hash
+    return out
+
+
+def pairing_token_valid(root: Path, token: str) -> bool:
+    """True when ``sha256(token)`` matches any configured pairing token.
+
+    Constant-time compares (``hmac.compare_digest``), per the identity
+    binding / web-token precedent. An empty token is never valid.
+    """
+    if not token:
+        return False
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return any(hmac.compare_digest(digest, h) for h in load_pairing_tokens(root).values())
+
+
+def default_kind(agent_id: str) -> str:
+    """Member kind for an id with no explicit kind: legacy human ids are
+    ``owner`` (the mail root's 主人), everything else ``agent`` — the
+    historical local-trust behavior, unchanged for existing roots."""
+    return "owner" if (agent_id or "") in OWNER_IDS else "agent"
+
+
+def redact_sealed(m: dict[str, Any], *, reader: str = "") -> dict[str, Any]:
+    """Metadata-only view of a sealed letter for anyone but its recipient.
+
+    密封信（§3.3）: content is readable **only** through the recipient
+    agent's own tools. Every other reader — the owner's tools, other agents,
+    every human view — gets the envelope (who/when/status/subject) with
+    ``body`` removed and ``redacted: "sealed"`` set, so "主人全可见" can
+    never double as a credential leak channel. Unsealed letters pass through
+    untouched (legacy letters never carried ``sealed``).
+    """
+    if not m.get("sealed"):
+        return m
+    if reader and reader == m.get("to"):
+        return m  # the recipient agent's own tools: full content
+    out = {k: v for k, v in m.items() if k != "body"}
+    out["redacted"] = "sealed"
+    return out
 
 
 # replies collapse stacked "Re:" prefixes to one, like a mail client does:
@@ -380,9 +466,23 @@ class MailStore:
 
     # ================================================================ public
 
-    def register(self, agent_id: str, owner: str = "", description: str = "") -> dict[str, Any]:
-        """Register (or idempotently re-confirm) an agent. Returns its card."""
+    def register(
+        self,
+        agent_id: str,
+        owner: str = "",
+        description: str = "",
+        kind: str = "",
+    ) -> dict[str, Any]:
+        """Register (or idempotently re-confirm) a member. Returns its card.
+
+        ``kind`` (v0.7.5 §3.3) is one of ``owner``/``agent``/``guest``; an
+        empty value keeps the card's existing kind or the id-based default,
+        so legacy registration calls are unchanged. An explicit kind is a
+        visibility decision — it lands in ``audit.log`` (谁/何时/改了什么).
+        """
         self._validate_id(agent_id)
+        if kind and kind not in MEMBER_KINDS:
+            raise MailboxError(f"kind must be one of {MEMBER_KINDS}")
         with self._locked():
             reg = self._read_registry()
             exists = agent_id in reg["agents"]
@@ -398,10 +498,35 @@ class MailStore:
                     "description": description or card.get("description", ""),
                 }
             )
+            card["kind"] = kind or card.get("kind") or default_kind(agent_id)
             reg["agents"][agent_id] = card
             self._write_registry(reg)
         self._inbox_dir(agent_id)  # ensure inbox exists
+        if kind:
+            self.audit("member_kind", by=agent_id, member=agent_id, kind=card["kind"])
         return {"agent_id": agent_id, "new": not exists, **card}
+
+    def kind_of(self, agent_id: str) -> str:
+        """The member kind for ``agent_id`` (§3.3): the registry card's kind
+        when present, else the id-based default. Unregistered ids stay usable
+        with historical local-trust semantics (default ``agent``)."""
+        card = self._read_registry()["agents"].get(agent_id or "")
+        if isinstance(card, dict) and card.get("kind") in MEMBER_KINDS:
+            return str(card["kind"])
+        return default_kind(agent_id)
+
+    def audit(self, action: str, *, by: str = "", **fields: Any) -> dict[str, Any]:
+        """Append one entry to ``<root>/audit.log`` (JSONL, append-only).
+
+        The §3.3 visibility trail: every visibility-relevant decision (member
+        kind set/changed, external→local confirmation) lands here with
+        who/when/what so the change stays greppable after the fact.
+        """
+        entry: dict[str, Any] = {"at": _now_iso(), "by": by, "action": action}
+        entry.update(fields)
+        with self._locked(), open(self.root / "audit.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        return entry
 
     def registry(self) -> dict[str, Any]:
         with self._locked():
@@ -419,6 +544,10 @@ class MailStore:
         priority: str = "normal",
         dedupe: bool = True,
         thread_id: str | None = None,
+        sealed: bool = False,
+        origin: str = "local",
+        attention: str = ATTENTION_DEFAULT,
+        pairing_token: str = "",
     ) -> list[dict[str, Any]]:
         """Deliver a message to one agent, many agents, or ``"all"``.
 
@@ -440,12 +569,34 @@ class MailStore:
         original's thread (a legacy original without one is back-filled with
         the freshly minted id so the pair stays linked), and a fresh send
         mints a new id shared by every recipient of this call.
+
+        v0.7.5 (§3.3/§3.4): ``sealed=True`` marks a 密封信 — its body stays
+        readable only through the recipient agent's tools (``redact_sealed``);
+        ``origin="external"`` marks outside mail, which lands but triggers
+        nothing (no webhook here, the wake drain skips it) until an owner
+        confirms it; ``attention`` carries the 打扰三档 marker (需拍板/报备/
+        存档, default first tier); a ``guest`` sender must present a valid
+        ``pairing_token`` or the send is rejected.
         """
         if status not in MSG_STATUSES:
             raise MailboxError(f"status must be one of {MSG_STATUSES}")
+        if origin not in ORIGINS:
+            raise MailboxError(f"origin must be one of {ORIGINS}")
+        if attention not in ATTENTION_TIERS:
+            raise MailboxError(
+                f"attention must be one of {ATTENTION_TIERS} (需你拍板/报备/存档)"
+            )
         recipients = self._resolve_recipients(to)
         if not recipients:
             raise MailboxError("no recipients resolved")
+        # 配对令牌校验点 (§3.3 发信权限): cross-device (guest) senders need a
+        # valid pairing token; local members send as always.
+        if self.kind_of(from_id) == "guest" and not pairing_token_valid(
+            self.root, pairing_token
+        ):
+            raise MailboxError(
+                "pairing token required: guest senders must present a valid pairing token"
+            )
         if reply_to:
             subject = _reply_subject(subject)
         original_path: Path | None = None
@@ -490,7 +641,11 @@ class MailStore:
                     "thread_id": tid,
                     "created_at": _now_iso(),
                     "semantic_hash": msg_hash,
+                    "origin": origin,
+                    "attention": attention,
                 }
+                if sealed:
+                    msg["sealed"] = True
                 (inbox / f"{msg['id']}.json").write_text(
                     json.dumps(msg, ensure_ascii=False, indent=1), encoding="utf-8"
                 )
@@ -534,6 +689,11 @@ class MailStore:
                 else:
                     notify_msgs.append(msg)
                 audit.write(json.dumps(line, ensure_ascii=False) + "\n")
+        # v0.7.5 外部来源执行门 (§3.3): external mail lands but triggers
+        # nothing — the webhook POST is dropped here, and the wake drain
+        # skips these letters too. A human confirmation (``confirm_external``)
+        # flips origin back to local before any action may fire.
+        notify_msgs = [m for m in notify_msgs if m.get("origin") != "external"]
         # outside the file lock: optional webhook wake-up, best-effort.
         # config_root binds the webhook.json lookup to THIS store's root so a
         # custom-root store can never read the production gateway config.
@@ -1066,6 +1226,57 @@ class MailStore:
         merged = [*inbox, *archived]
         merged.sort(key=lambda m: m.get("created_at", ""), reverse=True)
         return merged
+
+    # ---------------------------------------------------- owner view (v0.7.5)
+    #
+    # §3.3: the owner (人) sees 全部往来 — every member's inbox + archive in
+    # one addressable view. Sealed redaction stays the caller's job (the
+    # human view must never see a sealed body, not even the owner's).
+
+    def all_letters(self, agent_id: str | None = None) -> list[dict[str, Any]]:
+        """Every letter under the root (or one member's), inbox+archive,
+        newest first. The owner/human view's data source."""
+        if agent_id is not None:
+            return self.list_all_messages(agent_id)
+        out: list[dict[str, Any]] = [m for _, m in self._iter_all_letters()]
+        out.sort(key=lambda m: m.get("created_at", ""), reverse=True)
+        return out
+
+    def find_letter(self, msg_id: str) -> dict[str, Any]:
+        """One letter by id, searched across every member's inbox+archive."""
+        name = f"{Path(msg_id).name}.json"
+        for p, m in self._iter_all_letters():
+            if p.name == name:
+                return m
+        raise MailboxError(f"message {msg_id!r} not found under {self.root}")
+
+    def confirm_external(self, msg_id: str, *, by: str) -> dict[str, Any]:
+        """Human confirmation for an external letter (§3.3 执行门挂点).
+
+        Only an ``owner``-kind member may flip ``origin`` external→local —
+        the flip is what re-enables wake/webhook for the letter. Appends a
+        ``confirmed_external`` handled_log entry and an audit line, so the
+        operation is greppable by name. Returns the updated letter.
+        """
+        if self.kind_of(by) != "owner":
+            raise MailboxError(
+                f"permission denied: only an owner member may confirm external mail (by={by!r})"
+            )
+        name = f"{Path(msg_id).name}.json"
+        target: Path | None = None
+        for p, _ in self._iter_all_letters():
+            if p.name == name:
+                target = p
+                break
+        if target is None:
+            raise MailboxError(f"message {msg_id!r} not found under {self.root}")
+        with self._locked():
+            m = self._read_msg(target)  # re-read under the lock
+            m["origin"] = "local"
+            _append_handled(m, by, "confirmed_external")
+            target.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
+        self.audit("confirm_external", by=by, message=m["id"], origin="local")
+        return m
 
     def set_status(self, agent_id: str, msg_id: str, status: str) -> dict[str, Any]:
         if status not in MSG_STATUSES:
