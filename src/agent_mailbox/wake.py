@@ -329,7 +329,7 @@ def run_once(
     """
     stats: dict[str, Any] = {
         "scanned": 0, "due": 0, "woke": 0, "skipped_woken": 0,
-        "failed": 0, "jev_skipped": 0,
+        "failed": 0, "jev_skipped": 0, "skipped_external": 0,
     }
     try:
         store = store or MailStore(root)
@@ -345,6 +345,12 @@ def run_once(
                 m = json.loads(p.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue  # partially-written letters wait for the next round
+            if m.get("origin") == "external":
+                # v0.7.5 外部来源执行门: external mail lands but never wakes
+                # anyone — an owner must confirm it (confirm_external) first,
+                # which flips origin back to local and lets later rounds act.
+                stats["skipped_external"] += 1
+                continue
             stats["due"] += 1 if should_wake(m, ref, cfg.stale_acked) else 0
             if not should_wake(m, ref, cfg.stale_acked):
                 continue

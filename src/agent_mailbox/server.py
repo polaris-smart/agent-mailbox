@@ -19,7 +19,13 @@ import time
 
 from mcp.server.mcpserver import MCPServer
 
-from .store import MailboxError, MailStore, ghost_open_limit, load_identity_binding
+from .store import (
+    MailboxError,
+    MailStore,
+    ghost_open_limit,
+    load_identity_binding,
+    redact_sealed,
+)
 
 # v0.7.5 §3.1: unified subcommands routed before the legacy flag parser.
 # Only an exact positional-token match routes here, so every legacy
@@ -37,7 +43,12 @@ server = MCPServer(
         "agents — prefer it over stacking Re: prefixes. "
         "Task cards: task_create / task_move / task_list manage a shared task board; "
         "creating or moving a card auto-messages the assignee, so board motion wakes "
-        "agents without polling."
+        "agents without polling. "
+        "Visibility (v0.7.5): agents read only their own mailbox — other members' "
+        "letters are a structured permission denied. Sealed letters (send "
+        "sealed=True) keep their body readable only by the recipient agent; every "
+        "other view sees metadata. External-origin letters never trigger actions "
+        "until an owner confirms them via mailbox_confirm_external."
     ),
 )
 
@@ -87,14 +98,48 @@ def _verify_identity(agent_id: str) -> None:
         raise MailboxError("identity mismatch")
 
 
+def _read_scope(me: str, target: str) -> None:
+    """§3.3 visibility defaults, enforced at the tool layer.
+
+    ``agent``/``guest`` members read **only their own mailbox**: a call that
+    names another member's mailbox is rejected with a structured
+    ``permission denied`` MailboxError — never a silent empty result. Owner
+    members see all traffic (sealed bodies still redact for them), and an
+    unset caller id keeps the historical local-trust behavior so existing
+    scripts keep working unchanged.
+    """
+    if not me or me == target:
+        return
+    kind = _store_instance().kind_of(me)
+    if kind in ("agent", "guest"):
+        raise MailboxError(
+            f"permission denied: {me!r} ({kind}) may only read its own mailbox, "
+            f"not {target!r}'s"
+        )
+
+
+def _effective_reader(me: str, target: str) -> str:
+    """Who is actually looking at ``target``'s letters (for sealed redaction).
+
+    The declared caller id when present; otherwise the target itself — the
+    legacy local-trust path where a script reading a box *is* that box's
+    owner, so sealed content stays readable exactly as before v0.7.5."""
+    return me or target
+
+
 # --------------------------------------------------------------------- tools
 
 
 @server.tool()
-def mailbox_register(agent_id: str, owner: str = "", description: str = "") -> dict:
-    """Register this agent and claim its mailbox. Idempotent — safe to call again."""
+def mailbox_register(agent_id: str, owner: str = "", description: str = "", kind: str = "") -> dict:
+    """Register this member and claim its mailbox. Idempotent — safe to call again.
+
+    ``kind`` (v0.7.5): ``owner`` (the human), ``agent`` (a local agent) or
+    ``guest`` (an external source). Empty keeps the existing/default kind;
+    an explicit kind is a visibility decision and is written to audit.log.
+    """
     _verify_identity(agent_id)
-    return _store_instance().register(agent_id, owner, description)
+    return _store_instance().register(agent_id, owner, description, kind)
 
 
 @server.tool()
@@ -106,6 +151,10 @@ def mailbox_send(
     reply_to: str | None = None,
     from_id: str = "",
     dedupe: bool = True,
+    sealed: bool = False,
+    origin: str = "local",
+    attention: str = "decision",
+    pairing_token: str = "",
 ) -> dict:
     """Send a message to one agent, a list of agents, or \"all\" for broadcast.
 
@@ -115,13 +164,31 @@ def mailbox_send(
     {\"to\", \"deduped\": true, \"existing_id\"} with zero side effects — no
     letter, no sent.log line, no webhook. Pass dedupe=False to exempt
     periodic jobs. \"count\" counts only letters that actually landed.
+
+    v0.7.5: ``sealed=True`` marks a 密封信 — the body stays readable only
+    through the recipient agent's own tools; every other view (owner, web,
+    other agents) sees metadata only. ``origin=\"external\"`` marks
+    outside-origin mail: it lands but never triggers actions (no wake, no
+    webhook) until an owner confirms it. ``attention`` is the 打扰三档
+    (decision=需你拍板 / report=报备 / archive=存档). A ``guest`` sender
+    must present a valid ``pairing_token``.
     """
     frm = from_id or os.environ.get("AGENT_MAIL_ID", "")
     if not frm:
         raise MailboxError("from_id required (or set AGENT_MAIL_ID env)")
     _verify_identity(frm)
     sent = _store_instance().send(
-        frm, to, subject, body, reply_to=reply_to, priority=priority, dedupe=dedupe
+        frm,
+        to,
+        subject,
+        body,
+        reply_to=reply_to,
+        priority=priority,
+        dedupe=dedupe,
+        sealed=sealed,
+        origin=origin,
+        attention=attention,
+        pairing_token=pairing_token,
     )
     delivered = sum(1 for e in sent if not e.get("deduped"))
     return {"delivered": sent, "count": delivered}
@@ -139,8 +206,11 @@ def mailbox_check(agent_id: str = "", mark: bool = True) -> dict:
     if not me:
         raise MailboxError("agent_id required (or set AGENT_MAIL_ID env)")
     _verify_identity(me)
+    _read_scope(os.environ.get("AGENT_MAIL_ID", ""), me)
     st = _store_instance()
     msgs = st.check(me, mark=mark)
+    reader = _effective_reader(os.environ.get("AGENT_MAIL_ID", ""), me)
+    msgs = [redact_sealed(m, reader=reader) for m in msgs]
     out: dict = {"agent_id": me, "unread": len(msgs), "messages": msgs}
     ghosts = st.ghost_threads()
     if ghosts:
@@ -159,6 +229,7 @@ def mailbox_reply(msg_id: str, body: str, agent_id: str = "") -> dict:
     if not me:
         raise MailboxError("agent_id required (or set AGENT_MAIL_ID env)")
     _verify_identity(me)
+    _read_scope(os.environ.get("AGENT_MAIL_ID", ""), me)
     st = _store_instance()
     mine = [m for m in st.list_messages(me) if m["id"] == msg_id]
     from_archive = False
@@ -198,7 +269,10 @@ def mailbox_list(agent_id: str = "", status: str | None = None, thread: str | No
     if not me:
         raise MailboxError("agent_id required (or set AGENT_MAIL_ID env)")
     _verify_identity(me)
+    _read_scope(os.environ.get("AGENT_MAIL_ID", ""), me)
     msgs = _store_instance().list_all_messages(me, status, thread=thread)
+    reader = _effective_reader(os.environ.get("AGENT_MAIL_ID", ""), me)
+    msgs = [redact_sealed(m, reader=reader) for m in msgs]
     return {"agent_id": me, "count": len(msgs), "messages": msgs}
 
 
@@ -212,11 +286,18 @@ def mailbox_thread(thread: str) -> dict:
     "Re: Re: ..." chain resolves to one thread. Letters come back oldest
     first with their status, so the full cross-agent conversation is
     visible in one call.
+
+    v0.7.5 scope: an ``agent``/``guest`` caller sees only the letters it
+    took part in (from/to includes them) — if the thread exists but none of
+    its letters do, that is a structured ``permission denied``, not silent
+    emptiness. Sealed bodies are readable only by the recipient agent;
+    everyone else gets metadata.
     """
-    _verify_identity(os.environ.get("AGENT_MAIL_ID", ""))
+    me = os.environ.get("AGENT_MAIL_ID", "")
+    _verify_identity(me)
     st = _store_instance()
     try:
-        return st.thread_messages(thread)
+        view = st.thread_messages(thread)
     except MailboxError as e:
         # Structured miss instead of an MCP "Error executing tool" bubble:
         # callers probing by commit hashes or session ids (HS 09-24) get an
@@ -228,6 +309,25 @@ def mailbox_thread(thread: str) -> dict:
             "count": 0,
             "messages": [],
         }
+    msgs = view.get("messages", [])
+    if me and st.kind_of(me) in ("agent", "guest"):
+        scoped = [m for m in msgs if m.get("from") == me or m.get("to") == me]
+        if not scoped:
+            return {
+                "error": (
+                    f"permission denied: {me!r} ({st.kind_of(me)}) has no letters "
+                    "on this thread"
+                ),
+                "thread_id": view.get("thread_id"),
+                "matched_by": view.get("matched_by", "miss"),
+                "count": 0,
+                "messages": [],
+            }
+        msgs = scoped
+    reader = me  # no declared id: sealed bodies redact for everyone
+    view["messages"] = [redact_sealed(m, reader=reader) for m in msgs]
+    view["count"] = len(view["messages"])
+    return view
 
 
 @server.tool()
@@ -237,9 +337,27 @@ def mailbox_done(msg_id: str, agent_id: str = "") -> dict:
     if not me:
         raise MailboxError("agent_id required (or set AGENT_MAIL_ID env)")
     _verify_identity(me)
+    _read_scope(os.environ.get("AGENT_MAIL_ID", ""), me)
     m = _store_instance().set_status(me, msg_id, "done")
     n = _store_instance().archive_done(me)
     return {"message": m["id"], "status": "done", "archived": n}
+
+
+@server.tool()
+def mailbox_confirm_external(msg_id: str, actor_id: str = "") -> dict:
+    """Human confirmation gate for an external-origin letter (§3.3).
+
+    Flips ``origin`` external→local so the wake/webhook paths may act on it.
+    Only an owner-kind member (``boss`` or a registered ``owner``) may
+    confirm; the operation appends to audit.log and the letter's handled_log
+    (greppable by name). Anything else is a structured rejection.
+    """
+    actor = actor_id or os.environ.get("AGENT_MAIL_ID", "")
+    if not actor:
+        raise MailboxError("actor_id required (or set AGENT_MAIL_ID env)")
+    _verify_identity(actor)
+    m = _store_instance().confirm_external(msg_id, by=actor)
+    return {"message": m["id"], "origin": m.get("origin", "local"), "confirmed_by": actor}
 
 
 @server.tool()
@@ -251,6 +369,8 @@ def mailbox_broadcast(subject: str, body: str, from_id: str = "", dedupe: bool =
     if not frm:
         raise MailboxError("from_id required (or set AGENT_MAIL_ID env)")
     _verify_identity(frm)
+    if _store_instance().kind_of(frm) == "guest":
+        raise MailboxError("permission denied: guest members cannot broadcast")
     sent = _store_instance().send(frm, "all", subject, body, priority="high", dedupe=dedupe)
     delivered = sum(1 for e in sent if not e.get("deduped"))
     return {"delivered": sent, "count": delivered}
@@ -277,8 +397,10 @@ def mailbox_wait(agent_id: str = "", timeout_seconds: float = 25.0) -> dict:
     if not me:
         raise MailboxError("agent_id required (or set AGENT_MAIL_ID env)")
     _verify_identity(me)
+    _read_scope(os.environ.get("AGENT_MAIL_ID", ""), me)
     st = _store_instance()
     deadline = time.time() + max(1.0, min(timeout_seconds, 60.0))
+    reader = _effective_reader(os.environ.get("AGENT_MAIL_ID", ""), me)
     while True:
         # Atomic claim (v0.6.2): list + ack in one locked pass, so a second
         # waiter on this mailbox can never re-consume the same batch. A
@@ -286,7 +408,11 @@ def mailbox_wait(agent_id: str = "", timeout_seconds: float = 25.0) -> dict:
         # reap round (fail-open).
         got = st.claim(me)
         if got:
-            return {"agent_id": me, "received": len(got), "messages": got}
+            return {
+                "agent_id": me,
+                "received": len(got),
+                "messages": [redact_sealed(m, reader=reader) for m in got],
+            }
         if time.time() >= deadline:
             return {"agent_id": me, "received": 0, "messages": [], "timeout": True}
         time.sleep(0.5)

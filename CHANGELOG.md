@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Identity & permission model (v0.7.5 §3.3)**: members now carry a `kind` (`owner` 人 / `agent` 本机 agent / `guest` 外部来源) on their registry card — legacy cards resolve to the historical behavior (`boss` → owner, everything else → agent). Tool-layer enforcement: `agent`/`guest` callers reading another member's mailbox get a structured `permission denied` (never a silent empty result); owners read all traffic; an unset `AGENT_MAIL_ID` keeps local trust so existing scripts are unchanged.
+- **Sealed letters (密封信)**: `mailbox_send(..., sealed=True)` marks a letter whose body is readable **only** through the recipient agent's own tools. Every other reader — owner tools, other agents, the new human-view web endpoints — gets metadata (who/when/status/subject) with `redacted: "sealed"`, so "owner sees all" can never double as a credential leak channel.
+- **External-origin gate (外部来源执行门)**: letters may carry `origin` (`local`/`external`). External mail lands normally but triggers nothing — the wake drain skips it (`skipped_external`) and the webhook POST is dropped — until an owner flips it back with the new `mailbox_confirm_external` tool (appends to `handled_log` and the audit log, greppable by name).
+- **Human mail view**: `GET /api/messages` (list) and `GET /api/messages/<id>` (detail) on the web board expose every letter under the root to the token holder as the owner — sealed bodies metadata-only.
+- **Audit trail**: visibility-relevant decisions append JSONL to `<root>/audit.log` (`member_kind` changes, `confirm_external`) with who/when/what.
+- **Pairing-token validation point**: `guest` senders must present a `pairing_token` whose sha256 matches the `pairing_tokens` block of `config.json` (constant-time compare; no block configured → guests cannot send). Pairing/rotation flows remain 0.7.6 scope.
+- **Attention tiers (打扰三档 §3.4)**: letters carry `attention` (`decision` 需你拍板 / `report` 报备 / `archive` 存档), default `decision`; reminder presentation lands with the mailbox UI.
+
 ## [0.6.2] — 2026-09-23
 
 Security hardening + closing three long-open v0.5.x items. Default behavior is unchanged: every new capability is opt-in or additive until configured.
