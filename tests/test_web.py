@@ -36,6 +36,13 @@ def board(tmp_path):
 def _req(
     port: int, path: str, *, token: str | None = None, method: str = "GET", body: dict | None = None
 ):
+    status, payload, _headers = _req_with_headers(port, path, token=token, method=method, body=body)
+    return status, payload
+
+
+def _req_with_headers(
+    port: int, path: str, *, token: str | None = None, method: str = "GET", body: dict | None = None
+):
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     payload = json.dumps(body) if body is not None else None
     if payload:
@@ -44,7 +51,8 @@ def _req(
     try:
         conn.request(method, path, body=payload, headers=headers)
         resp = conn.getresponse()
-        return resp.status, resp.read()
+        data = resp.read()
+        return resp.status, data, dict(resp.getheaders())
     finally:
         conn.close()
 
@@ -57,11 +65,19 @@ def test_missing_token_is_401(board):
 
 def test_board_page_served(board):
     port, _ = board
-    status, body = _req(port, "/?token=" + TOKEN)
+    status, body = _req(port, "/board?token=" + TOKEN)
     assert status == 200
     assert b"agent-mailbox" in body
     assert b'data-status="review"' in body  # four lanes present
     assert PAGE.encode() == body
+
+
+def test_root_redirects_to_mail(board):
+    """人=主人：/ 302 进三栏信箱，看板保留在 /board（老板 09-28 反馈入口不显眼）。"""
+    port, _ = board
+    conn_status, _body, headers = _req_with_headers(port, "/?token=" + TOKEN)
+    assert conn_status == 302
+    assert headers.get("Location") == "/mail"
 
 
 def test_api_tasks_lists(board):

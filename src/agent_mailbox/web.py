@@ -514,6 +514,13 @@ class _BoardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _redirect(self, location: str) -> None:
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
     def _json(self, code: int, payload: dict) -> None:
         self._send(
             code,
@@ -551,6 +558,11 @@ class _BoardHandler(BaseHTTPRequestHandler):
             return self._deny()
         path = urlparse(self.path).path
         # v0.7.5 human pages (§4) — same token gate as the board
+        if path == "/":
+            # 人是主人：根路径直接进三栏信箱（旧看板挪 /board，启动日志同改）
+            return self._redirect("/mail")
+        if path == "/board":
+            return self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
         if path == "/mail":
             return self._send(200, MAILBOX_PAGE.encode("utf-8"), "text/html; charset=utf-8")
         if path == "/setup":
@@ -874,7 +886,8 @@ def run_web(port: int = 8643, store: MailStore | None = None) -> None:
         },
     )
     srv = LoopbackServer(("127.0.0.1", port), handler)
-    print(f"[agent-mailbox] board: http://127.0.0.1:{port}/?token={token}", flush=True)
+    print(f"[agent-mailbox] mailbox: http://127.0.0.1:{port}/mail?token={token}", flush=True)
+    print(f"[agent-mailbox] board:   http://127.0.0.1:{port}/board?token={token}", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
