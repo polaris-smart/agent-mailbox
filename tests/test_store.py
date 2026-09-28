@@ -65,12 +65,15 @@ def test_send_broadcast_all(store):
     assert len(sent) == 4
 
 
-def test_send_to_unknown_agent_still_creates_inbox(store):
-    # open registration: sending creates the inbox, receiver registers later
+def test_send_to_unknown_agent_is_rejected_and_creates_nothing(store):
+    # v0.7.6 (A7, HS 裁定②): open "sending creates the inbox" is GONE — an
+    # unregistered recipient is hard-rejected (dead-letter trap + directory
+    # pollution), the receiver must register first. Zero trace on disk.
     store.register("HS")
-    store.send("HS", "NEWBIE", "hi", "welcome")
-    msgs = store.check("NEWBIE")
-    assert len(msgs) == 1
+    with pytest.raises(MailboxError) as ei:
+        store.send("HS", "NEWBIE", "hi", "welcome")
+    assert ei.value.code == "not_found"
+    assert not (store.root / "inbox" / "NEWBIE").exists()
 
 
 def test_send_rejects_bad_status(store):

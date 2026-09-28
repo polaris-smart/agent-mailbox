@@ -9,7 +9,11 @@ from agent_mailbox.store import MailboxError, MailStore
 
 @pytest.fixture()
 def store(tmp_path):
-    return MailStore(root=tmp_path / "mail")
+    st = MailStore(root=tmp_path / "mail")
+    # A7: every task/send participant must be a registered member
+    st.register("WB")
+    st.register("ZC")
+    return st
 
 
 # ------------------------------------------------------------------ create
@@ -178,6 +182,9 @@ def test_reassign_to_same_owner_keeps_card(store):
 
 
 def test_task_list_filters(store):
+
+    store.register("ZC")  # A7: task participants must be registered
+    store.register("WB")
     store.task_create("a", "ZC", "HS")
     store.task_create("b", "WB", "HS")
     store.task_create("c", "ZC", "HS")
@@ -193,6 +200,8 @@ def test_task_list_rejects_bad_filter(store):
 
 
 def test_corrupt_tasks_json_raises(store):
+
+    store.register("ZC")  # A7: task participants must be registered
     store.task_create("t", "ZC", "HS")
     (store.root / "tasks.json").write_text("{broken", encoding="utf-8")
     with pytest.raises(MailboxError):

@@ -38,7 +38,6 @@ from typing import Any
 
 from .webhook import notify_new_messages
 
-AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MSG_STATUSES = ("pending", "acked", "done")
 
 # v0.7.5 身份/权限模型（任务书 §3.3）: three member kinds plus the letter
@@ -51,6 +50,24 @@ ATTENTION_TIERS = ("decision", "report", "archive")  # 需你拍板 / 报备 / �
 ATTENTION_DEFAULT = "decision"  # 默认第一档：只有“需你拍板”值得提醒
 ORIGINS = ("local", "external")
 SENT_LOG_MAX_BYTES = 10 * 1024 * 1024  # rotate sent.log one generation past this
+
+# v0.7.6 (A7): structured error codes surfaced through the MCP _tool_guard.
+ERROR_CODES = (
+    "invalid_field",
+    "not_found",
+    "permission_denied",
+    "payload_too_large",
+    "invalid_json",
+)
+# v0.7.6 (A7, HS 裁定①): letter body cap — checked BEFORE any disk write,
+# sent.log line, or webhook POST, so an oversized body leaves zero trace.
+MAX_BODY_BYTES = 1048576  # 1 MiB, counted in UTF-8 bytes (config-overridable)
+# v0.7.6 (A7, HS 裁定②): member-id whitelist enforced BEFORE the value is
+# used in any path join (anti-traversal); unregistered recipients are hard-
+# rejected by default (config `unregistered_recipients: warn` to downgrade).
+# v0.7.6 (A7): single authoritative member-id slug whitelist (was the
+# hyphen-only pattern at module top — dot now legal per task brief).
+AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 # v0.5.0 delivery-side duplicate suppression (design A) + lifecycle windows.
 # 铁1: reap_ttl must stay strictly below dedup_ttl — a reclaim window at or
@@ -410,7 +427,17 @@ _thread_lock = threading.Lock()
 
 
 class MailboxError(ValueError):
-    """Raised on invalid agent ids, unknown mailboxes, or corrupt state."""
+    """Raised on invalid agent ids, unknown mailboxes, or corrupt state.
+
+    v0.7.6 (A7): carries an optional machine-readable ``code`` so the MCP
+    layer can surface structured errors (field + valid values + hint) instead
+    of opaque ``Error executing tool`` strings. Legacy ``raise MailboxError(msg)``
+    callers are untouched — ``code`` defaults to ``None``.
+    """
+
+    def __init__(self, msg: str, code: str | None = None) -> None:
+        super().__init__(msg)
+        self.code = code
 
 
 def _now_iso() -> str:
@@ -497,8 +524,15 @@ class MailStore:
 
     @staticmethod
     def _validate_id(agent_id: str) -> None:
-        if not AGENT_ID_RE.match(agent_id or ""):
-            raise MailboxError(f"invalid agent id {agent_id!r}: use [A-Za-z0-9_-], max 64 chars")
+        if (
+            not AGENT_ID_RE.match(agent_id or "")
+            or ".." in (agent_id or "")
+        ):
+            raise MailboxError(
+                f"invalid agent id {agent_id!r}: use [A-Za-z0-9][A-Za-z0-9._-], max 64 chars; "
+                "no separators, no '..'",
+                code="invalid_field",
+            )
 
     def _read_msg(self, path: Path) -> dict[str, Any]:
         try:
@@ -671,14 +705,39 @@ class MailStore:
         ``pairing_token`` or the send is rejected.
         """
         if status not in MSG_STATUSES:
-            raise MailboxError(f"status must be one of {MSG_STATUSES}")
+            raise MailboxError(f"status must be one of {MSG_STATUSES}", code="invalid_field")
         if origin not in ORIGINS:
-            raise MailboxError(f"origin must be one of {ORIGINS}")
+            raise MailboxError(f"origin must be one of {ORIGINS}", code="invalid_field")
         if attention not in ATTENTION_TIERS:
-            raise MailboxError(f"attention must be one of {ATTENTION_TIERS} (需你拍板/报备/存档)")
-        recipients = self._resolve_recipients(to)
-        if not recipients:
-            raise MailboxError("no recipients resolved")
+            raise MailboxError(
+                f"attention must be one of {ATTENTION_TIERS} (需你拍板/报备/存档)",
+                code="invalid_field",
+            )
+        # v0.7.6 (A7, HS 裁定①): body cap BEFORE any disk write / sent.log /
+        # webhook — an oversized body leaves zero trace. Default 1 MiB
+        # (UTF-8 bytes), overridable via config.json `max_body_bytes`.
+        body_bytes = len(body.encode("utf-8"))
+        max_body = MAX_BODY_BYTES
+        try:
+            cfg = json.loads((self.root / "config.json").read_text(encoding="utf-8"))
+            max_body = int(cfg.get("max_body_bytes", MAX_BODY_BYTES))
+        except FileNotFoundError:
+            pass
+        except (OSError, json.JSONDecodeError, ValueError):
+            pass  # bad config values fail loudly elsewhere (load_window_config)
+        if body_bytes > max_body:
+            raise MailboxError(
+                f"letter body too large: limit {max_body} bytes, actual {body_bytes} bytes "
+                "(UTF-8). Nothing was written. Trim the body, split it into several "
+                "letters, or pass large content as a link/pointer instead.",
+                code="payload_too_large",
+            )
+        recipients, unregistered_warns = self._resolve_recipients(to)
+        if not recipients and not unregistered_warns:
+            raise MailboxError(
+                "no recipients resolved",
+                code="not_found",
+            )
         # 配对令牌校验点 (§3.3 发信权限): cross-device (guest) senders need a
         # valid pairing token; local members send as always.
         if self.kind_of(from_id) == "guest" and not pairing_token_valid(self.root, pairing_token):
@@ -746,6 +805,9 @@ class MailStore:
         if not full:
             # every recipient deduped: zero side effects — no audit line, no
             # webhook, not even sent.log rotation bookkeeping (铁2 path ①).
+            # (warn-mode unregistered names still surface — they are caller-
+            # visible metadata, not a side effect on any inbox.)
+            out.extend(unregistered_warns)
             return out
         # append-only audit trail inside the lock: one JSONL line per mail
         # that really hit disk. A webhook notification without a sent.log
@@ -816,6 +878,10 @@ class MailStore:
                 self.on_delivered(sampling_msgs)
             except Exception as exc:  # noqa: BLE001 — 钩子失败绝不上抛（落箱主链路铁律）
                 logging.getLogger(__name__).warning("on_delivered hook failed: %s", exc)
+        # v0.7.6 (A7, HS 裁定② warn 模式): unregistered recipients are never
+        # delivered (no directory created) — surface them per-recipient so the
+        # sender sees exactly which names did not resolve.
+        out.extend(unregistered_warns)
         return out
 
     def _dedup_candidates(self, agent_id: str, msg_hash: str) -> list[Path]:
@@ -1037,18 +1103,60 @@ class MailStore:
             if n > limit
         ]
 
-    def _resolve_recipients(self, to: str | list[str]) -> list[str]:
+    def _resolve_recipients(self, to: str | list[str]) -> tuple[list[str], list[dict[str, Any]]]:
+        """Resolve ``to`` to registered member ids.
+
+        v0.7.6 (A7, HS 裁定②): an unregistered recipient is **rejected by
+        default** — a silently created ``inbox/<NOSUCH>/`` directory is both
+        a dead-letter trap (sender thinks it arrived) and a path-pollution /
+        traversal surface. config ``unregistered_recipients: warn`` downgrades
+        to a per-recipient warning (audited, letter NOT delivered, no
+        directory created). Broadcast ``all`` only touches registry ids and
+        is unaffected. Returns ``(recipients, warnings)``.
+        """
+        reg = self._read_registry()
         if to == "all":
-            reg = self._read_registry()
-            return sorted(reg["agents"].keys())
+            return sorted(reg["agents"].keys()), []
         if isinstance(to, str):
             to = [to]
+        mode = "reject"
+        try:
+            cfg = json.loads((self.root / "config.json").read_text(encoding="utf-8"))
+            mode = str(cfg.get("unregistered_recipients", "reject")).strip().lower()
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            pass
+        if mode not in ("reject", "warn"):
+            mode = "reject"
         seen: list[str] = []
+        warns: list[dict[str, Any]] = []
+        # legacy human ids (owner/人) are always legal recipients — the human
+        # is first-class and must not be required to "register" to get mail.
+        # wake.json 的 agents 名册 = 第二合法成员源（锚 C 信 HS 口径）：codex
+        # 等命令式唤醒目标登记在那边，不在 registry.json。
+        registered = set(reg["agents"].keys()) | OWNER_IDS
+        try:
+            wake_cfg = json.loads((self.root / "wake.json").read_text(encoding="utf-8"))
+            registered |= set((wake_cfg.get("agents") or {}).keys())
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            pass
         for t in to:
             self._validate_id(t)
-            if t not in seen:
-                seen.append(t)
-        return seen
+            if t in seen:
+                continue
+            if t not in registered:
+                if mode == "reject":
+                    candidates = sorted(registered)[:5]
+                    raise MailboxError(
+                        f"recipient {t!r} is not a registered member — the letter would "
+                        f"never be read. Registered members include: {candidates}. "
+                        "Register first (mailbox_register) or fix the id.",
+                        code="not_found",
+                    )
+                self.audit("unregistered_recipient", by=t, detail="warn-mode: letter not delivered")
+                warns.append({"to": t, "warn": "unregistered"})
+                continue
+            seen.append(t)
+        return seen, warns
 
     def check(self, agent_id: str, *, mark: bool = True) -> list[dict[str, Any]]:
         """Fetch pending messages; by default they become ``acked``.
@@ -1433,7 +1541,7 @@ class MailStore:
 
     def set_status(self, agent_id: str, msg_id: str, status: str) -> dict[str, Any]:
         if status not in MSG_STATUSES:
-            raise MailboxError(f"status must be one of {MSG_STATUSES}")
+            raise MailboxError(f"status must be one of {MSG_STATUSES}", code="invalid_field")
         self._validate_id(agent_id)
         if "/" in msg_id or ".." in msg_id or not msg_id.endswith(".json") is False:
             pass  # msg_id is a bare id; validate below

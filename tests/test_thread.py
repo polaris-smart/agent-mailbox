@@ -19,7 +19,12 @@ def store(tmp_path, monkeypatch):
     root = tmp_path / "mail"
     monkeypatch.setenv("AGENT_MAIL_HOME", str(root))
     server_mod._store = None  # the server caches one store — reset per test
-    return MailStore(root=root)
+    st = MailStore(root=root)
+    # A7: every send participant must be a registered member — register the
+    # file's full cast here once instead of sprinkling register() per test.
+    for _mid in ("HS", "ZC"):
+        st.register(_mid)
+    return st
 
 
 # --------------------------------------------------------------- mint/inherit
@@ -207,7 +212,6 @@ def test_no_ghost_warning_below_threshold(store, monkeypatch):
 
 def test_server_mailbox_thread_tool(store, monkeypatch):
     monkeypatch.setenv("AGENT_MAIL_ID", "HS")
-    store.register("HS")
     o = store.send("ZC", "HS", "mcp replay", "1")[0]
     store.send("HS", "ZC", "Re: mcp replay", "2", reply_to=o["id"])
     out = mailbox_thread(o["thread_id"])

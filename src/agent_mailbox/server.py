@@ -11,6 +11,7 @@ Run:  ``agent-mailbox``            (stdio transport, for host apps)
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import hmac
 import logging
@@ -164,6 +165,46 @@ def _verify_identity(agent_id: str) -> None:
         raise MailboxError("identity mismatch")
 
 
+def _tool_guard(fn):
+    """v0.7.6 (A7): run one MCP tool body, converting ``MailboxError`` into a
+    structured payload instead of the opaque ``Error executing tool …`` bubble
+    (HS 硬样本: ``mailbox_send(attention="info")`` used to leak nothing at all).
+
+    The returned dict always carries ``error_code`` plus human-readable detail;
+    internal paths and credential material are never echoed (whitelist-tested
+    in ``tests/test_error_surface.py``). Tools that succeed return the callee's
+    value unchanged.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except MailboxError as exc:
+            code = getattr(exc, "code", None)
+            # ① Legacy raises (no code) re-raise untouched: corrupt-config /
+            # fail-loud class errors must never be swallowed into a return
+            # value (t-44 iron law — "想关没关成" beats "继续发").
+            # ② permission_denied / not_found also re-raise: the caller must
+            # see a *failure*, never a success-shaped dict it could mistake
+            # for data (PR-B semantics preserved).
+            # ③ Only explicit A7 input-validation codes convert to the
+            # structured payload (field + valid values + hint).
+            if code is None or code in ("permission_denied", "not_found"):
+                raise
+            detail = str(exc)
+            for secret in (os.environ.get("AGENT_MAIL_TOKEN", ""),):
+                if secret and secret in detail:
+                    detail = detail.replace(secret, "••••")
+            return {
+                "error": True,
+                "error_code": code,
+                "detail": detail,
+            }
+
+    return wrapper
+
+
 def _read_scope(me: str, target: str) -> None:
     """§3.3 visibility defaults, enforced at the tool layer.
 
@@ -185,7 +226,8 @@ def _read_scope(me: str, target: str) -> None:
         "agent_cross_read"
     ):
         raise MailboxError(
-            f"permission denied: {me!r} ({kind}) may only read its own mailbox, not {target!r}'s"
+            f"permission denied: {me!r} ({kind}) may only read its own mailbox, not {target!r}'s",
+            code="permission_denied",
         )
 
 
@@ -202,6 +244,7 @@ def _effective_reader(me: str, target: str) -> str:
 
 
 @server.tool()
+@_tool_guard
 def mailbox_register(agent_id: str, owner: str = "", description: str = "", kind: str = "") -> dict:
     """Register this member and claim its mailbox. Idempotent — safe to call again.
 
@@ -214,6 +257,7 @@ def mailbox_register(agent_id: str, owner: str = "", description: str = "", kind
 
 
 @server.tool()
+@_tool_guard
 def mailbox_send(
     to: str | list[str],
     subject: str,
@@ -266,6 +310,7 @@ def mailbox_send(
 
 
 @server.tool()
+@_tool_guard
 def mailbox_check(agent_id: str = "", mark: bool = True) -> dict:
     """Fetch your pending messages (they become acked). Call at session start.
 
@@ -294,6 +339,7 @@ def mailbox_check(agent_id: str = "", mark: bool = True) -> dict:
 
 
 @server.tool()
+@_tool_guard
 def mailbox_reply(msg_id: str, body: str, agent_id: str = "") -> dict:
     """Reply to a message thread. Routes to the original sender automatically."""
     me = agent_id or os.environ.get("AGENT_MAIL_ID", "")
@@ -326,6 +372,7 @@ def mailbox_reply(msg_id: str, body: str, agent_id: str = "") -> dict:
 
 
 @server.tool()
+@_tool_guard
 def mailbox_list(agent_id: str = "", status: str | None = None, thread: str | None = None) -> dict:
     """List messages in your mailbox, optionally filtered by status and/or thread.
 
@@ -348,6 +395,7 @@ def mailbox_list(agent_id: str = "", status: str | None = None, thread: str | No
 
 
 @server.tool()
+@_tool_guard
 def mailbox_thread(thread: str) -> dict:
     """Pull one thread in time order across every agent (inbox + archive).
 
@@ -405,6 +453,7 @@ def mailbox_thread(thread: str) -> dict:
 
 
 @server.tool()
+@_tool_guard
 def mailbox_done(msg_id: str, agent_id: str = "") -> dict:
     """Mark a message as handled. Done messages can be archived."""
     me = agent_id or os.environ.get("AGENT_MAIL_ID", "")
@@ -435,6 +484,7 @@ def mailbox_confirm_external(msg_id: str, actor_id: str = "") -> dict:
 
 
 @server.tool()
+@_tool_guard
 def mailbox_broadcast(subject: str, body: str, from_id: str = "", dedupe: bool = True) -> dict:
     """Broadcast to every registered agent (including boss). dedupe=True
     (default) suppresses semantically identical re-broadcasts per recipient
@@ -444,7 +494,7 @@ def mailbox_broadcast(subject: str, body: str, from_id: str = "", dedupe: bool =
         raise MailboxError("from_id required (or set AGENT_MAIL_ID env)")
     _verify_identity(frm)
     if _store_instance().kind_of(frm) == "guest":
-        raise MailboxError("permission denied: guest members cannot broadcast")
+        raise MailboxError("permission denied: guest members cannot broadcast", code="permission_denied")
     sent = _store_instance().send(frm, "all", subject, body, priority="high", dedupe=dedupe)
     delivered = sum(1 for e in sent if not e.get("deduped"))
     return {"delivered": sent, "count": delivered}

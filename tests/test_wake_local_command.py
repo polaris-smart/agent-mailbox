@@ -261,6 +261,7 @@ def test_cmd_run_adapter_cli_override(env, monkeypatch):
     from agent_mailbox import wake as wk
 
     root, st = env
+    st.register("codex")  # A7: recipients must be registered (or in wake.json agents)
     st.send("HS", "codex", "wake codex", "process me")
     # 模拟共享 wake.json：顶层 adapter=hermes（HS 的默认）
     (root / "wake.json").write_text(

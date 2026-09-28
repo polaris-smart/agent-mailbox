@@ -29,6 +29,8 @@ def root(tmp_path):
 def store(root):
     st = MailStore(root=root)
     st.register("ZC")  # one local agent so the roster is non-trivial
+    st.register("HS")  # A7: unregistered recipients are hard-rejected — the
+    # board/web flows address HS, so the roster must know it.
     return st
 
 
@@ -118,7 +120,7 @@ def test_empty_mailbox_payload_shapes_empty_state(store):
     assert out["owner"] == "boss"
     assert out["letters"] == [] and out["drafts"] == []
     assert out["counts"]["inbox"] == 0
-    assert {m["id"] for m in out["members"]} == {"boss", "ZC"}
+    assert {m["id"] for m in out["members"]} == {"boss", "ZC", "HS"}  # A7: HS 注册进名册
     assert out["members"][0]["dot"] == "idle"  # no scan yet → 未实测, never guessed
 
 
@@ -260,6 +262,7 @@ def test_unknown_letter_action_is_404(board):
 
 def test_undelivered_tag_comes_from_cached_report(store, board, monkeypatch):
     """断链成员的信被标「未送达」；没扫过时绝不乱标（不猜）。"""
+    store.register("WB")  # A7: WB 需在册才能收信（断链标签测的是扫描结论，非注册态）
     store.send("boss", "WB", "will it arrive?", "x")
     payload = _mailbox_payload(store)
     assert payload["letters"][0]["undeliverable"] is False  # 未扫描 → 不猜
@@ -295,7 +298,8 @@ def test_undelivered_tag_comes_from_cached_report(store, board, monkeypatch):
     letter = payload["letters"][0]
     assert letter["undeliverable"] is True  # WB 两条通道全断
     assert payload["counts"]["undelivered"] == 1
-    assert payload["members"][0]["id"] == "WB" and payload["members"][0]["dot"] == "bad"
+    wb_member = next(m for m in payload["members"] if m["id"] == "WB")
+    assert wb_member["dot"] == "bad"
 
 
 # ---------------------------------------------------------- visibility (§4.3)
@@ -350,6 +354,8 @@ def test_visibility_rejects_unknown_and_non_bool(store, board):
 
 def test_agent_cross_read_switch_wires_tool_layer(root, store, monkeypatch):
     """§4.3 开关是真的：开了 agent_cross_read，agent 可读他人信箱；默认拒绝。"""
+    store.register("A")  # A7: recipients must be registered members
+    store.register("B")
     store.send("A", "B", "hello b", "x")
     monkeypatch.setenv("AGENT_MAIL_HOME", str(root))
     monkeypatch.setenv("AGENT_MAIL_ID", "A")
@@ -463,7 +469,7 @@ def test_setup_summary_endpoint(store, board, monkeypatch):
     monkeypatch.setattr(web, "_REPORTS", {str(store.root): {"at": 10**12, "report": FAKE_REPORT}})
     status, out = _req(board, "/api/setup-summary")
     assert status == 200
-    assert out["registered"] == 1 and out["discovered"] == 2
+    assert out["registered"] == 2 and out["discovered"] == 2  # A7: HS 注册进名册
     assert out["model"] == {
         "auto": False,
         "label": "不自动处理来信",

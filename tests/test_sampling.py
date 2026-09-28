@@ -61,6 +61,14 @@ def mailroot(tmp_path, monkeypatch):
     srv._binding = None
     srv._sampling_registry.reset()
     srv._sampling_notifier.reset()
+    # A7: seed the roster once per root — every sampling test addresses HS/WB
+    (tmp_path / "registry.json").write_text(
+        json.dumps(
+            {"agents": {"HS": {"owner": "", "description": ""}, "WB": {"owner": "", "description": ""}}},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     yield tmp_path
     srv._store = None
     srv._binding = None
@@ -1181,6 +1189,7 @@ def test_stale_gate_degrades_on_reconnect_notify(mailroot):
     """补钉⑤ 降级路径：旧闸门 loop 已死且队列有滞留信（进程硬杀的等价形态）
     → 新连接首个 notify 触发重建，滞留信逐条落 degrade 审计、不发出。"""
     seed = MailStore(mailroot)
+    seed.register("WB")  # A7: recipients must be registered members
     stale_mid = seed.send("HS", "WB", "hard-killed-queue", "s", dedupe=False)[0]["id"]
     dead_loop = asyncio.new_event_loop()
     dead_loop.close()
