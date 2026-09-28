@@ -107,6 +107,7 @@ def _wake_cfg(root):
 
 # ------------------------------------------------------- member kinds (§3.3)
 
+
 def test_kind_defaults_owner_ids_and_explicit(store):
     assert store.kind_of("boss") == "owner"  # legacy human id
     assert store.kind_of("A") == "agent"  # local agent default
@@ -132,6 +133,7 @@ def test_legacy_registry_card_without_kind_still_works(root):
 
 
 # ------------------------------------------- 判据: agent 看不到他人信件 (API 拒绝)
+
 
 def test_agent_reading_another_mailbox_is_rejected(store, monkeypatch):
     store.send("A", "B", "for b", "b-body")
@@ -166,6 +168,7 @@ def test_unset_caller_id_keeps_legacy_local_trust(store, monkeypatch):
 
 
 # ---------------------------------------------------- 密封信 (sealed, §3.3)
+
 
 def test_sealed_body_readable_only_by_recipient_tool(store, monkeypatch):
     sent = store.send("A", "B", "credentials", "SECRET-BODY", sealed=True)
@@ -219,13 +222,12 @@ def test_web_unknown_letter_is_structured_404(store, board):
 
 # --------------------------------- 判据: 外部来源信不触发动作 (origin=external)
 
+
 def test_external_letter_lands_but_no_webhook_no_wake(root, monkeypatch):
     st = MailStore(root=root)
     st.register("B")
     notified = []
-    monkeypatch.setattr(
-        store_mod, "notify_new_messages", lambda msgs, **kw: notified.extend(msgs)
-    )
+    monkeypatch.setattr(store_mod, "notify_new_messages", lambda msgs, **kw: notified.extend(msgs))
     ext = st.send("OUTSIDE", "B", "external ping", "stranger body", origin="external")
     loc = st.send("A", "B", "local ping", "local body")  # control: local still POSTs
     assert [m["subject"] for m in notified] == ["local ping"]
@@ -266,6 +268,7 @@ def test_send_rejects_unknown_origin_and_attention(store):
 
 # ------------------------------------------------------- 配对令牌 (guest 发信)
 
+
 def test_guest_send_requires_valid_pairing_token(root):
     st = MailStore(root=root)
     st.register("G1", kind="guest")
@@ -302,6 +305,7 @@ def test_guest_cannot_broadcast(root, monkeypatch):
 
 # ---------------------------------------------------- 可见性变更留痕 (audit)
 
+
 def test_visibility_changes_are_audited(root):
     st = MailStore(root=root)
     st.register("B")
@@ -321,6 +325,7 @@ def test_register_without_kind_writes_no_audit(root):
 
 # ---------------------------------------------------- 打扰三档 (§3.4 元数据)
 
+
 def test_attention_tiers_default_and_explicit(store):
     assert ATTENTION_TIERS == ("decision", "report", "archive")
     normal = store.send("A", "B", "t1", "x")[0]
@@ -330,6 +335,7 @@ def test_attention_tiers_default_and_explicit(store):
 
 
 # --------------------------------------------------------- agent 线程可见范围
+
 
 def test_agent_thread_view_scoped_to_own_letters(store, monkeypatch):
     t1 = store.send("A", "B", "team", "1")[0]["thread_id"]
@@ -343,6 +349,7 @@ def test_agent_thread_view_scoped_to_own_letters(store, monkeypatch):
 
 
 # ------------------------------------------------------- 旧信兼容 (无新字段)
+
 
 def test_legacy_letter_without_new_fields_flows_as_before(root, monkeypatch):
     st = MailStore(root=root)

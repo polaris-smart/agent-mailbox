@@ -181,13 +181,11 @@ def _read_scope(me: str, target: str) -> None:
     if not me or me == target:
         return
     kind = _store_instance().kind_of(me)
-    if (
-        kind in ("agent", "guest")
-        and not load_visibility(_store_instance().root).get("agent_cross_read")
+    if kind in ("agent", "guest") and not load_visibility(_store_instance().root).get(
+        "agent_cross_read"
     ):
         raise MailboxError(
-            f"permission denied: {me!r} ({kind}) may only read its own mailbox, "
-            f"not {target!r}'s"
+            f"permission denied: {me!r} ({kind}) may only read its own mailbox, not {target!r}'s"
         )
 
 
@@ -392,8 +390,7 @@ def mailbox_thread(thread: str) -> dict:
         if not scoped:
             return {
                 "error": (
-                    f"permission denied: {me!r} ({st.kind_of(me)}) has no letters "
-                    "on this thread"
+                    f"permission denied: {me!r} ({st.kind_of(me)}) has no letters on this thread"
                 ),
                 "thread_id": view.get("thread_id"),
                 "matched_by": view.get("matched_by", "miss"),

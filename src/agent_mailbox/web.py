@@ -300,6 +300,7 @@ def _brand_dir() -> Path | None:
 # members' letters (§3.3 人的动作边界), so monitoring read/star state lives in
 # our own <root>/web_state.json instead of in the letters themselves.
 
+
 def _load_web_state(root: str | os.PathLike[str]) -> dict:
     try:
         data = json.loads((Path(root) / "web_state.json").read_text(encoding="utf-8"))
@@ -472,7 +473,9 @@ def _mailbox_payload(store: MailStore) -> dict:
     }
 
 
-_MAIL_ACTION_RE = re.compile(r"^/api/mail/([^/]+)/(read|unread|archive|star|unstar|task|confirm-external)$")
+_MAIL_ACTION_RE = re.compile(
+    r"^/api/mail/([^/]+)/(read|unread|archive|star|unstar|task|confirm-external)$"
+)
 
 
 # Brand assets under the repo's assets/brand/: explicit allow-list only (no
@@ -580,7 +583,7 @@ class _BoardHandler(BaseHTTPRequestHandler):
             )
         if path.startswith("/api/messages/"):
             try:
-                m = self.store.find_letter(path[len("/api/messages/"):])
+                m = self.store.find_letter(path[len("/api/messages/") :])
             except MailboxError as e:
                 return self._json(404, {"error": str(e)})
             return self._json(200, {"message": redact_sealed(m)})
@@ -692,9 +695,7 @@ class _BoardHandler(BaseHTTPRequestHandler):
                 return self._json(400, {"error": "信正文不能为空（写一句再发）"})
             attention = str(data.get("attention") or "decision")
             if attention not in ATTENTION_TIERS:
-                return self._json(
-                    400, {"error": f"attention must be one of {ATTENTION_TIERS}"}
-                )
+                return self._json(400, {"error": f"attention must be one of {ATTENTION_TIERS}"})
             sent = store.send(
                 OWNER_ID,
                 to,
@@ -809,7 +810,8 @@ class _BoardHandler(BaseHTTPRequestHandler):
         if action == "archive":
             if not mine:
                 return self._json(
-                    403, {"error": "只读监看：agent 之间的信不能由人归档；要发话就写一封信或派任务卡"}
+                    403,
+                    {"error": "只读监看：agent 之间的信不能由人归档；要发话就写一封信或派任务卡"},
                 )
             store.set_status(owner, msg_id, "done")
             n = store.archive_done(owner)

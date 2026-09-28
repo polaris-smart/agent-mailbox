@@ -72,6 +72,7 @@ def _req(
 
 # ---------------------------------------------------------------- pages (§4)
 
+
 def test_mailbox_page_structure(board):
     status, _ = _req(board, "/mail")
     assert status == 200
@@ -94,8 +95,12 @@ def test_setup_and_visibility_pages_structure():
     assert "发现你的智能体" in SETUP_PAGE and "测一下" in SETUP_PAGE and "完事" in SETUP_PAGE
     assert "不自动处理来信" in SETUP_PAGE  # 模型是可选功能，不是必答题
     assert "全部测一遍" in SETUP_PAGE  # 结果+下一步成对出现的承载表
-    for key in ("owner_sees_all", "agent_cross_read", "sealed_in_human_view",
-                "external_auto_execute"):
+    for key in (
+        "owner_sees_all",
+        "agent_cross_read",
+        "sealed_in_human_view",
+        "external_auto_execute",
+    ):
         assert key in VISIBILITY_PAGE
     assert "发信权限" in VISIBILITY_PAGE and "改动会记录在案" in VISIBILITY_PAGE
 
@@ -106,6 +111,7 @@ def test_human_pages_require_token(board):
 
 
 # ------------------------------------------------------- mailbox API (§4.2)
+
 
 def test_empty_mailbox_payload_shapes_empty_state(store):
     out = _mailbox_payload(store)
@@ -134,12 +140,15 @@ def test_first_letter_flow_lands_in_inbox(store, board):
 
 def test_send_rejects_empty_body_and_bad_attention(board):
     assert _req(board, "/api/mail/send", method="POST", body={"to": "ZC", "body": "  "})[0] == 400
-    assert _req(
-        board,
-        "/api/mail/send",
-        method="POST",
-        body={"to": "ZC", "body": "x", "attention": "loud"},
-    )[0] == 400
+    assert (
+        _req(
+            board,
+            "/api/mail/send",
+            method="POST",
+            body={"to": "ZC", "body": "x", "attention": "loud"},
+        )[0]
+        == 400
+    )
 
 
 def test_sealed_letter_is_metadata_only_in_human_view(store, board):
@@ -202,9 +211,7 @@ def test_read_unread_and_archive_own_letter(store, board):
 
 def test_task_from_letter_wakes_assignee(store, board):
     mid = store.send("HS", "boss", "please handle this", "body")[0]["id"]
-    status, out = _req(
-        board, f"/api/mail/{mid}/task", method="POST", body={"assignee": "ZC"}
-    )
+    status, out = _req(board, f"/api/mail/{mid}/task", method="POST", body={"assignee": "ZC"})
     assert status == 200 and out["task"]["assignee"] == "ZC"
     assert out["task"]["title"] == "please handle this"
     # 信→任务卡后承办人被自动提醒（复用看板既有机制，不回退）
@@ -216,12 +223,15 @@ def test_task_requires_assignee(board):
 
 
 def test_drafts_save_list_delete(store, board):
-    assert _req(
-        board,
-        "/api/mail/drafts",
-        method="POST",
-        body={"to": "ZC", "subject": "草稿", "body": "wip"},
-    )[0] == 200
+    assert (
+        _req(
+            board,
+            "/api/mail/drafts",
+            method="POST",
+            body={"to": "ZC", "subject": "草稿", "body": "wip"},
+        )[0]
+        == 200
+    )
     payload = _mailbox_payload(store)
     assert payload["counts"]["drafts"] == 1 and payload["drafts"][0]["subject"] == "草稿"
     did = payload["drafts"][0]["id"]
@@ -230,9 +240,7 @@ def test_drafts_save_list_delete(store, board):
 
 
 def test_add_member_endpoint_audits_kind(store, board):
-    status, out = _req(
-        board, "/api/members", method="POST", body={"id": "NEWBOT", "kind": "guest"}
-    )
+    status, out = _req(board, "/api/members", method="POST", body={"id": "NEWBOT", "kind": "guest"})
     assert status == 200 and out["member"]["kind"] == "guest"
     assert "NEWBOT" in store.registry()["agents"]
     assert any(e["action"] == "member_kind" for e in store.audit_entries())
@@ -272,8 +280,12 @@ def test_undelivered_tag_comes_from_cached_report(store, board, monkeypatch):
                                 {"type": "port", "status": "broken", "reason": "断"},
                             ],
                         },
-                        {"member": "ZC", "kind": "cli", "connected": True,
-                         "channels": [{"type": "command", "status": "ok"}]},
+                        {
+                            "member": "ZC",
+                            "kind": "cli",
+                            "connected": True,
+                            "channels": [{"type": "command", "status": "ok"}],
+                        },
                     ]
                 },
             }
@@ -288,12 +300,13 @@ def test_undelivered_tag_comes_from_cached_report(store, board, monkeypatch):
 
 # ---------------------------------------------------------- visibility (§4.3)
 
+
 def test_visibility_defaults_match_spec(store, board):
     status, out = _req(board, "/api/visibility")
     assert status == 200
     assert out["visibility"] == {
-        "owner_sees_all": True,       # 主人全可见
-        "agent_cross_read": False,    # agent 之间互看＝关
+        "owner_sees_all": True,  # 主人全可见
+        "agent_cross_read": False,  # agent 之间互看＝关
         "sealed_in_human_view": False,  # 密封信只元数据（硬锁）
         "external_auto_execute": False,  # 外部信不自动执行
     }
@@ -302,9 +315,7 @@ def test_visibility_defaults_match_spec(store, board):
 
 
 def test_visibility_post_persists_and_audits(store, board):
-    status, out = _req(
-        board, "/api/visibility", method="POST", body={"agent_cross_read": True}
-    )
+    status, out = _req(board, "/api/visibility", method="POST", body={"agent_cross_read": True})
     assert status == 200 and out["visibility"]["agent_cross_read"] is True
     # 开关状态有落点：config.json 可 grep
     cfg = json.loads((store.root / "config.json").read_text(encoding="utf-8"))
@@ -318,26 +329,22 @@ def test_visibility_post_persists_and_audits(store, board):
 
 
 def test_visibility_noop_change_writes_nothing(store, board):
-    assert _req(
-        board, "/api/visibility", method="POST", body={"owner_sees_all": True}
-    )[0] == 200  # already the default
+    assert (
+        _req(board, "/api/visibility", method="POST", body={"owner_sees_all": True})[0] == 200
+    )  # already the default
     assert not (store.root / "config.json").exists()
     assert store.audit_entries("visibility_change") == []
 
 
 def test_visibility_sealed_switch_is_hard_locked(store, board):
-    status, out = _req(
-        board, "/api/visibility", method="POST", body={"sealed_in_human_view": True}
-    )
+    status, out = _req(board, "/api/visibility", method="POST", body={"sealed_in_human_view": True})
     assert status == 400 and "硬规则" in out["error"]
     assert load_visibility(store.root)["sealed_in_human_view"] is False
 
 
 def test_visibility_rejects_unknown_and_non_bool(store, board):
     assert _req(board, "/api/visibility", method="POST", body={"nope": True})[0] == 400
-    assert _req(
-        board, "/api/visibility", method="POST", body={"agent_cross_read": "yes"}
-    )[0] == 400
+    assert _req(board, "/api/visibility", method="POST", body={"agent_cross_read": "yes"})[0] == 400
     assert _req(board, "/api/visibility", method="POST", body={})[0] == 400
 
 
@@ -360,9 +367,7 @@ def test_external_auto_execute_switch_wires_wake(root, store, monkeypatch):
 
     store.register("B")
     notified = []
-    monkeypatch.setattr(
-        store_mod, "notify_new_messages", lambda msgs, **kw: notified.extend(msgs)
-    )
+    monkeypatch.setattr(store_mod, "notify_new_messages", lambda msgs, **kw: notified.extend(msgs))
     ext = store.send("OUTSIDE", "B", "external", "x", origin="external")
     cfg = WakeConfig(
         {
@@ -399,15 +404,17 @@ FAKE_REPORT = {
             "member": "ZC",
             "kind": "cli",
             "connected": True,
-            "channels": [{"type": "command", "status": "ok", "value": "/usr/bin/zcode",
-                          "source": "PATH"}],
+            "channels": [
+                {"type": "command", "status": "ok", "value": "/usr/bin/zcode", "source": "PATH"}
+            ],
         },
         {
             "member": "WB",
             "kind": "app",
             "connected": True,
-            "channels": [{"type": "webhook", "status": "broken", "reason": "断",
-                          "next_step": "起服务"}],
+            "channels": [
+                {"type": "webhook", "status": "broken", "reason": "断", "next_step": "起服务"}
+            ],
         },
     ],
     "supported": ["claude", "codex"],
@@ -435,8 +442,14 @@ def test_test_endpoint_returns_result_plus_next_step(store, board, monkeypatch):
 
     def fake_test(root, member, timeout):
         calls.append((str(root), member, timeout))
-        return {"member": member, "ok": False, "stage": "timeout", "elapsed_s": 15.0,
-                "reason": "没等到回执", "next_step": "修一下唤醒通道"}
+        return {
+            "member": member,
+            "ok": False,
+            "stage": "timeout",
+            "elapsed_s": 15.0,
+            "reason": "没等到回执",
+            "next_step": "修一下唤醒通道",
+        }
 
     monkeypatch.setattr(web, "_run_test_letter", fake_test)
     status, out = _req(board, "/api/test", method="POST", body={"member": "WB"})
@@ -452,14 +465,16 @@ def test_setup_summary_endpoint(store, board, monkeypatch):
     assert status == 200
     assert out["registered"] == 1 and out["discovered"] == 2
     assert out["model"] == {
-        "auto": False, "label": "不自动处理来信",
+        "auto": False,
+        "label": "不自动处理来信",
         "note": "可选功能——收发信件本身不需要任何模型",
     }
     assert [b["member"] for b in out["broken"]] == ["WB"]
     assert out["wake"]["configured"] is False  # 未装 wake.json → 如实报未安装
     (store.root / "wake.json").write_text(
-        json.dumps({"agent_id": "ZC", "adapter": "hermes",
-                    "webhook": {"url": "http://127.0.0.1:1/hook"}}),
+        json.dumps(
+            {"agent_id": "ZC", "adapter": "hermes", "webhook": {"url": "http://127.0.0.1:1/hook"}}
+        ),
         encoding="utf-8",
     )
     _, out = _req(board, "/api/setup-summary")

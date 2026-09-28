@@ -247,9 +247,7 @@ def load_pairing_tokens(root: Path) -> dict[str, str]:
         if not isinstance(name, str) or not name or len(name) > 64:
             raise MailboxError(f"config.json: pairing_tokens name {name!r} is invalid")
         if not isinstance(token_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", token_hash):
-            raise MailboxError(
-                f"config.json: pairing_tokens[{name}] must be a sha256 hex digest"
-            )
+            raise MailboxError(f"config.json: pairing_tokens[{name}] must be a sha256 hex digest")
         out[name] = token_hash
     return out
 
@@ -677,17 +675,13 @@ class MailStore:
         if origin not in ORIGINS:
             raise MailboxError(f"origin must be one of {ORIGINS}")
         if attention not in ATTENTION_TIERS:
-            raise MailboxError(
-                f"attention must be one of {ATTENTION_TIERS} (需你拍板/报备/存档)"
-            )
+            raise MailboxError(f"attention must be one of {ATTENTION_TIERS} (需你拍板/报备/存档)")
         recipients = self._resolve_recipients(to)
         if not recipients:
             raise MailboxError("no recipients resolved")
         # 配对令牌校验点 (§3.3 发信权限): cross-device (guest) senders need a
         # valid pairing token; local members send as always.
-        if self.kind_of(from_id) == "guest" and not pairing_token_valid(
-            self.root, pairing_token
-        ):
+        if self.kind_of(from_id) == "guest" and not pairing_token_valid(self.root, pairing_token):
             raise MailboxError(
                 "pairing token required: guest senders must present a valid pairing token"
             )
@@ -802,9 +796,7 @@ class MailStore:
         # 「落地不触发任何唤醒」，drain 侧已 skip_external，此处对齐（取两侧行
         # 为之交，非新增功能）。
         sampling_msgs = [
-            m
-            for m in full
-            if not m.get("wake_suppressed_dup") and m.get("origin") != "external"
+            m for m in full if not m.get("wake_suppressed_dup") and m.get("origin") != "external"
         ]
         # outside the file lock: optional webhook wake-up, best-effort.
         # config_root binds the webhook.json lookup to THIS store's root so a
