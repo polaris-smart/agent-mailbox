@@ -562,8 +562,10 @@ class _BoardHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         # v0.7.5 human pages (§4) — same token gate as the board
         if path == "/":
-            # 人是主人：根路径直接进三栏信箱（旧看板挪 /board，启动日志同改）
-            return self._redirect("/mail")
+            # 人是主人：根路径直接进三栏信箱（旧看板挪 /board，启动日志同改）。
+            # Token 透传：看板/书签的 /?token=… 跳过来时必须带上，否则 401。
+            qs = urlparse(self.path).query
+            return self._redirect(f"/mail?{qs}" if qs else "/mail")
         if path == "/board":
             return self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
         if path == "/mail":

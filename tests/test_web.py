@@ -77,7 +77,7 @@ def test_root_redirects_to_mail(board):
     port, _ = board
     conn_status, _body, headers = _req_with_headers(port, "/?token=" + TOKEN)
     assert conn_status == 302
-    assert headers.get("Location") == "/mail"
+    assert headers.get("Location") == "/mail?token=" + TOKEN
 
 
 def test_api_tasks_lists(board):

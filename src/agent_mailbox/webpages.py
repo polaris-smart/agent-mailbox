@@ -230,7 +230,7 @@ MAILBOX_PAGE = """<!doctype html>
 
         <div class="h">其它</div>
         <div class="item" data-folder="health">通道体检</div>
-        <div class="item" onclick="location.href='/?token='+TOKEN">任务卡看板</div>
+        <div class="item" onclick="location.href='/board?token='+TOKEN">任务卡看板</div>
         <div class="item" onclick="location.href='/visibility?token='+TOKEN">规则 / 可见性</div>
       </div>
       <div class="hint">快捷键：<b>j/k</b> 上下封 · <b>e</b> 归档 · <b>r</b> 回复 · <b>t</b> 派成任务卡 · <b>/</b> 搜索</div>
