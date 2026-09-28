@@ -25,7 +25,7 @@ classifiers = [
 dependencies = ["mcp>=2.1"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-timeout>=2.4", "ruff>=0.6"]
+dev = ["pytest>=8", "pytest-timeout>=2.4", "ruff>=0.16.6,<0.17.0"]
 # Jev routing is pure stdlib (urllib) — zero hard dependency. The extra is a
 # forward-compat slot so `pip install agent-mailbox[jev]` already works today
 # and can grow a native client later without a breaking change.
@@ -49,6 +49,10 @@ addopts = "-q --timeout=30"
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
+# v02-proposals/ = design-proto directory (design prototypes), NOT release
+# material — tracked since ce8954b but never shipped; keep it out of the
+# repo-wide lint gate so prototypes cannot turn CI red (HS ruling 2026-09-29).
+extend-exclude = ["v02-proposals"]
 
 [tool.hatch.build.targets.sdist]
 exclude = [".aoci", "aoci.txt", "aoci.code.txt", "aoci.meta.txt", "aoci.database.txt", "AGENTS.md", "scripts/wake-zc.sh"]
