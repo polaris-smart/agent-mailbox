@@ -117,11 +117,10 @@ def test_l1_cli_on_path(tmp_path):
     # uppercase ".BAT"), so the resolved path's extension casing follows the
     # PATHEXT env, not the on-disk name; compare like the OS does (normcase is
     # a no-op on POSIX, so the POSIX branch stays byte-exact).
+    cli_details = [ev["detail"] for ev in codex["evidence"] if ev["type"] == "cli"]
     assert any(
-        ev["type"] == "cli"
-        and os.path.normcase(ev["detail"]).endswith(os.path.normcase(expected_tail))
-        for ev in codex["evidence"]
-    )
+        os.path.normcase(d).endswith(os.path.normcase(expected_tail)) for d in cli_details
+    ), cli_details
 
 
 def test_l1_app_bundle_and_config_dir(tmp_path):
