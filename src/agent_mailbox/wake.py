@@ -52,6 +52,61 @@ DEFAULT_RETRY_MAX = 5
 DEFAULT_STALE_ACKED = 600.0  # count semantics v2: acked older than this counts
 DEFAULT_COMMAND_TIMEOUT = 300.0  # local-command adapter: hard-kill deadline
 
+# 锚A (t-50②, HS 0.7.5 收口施工单): every wake attempt — success or failure —
+# appends one JSON line to ``<root>/wake-attempts.jsonl`` (0600, append-only).
+# Eight fixed fields so the file stays greppable/jq-able:
+#   ts / agent / route(belt|daemon|sampling) / attempt / outcome(ok|fail)
+#   / error_class / executor / latency_ms
+# Belt (wake-zc.sh) writes the same shape natively in bash; the G1 主判据
+# counts attempts from this file, not from process logs.
+WAKE_ATTEMPTS_FILE = "wake-attempts.jsonl"
+# U2 可见通道: when every delivery attempt for a letter has failed, the drain
+# drops an alert letter to the original sender + the boss box, so a broken
+# wake is readable from the mailbox face alone (no shell needed). Marked on
+# the letter via ``handled_log`` so one letter alerts at most once — retries
+# on later WatchPaths triggers stay silent (anti-flood), wake itself retries.
+WAKE_ALERT_ACTION = "wake_alert"
+
+
+def record_wake_attempt(
+    root: Path | str,
+    agent: str,
+    route: str,
+    attempt: int,
+    outcome: str,
+    error_class: str = "",
+    executor: str = "",
+    latency_ms: int | None = None,
+) -> bool:
+    """Append one attempt row to ``<root>/wake-attempts.jsonl`` (锚A).
+
+    Append-only, created 0600, and fail-open by iron law: an anchor write
+    problem must never disturb the wake itself — any error is swallowed
+    after a stderr note. Returns True when a row landed.
+    """
+    row = {
+        "ts": _now_iso(),
+        "agent": str(agent),
+        "route": str(route),
+        "attempt": int(attempt),
+        "outcome": "ok" if outcome == "ok" else "fail",
+        "error_class": str(error_class or ""),
+        "executor": str(executor or ""),
+        "latency_ms": int(latency_ms) if latency_ms is not None else None,
+    }
+    try:
+        path = Path(root) / WAKE_ATTEMPTS_FILE
+        line = (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            os.write(fd, line)
+        finally:
+            os.close(fd)
+        return True
+    except OSError as exc:
+        print(f"[agent-mailbox wake] anchor write failed (fail-open): {exc}", file=sys.stderr)
+        return False
+
 
 # ------------------------------------------------------------------- config
 
@@ -176,6 +231,10 @@ class WakeAdapter:
     """Delivery interface for one harness's wake mechanism."""
 
     name = "base"
+    # Class of the most recent delivery failure (锚A error_class): short
+    # stable labels — "no_url" / "post_failed" / "no_command" /
+    # "spawn_failed" / "timeout" / "exit_nonzero". "" after success.
+    last_error_class = ""
 
     def deliver(self, msg: dict[str, Any]) -> bool:
         raise NotImplementedError
@@ -189,9 +248,14 @@ class HermesAdapter(WakeAdapter):
     name = "hermes"
 
     def deliver(self, msg: dict[str, Any]) -> bool:
+        self.last_error_class = ""
         if not self.url:
+            self.last_error_class = "no_url"
             return False
-        return post_message(self.url, self.secret, msg, timeout=5.0)
+        if post_message(self.url, self.secret, msg, timeout=5.0):
+            return True
+        self.last_error_class = "post_failed"
+        return False
 
     def __init__(self, url: str, secret: str) -> None:
         self.url = url
@@ -245,9 +309,11 @@ class LocalCommandAdapter(WakeAdapter):
         self.timeout = max(1.0, float(timeout or DEFAULT_COMMAND_TIMEOUT))
 
     def deliver(self, msg: dict[str, Any]) -> bool:
+        self.last_error_class = ""
         if not self.command or not all(isinstance(a, str) and a for a in self.command):
             # Misconfigured (empty or string-form command): nothing was run —
             # return False so the retry path keeps the letter visible.
+            self.last_error_class = "no_command"
             print(
                 "[agent-mailbox wake] local-command: no valid argv list configured",
                 file=sys.stderr,
@@ -276,6 +342,7 @@ class LocalCommandAdapter(WakeAdapter):
         try:
             proc = subprocess.Popen(self.command, **kwargs)
         except OSError as exc:  # binary missing etc. — retry path, 信不丢
+            self.last_error_class = "spawn_failed"
             print(
                 f"[agent-mailbox wake] local-command spawn failed: {exc}",
                 file=sys.stderr,
@@ -286,6 +353,7 @@ class LocalCommandAdapter(WakeAdapter):
             proc.communicate(timeout=self.timeout)
         except subprocess.TimeoutExpired:
             _kill_group(proc)
+            self.last_error_class = "timeout"
             print(
                 f"[agent-mailbox wake] local-command timed out after {self.timeout:g}s (killed)",
                 file=sys.stderr,
@@ -293,6 +361,7 @@ class LocalCommandAdapter(WakeAdapter):
             )
             return False
         if proc.returncode != 0:
+            self.last_error_class = "exit_nonzero"
             print(
                 f"[agent-mailbox wake] local-command exit {proc.returncode}",
                 file=sys.stderr,
@@ -483,6 +552,64 @@ def _external_auto_execute(root: Path) -> bool:
         return False
 
 
+def _registered_members(root: Path) -> set[str]:
+    """Member ids from ``<root>/registry.json`` — U2 alerts only address
+    registered boxes, so a failed wake never mints a dead inbox directory
+    (死箱 hygiene). Any read problem yields an empty set (alert still goes
+    to the boss box, which is the canonical OWNER id)."""
+    try:
+        reg = json.loads((Path(root) / "registry.json").read_text(encoding="utf-8"))
+        agents = reg.get("agents", {}) if isinstance(reg, dict) else {}
+        if not isinstance(agents, dict):
+            return set()
+        return {k for k, v in agents.items() if isinstance(v, dict)}
+    except (OSError, json.JSONDecodeError, ValueError):
+        return set()
+
+
+def send_wake_alert(store: MailStore, root: Path, agent_id: str, msg: dict[str, Any]) -> bool:
+    """U2 可见通道: drop an alert letter when a letter's wake has failed.
+
+    Recipients: the original sender (when registered, not the woken agent
+    itself and not the boss — the boss gets a copy regardless) plus the boss
+    box. The alert is marked on the letter (``handled_log`` action
+    ``wake_alert``) so one letter alerts at most once no matter how many
+    later drain rounds retry it. Fail-open end to end: an alert problem is
+    logged and forgotten — the wake's own retry path is unaffected.
+    """
+    already = any(e.get("action") == WAKE_ALERT_ACTION for e in (msg.get("handled_log") or []))
+    if already:
+        return False
+    sender = str(msg.get("from", ""))
+    recipients: list[str] = ["boss"]
+    if sender and sender != agent_id and sender != "boss" and sender in _registered_members(root):
+        recipients.append(sender)
+    subject = str(msg.get("subject", ""))[:80]
+    body = (
+        f"[wake-fail 自动告警] {agent_id} 的唤醒通道连续失败，这封信可能没人处理：\n\n"
+        f"  信件 id: {msg.get('id', '')}\n"
+        f"  发件人: {sender or '?'} → 收件人: {msg.get('to', agent_id)}\n"
+        f"  主题: {subject}\n"
+        f"  信箱根: {Path(root)}\n\n"
+        "唤醒侧已按 retry 策略重试仍未投出（信不丢，信还在收件箱）。\n"
+        "请检查 wake 通道（wake.json / webhook / wake-attempts.jsonl 的 "
+        "error_class 行）后重投。此信为系统自动告警，无需回执。"
+    )
+    sent = False
+    try:
+        out = store.send(agent_id, recipients, f"[wake-fail] {subject}", body)
+        sent = bool(out)
+    except Exception as exc:  # noqa: BLE001 — alert must never break the drain
+        print(f"[agent-mailbox wake] alert send failed (fail-open): {exc}", file=sys.stderr)
+    try:
+        store.record_handled(
+            agent_id, str(msg.get("id", "")), WAKE_ALERT_ACTION, note="alert letter dropped"
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[agent-mailbox wake] alert mark failed (fail-open): {exc}", file=sys.stderr)
+    return sent
+
+
 def run_once(
     root: Path,
     cfg: WakeConfig,
@@ -555,10 +682,24 @@ def run_once(
                     continue
             delivered = False
             for attempt in range(1, cfg.retry_max + 1):
+                t0 = time.monotonic()
                 try:
                     delivered = adapter.deliver(m)
                 except Exception:  # noqa: BLE001 — adapter bugs never kill the loop
                     delivered = False
+                # 锚A: every attempt lands a row — success and failure alike
+                record_wake_attempt(
+                    root,
+                    cfg.agent_id,
+                    "daemon",
+                    attempt,
+                    "ok" if delivered else "fail",
+                    error_class=""
+                    if delivered
+                    else str(getattr(adapter, "last_error_class", "") or "unknown"),
+                    executor=getattr(adapter, "name", "adapter"),
+                    latency_ms=int((time.monotonic() - t0) * 1000),
+                )
                 if delivered:
                     break
                 stats["failed"] += 1
@@ -574,8 +715,12 @@ def run_once(
                     note=getattr(adapter, "name", "adapter"),
                 )
                 stats["woke"] += 1
-            # else: every attempt failed — leave the letter un-marked so the
-            # next WatchPaths trigger re-drains it. 信不丢。
+            else:
+                # every attempt failed — leave the letter un-marked so the
+                # next WatchPaths trigger re-drains it (信不丢), and drop the
+                # U2 alert letter (once per letter) so the failure is visible
+                # from the mailbox face alone.
+                send_wake_alert(store, root, cfg.agent_id, m)
     except Exception as exc:  # noqa: BLE001 — total fail-open: never raise out of drain
         print(
             f"[agent-mailbox wake] drain round failed (fail-open): {exc}",
