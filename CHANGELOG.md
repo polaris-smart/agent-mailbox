@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.7.6] — 2026-09-29
 
 ## [0.7.5] — 2026-09-26
 
@@ -146,7 +146,7 @@ Docs-only hotfix: v0.6.0 updated only the English README; every other doc surfac
 - Web board tokens use constant-time comparison (`hmac.compare_digest`, both sites) and persist across reboots (`~/.agent-mail/web_token`, mode 0600; `AGENT_MAIL_WEB_TOKEN` env always wins).
 - `sent.log` auto-rotates one generation past 10 MB (`os.replace` → `sent.log.1`).
 
-[Unreleased]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.4...HEAD
+[0.7.6]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.4...v0.7.6
 [0.7.4]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.1...v0.7.2
