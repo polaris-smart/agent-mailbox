@@ -29,6 +29,7 @@ MAILBOX_PAGE = """<!doctype html>
     --ok:#629c72; --warn:#b8904f; --bad:#b4524e; --bad-bg:#faf1f0; --bad-line:#e6cfcd;
     --ok-bg:#f1f7f2; --ok-line:#cfe3d3; --warn-bg:#fbf6ee; --warn-line:#ecdfc7;
     --chip:#eef0f4; --chip-ink:#5a6172; --sel:#eef2f8; --star:#c9903f;
+    --shadow-1:0 1px 3px rgba(29,32,38,.06); --shadow-2:0 4px 16px rgba(29,32,38,.10); --shadow-3:0 12px 40px rgba(29,32,38,.24);
   }
   html[data-theme="dark"]{
     --bg:#0f1115; --panel:#161a20; --line:#282d38; --line-soft:#21252e;
@@ -36,10 +37,11 @@ MAILBOX_PAGE = """<!doctype html>
     --ok:#7db389; --warn:#c7a266; --bad:#d4807c; --bad-bg:#2a2021; --bad-line:#4a3234;
     --ok-bg:#1a2029; --ok-line:#2e4436; --warn-bg:#221f18; --warn-line:#4a3f2a;
     --chip:#232833; --chip-ink:#98a0b2; --sel:#1e2733; --star:#d8a75c;
+    --shadow-1:0 1px 3px rgba(0,0,0,.35); --shadow-2:0 4px 16px rgba(0,0,0,.45); --shadow-3:0 12px 40px rgba(0,0,0,.6);
   }
   *{box-sizing:border-box}
   html,body{height:100%}
-  body{margin:0;background:var(--bg);color:var(--text);font:13px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+  body{margin:0;background:var(--bg);color:var(--text);font:13px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
   /* 顶栏 */
   .top{display:flex;gap:12px;align-items:center;padding:10px 18px;border-bottom:1px solid var(--line);background:var(--panel)}
   .top .logo{height:32px;vertical-align:middle}
@@ -51,10 +53,10 @@ MAILBOX_PAGE = """<!doctype html>
   .spacer{flex:1}
   .dim{color:var(--dim)} .aux{font-size:12px}
   a{color:inherit;text-decoration:none}
-  button{font:inherit;border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:6px;padding:5px 12px;cursor:pointer}
+  button{font:inherit;border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:6px;padding:8px 12px;cursor:pointer}
   button:hover{border-color:var(--accent)}
   button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
-  button.small{padding:2px 9px;font-size:12px}
+  button.small{padding:4px 8px;font-size:12px}
   button.ghost{background:transparent;border-color:transparent;color:var(--dim)}
   button.ghost:hover{border-color:var(--line);color:var(--text)}
   button:disabled{opacity:.5;cursor:default}
@@ -64,59 +66,59 @@ MAILBOX_PAGE = """<!doctype html>
   .app{display:grid;grid-template-columns:216px 400px 1fr;height:calc(100vh - 53px)}
   .col{border-right:1px solid var(--line);overflow:auto;background:var(--panel)}
   .col:last-child{border-right:none;background:var(--bg)}
-  .write{margin:12px 12px 6px;width:calc(100% - 24px);text-align:center;padding:8px}
+  .write{margin:12px 12px 8px;width:calc(100% - 24px);text-align:center;padding:8px}
   .side{padding:6px 8px 16px}
-  .side .h{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);padding:12px 10px 5px;font-weight:700}
-  .item{display:flex;gap:9px;align-items:center;padding:6px 10px;border-radius:6px;cursor:pointer;color:var(--text)}
+  .side .h{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);padding:12px 12px 4px;font-weight:700}
+  .item{display:flex;gap:8px;align-items:center;padding:8px 12px;border-radius:6px;cursor:pointer;color:var(--text)}
   .item:hover{background:var(--sel)}
   .item.on{background:var(--sel);font-weight:600}
   .item .c{margin-left:auto;color:var(--dim);font-size:12px}
   .item .dot{width:7px;height:7px;border-radius:50%;flex:none}
   .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:1px}
   .dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)} .dot.warn{background:var(--warn)} .dot.idle{background:var(--dim)}
-  .hint{color:var(--dim);font-size:11px;padding:6px 12px 14px}
+  .hint{color:var(--dim);font-size:11px;padding:8px 12px 16px}
   /* 提醒横幅（打扰三档：默认只提醒「需你拍板」） */
   .banner{display:none;margin:8px 12px 0;padding:8px 12px;border-radius:6px;background:var(--warn-bg);border:1px solid var(--warn-line);font-size:12px}
   /* 列表 */
-  .bar{display:flex;gap:8px;align-items:center;padding:9px 12px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);z-index:2}
+  .bar{display:flex;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);z-index:2}
   .bar .h{font-weight:600}
-  .listrow{display:grid;grid-template-columns:22px 96px 1fr 60px;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line-soft);cursor:pointer}
+  .listrow{display:grid;grid-template-columns:22px 96px 1fr 60px;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line-soft);cursor:pointer;line-height:1.45}
   .listrow>div{min-width:0}  /* 标签 chip 参与nowrap行会把400px列撑出横向滚动——收住溢出 */
   .listrow:hover{background:var(--sel)}
   .listrow.on{background:var(--sel);box-shadow:inset 3px 0 0 var(--accent)}
   .listrow .from{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
-  .listrow .subj{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .listrow .subj{font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .listrow.unread .subj::before{content:"●";color:var(--accent);font-size:9px;margin-right:5px;vertical-align:1px}
   .listrow .snip{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .listrow .time{color:var(--dim);font-size:11px;text-align:right}
   .star{color:var(--dim);cursor:pointer} .star.on{color:var(--star)}
-  .tag{display:inline-block;border-radius:4px;padding:0 5px;font-size:10px;border:1px solid var(--line);color:var(--dim);margin-left:6px}
+  .tag{display:inline-block;border-radius:4px;padding:0 4px;font-size:10px;border:1px solid var(--line);color:var(--dim);margin-left:8px}
   .tag.need{border-color:var(--accent);color:var(--accent)}
   .tag.seal{border-color:var(--warn);color:var(--warn)}
   .tag.undeliver{border-color:var(--bad);color:var(--bad)}
   .tag.ext{border-color:var(--bad);color:var(--bad);background:var(--bad-bg)}
   /* 空状态行动点（§3.6） */
-  .empty-cta{margin:16px 12px;padding:18px;border:1px dashed var(--line);border-radius:8px;text-align:center}
+  .empty-cta{margin:16px 12px;padding:16px;border:1px dashed var(--line);border-radius:8px;text-align:center}
   .empty-cta .ttl{font-weight:600;margin-bottom:4px}
   .empty-cta form{display:flex;flex-direction:column;gap:8px;margin-top:12px;text-align:left}
   .empty-cta .row{display:flex;gap:8px}
   .empty-cta .row>*{flex:1;min-width:0}
   /* 正文 */
-  .read{padding:18px 24px 60px;max-width:760px}
-  .read h2{font-size:17px;margin:6px 0 10px;font-weight:600;word-break:break-word}
+  .read{padding:16px 24px 48px;max-width:760px}
+  .read h2{font-size:18px;margin:6px 0 10px;font-weight:600;word-break:break-word}
   .read .head{display:flex;gap:12px;align-items:flex-start;padding-bottom:12px;border-bottom:1px solid var(--line)}
   .read .head .av{width:34px;height:34px;border-radius:50%;background:var(--chip);color:var(--chip-ink);display:grid;place-items:center;font-weight:700;font-size:12px;flex:none}
   .read .acts{display:flex;gap:8px;margin:12px 0 4px;flex-wrap:wrap}
-  .read .body{white-space:pre-line;margin-top:12px;word-break:break-word}
-  .note{margin-top:14px;padding:10px 12px;border-radius:6px;font-size:12px;border:1px solid var(--bad-line);background:var(--bad-bg)}
+  .read .body{white-space:pre-line;margin-top:12px;word-break:break-word;font-size:15px;line-height:1.6}
+  .note{margin-top:16px;padding:12px;border-radius:6px;font-size:12px;border:1px solid var(--bad-line);background:var(--bad-bg)}
   .note.warn{border-color:var(--warn-line);background:var(--warn-bg)}
   .note.ok{border-color:var(--ok-line);background:var(--ok-bg)}
   code{background:var(--chip);border-radius:4px;padding:1px 5px;font-size:12px}
-  .thread{border-top:1px solid var(--line);margin-top:18px;padding-top:12px}
+  .thread{border-top:1px solid var(--line);margin-top:16px;padding-top:12px}
   .thread .b{margin-bottom:12px}
   .thread .b .who{font-weight:600;font-size:12px}
   .thread .b .t{color:var(--dim);font-size:11px;margin-left:6px}
-  .placeholder{color:var(--dim);padding:40px 24px;text-align:center}
+  .placeholder{color:var(--dim);padding:48px 24px;text-align:center}
   /* 写信 */
   .compose form{display:flex;flex-direction:column;gap:10px;margin-top:12px}
   .compose label{font-size:12px;color:var(--dim);display:block;margin-bottom:3px}
@@ -128,6 +130,25 @@ MAILBOX_PAGE = """<!doctype html>
   th,td{text-align:left;padding:8px;border-bottom:1px solid var(--line-soft);vertical-align:top}
   th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);font-weight:600}
   .me .av{width:24px;height:24px;border-radius:50%;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;font-size:11px;font-weight:700}
+  /* 件五-B：三态齐（focus 可见 / active 反馈）——键盘能走完全流程 */
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  button:active{filter:brightness(.96)}
+  /* 件五-B④：详情空状态 = 一句说明 + 一个行动按钮，不再白屏 */
+  .reader-empty{padding:56px 24px;text-align:center}
+  .reader-empty svg{width:40px;height:40px;color:var(--dim);opacity:.6}
+  .reader-empty .ttl{font-weight:600;margin:12px 0 4px}
+  .reader-empty .dim2{color:var(--dim);font-size:12px}
+  .reader-empty button{margin-top:16px}
+  /* 件五-D：回执链（handled_log 时间线，小字弱色，与信件 JSON 逐字一致） */
+  .rc{margin-top:16px;border-top:1px solid var(--line-soft);padding-top:12px}
+  .rc .h{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);font-weight:600;margin-bottom:8px}
+  .rc-state{display:inline-block;border-radius:4px;padding:1px 6px;font-size:11px;border:1px solid var(--line);margin-left:8px;text-transform:none;letter-spacing:0}
+  .rc-state.waking{border-color:var(--warn);color:var(--warn)}
+  .rc-state.done{border-color:var(--ok);color:var(--ok)}
+  .rc-row{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:12px;color:var(--dim);padding:4px 0 4px 14px;position:relative}
+  .rc-row::before{content:"";position:absolute;left:2px;top:10px;width:6px;height:6px;border-radius:50%;background:var(--chip-ink);opacity:.55}
+  .rc-row b{color:var(--text);font-weight:600}
+  .rc-act{color:var(--accent);font-weight:600}
   /* 窄屏适配（t-50 件五）：宽屏三栏不动；<1180 导航收成抽屉；<900 列表与详情上下堆叠 */
   .top .navbtn{display:none}
   .backdrop{display:none}
@@ -162,7 +183,7 @@ MAILBOX_PAGE = """<!doctype html>
     <span class="spacer"></span>
     <a class="dim aux" href="/setup" id="nav-setup">接入向导</a>
     <a class="dim aux" href="/visibility" id="nav-visibility">可见性</a>
-    <button class="ghost" id="theme" title="切换浅色 / 深色">◐</button>
+    <button class="ghost" id="theme" title="切换浅色 / 深色" aria-label="切换浅色 / 深色"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" style="display:block;margin:auto"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor"/></svg></button>
     <span class="dim aux">＜ <b id="owner-name">boss</b>（主人 · 全可见）</span>
     <span class="me"><span class="av" id="owner-av">B</span></span>
   </div>
@@ -212,7 +233,7 @@ MAILBOX_PAGE = """<!doctype html>
     <!-- ============ 右栏：正文 ============ -->
     <div class="col">
       <div id="readbar"><button class="small ghost" id="backtolist">← 返回列表</button><span class="dim aux">信件详情</span></div>
-      <div class="read" id="read"><div class="placeholder">← 从中间选一封信</div></div>
+      <div class="read" id="read"><div class="reader-empty" id="reader-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg><div class="ttl">还没选信</div><div class="dim2">← 从中间选一封信，或直接写一封 —— 收发信件不需要任何模型。</div><button class="primary" id="empty-write">＋ 写一封信</button></div></div>
     </div>
   </div>
 
@@ -252,6 +273,17 @@ function toast(msg) {
     document.body.appendChild(t); }
   t.textContent = msg; t.style.display = "block";
   setTimeout(() => t.style.display = "none", 4200);
+}
+
+function toastErr(msg) {  /* 错误不是裸报错字：结论 + 原因 + 下一步 成对 */
+  let t = document.getElementById("toast");
+  if (!t) { t = document.createElement("div"); t.id = "toast";
+    t.style.cssText = "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--bad-bg);color:var(--bad);border:1px solid var(--bad-line);border-radius:8px;padding:8px 16px;font-size:13px;display:none;max-width:80vw;z-index:9";
+    document.body.appendChild(t); }
+  t.innerHTML = '<b>操作没做成</b><div>' + esc(msg) + '</div>' +
+    '<div style="opacity:.75;margin-top:2px">下一步：按上面的原因处理后重试；列表没变化就点「刷新」。</div>';
+  t.style.display = "block";
+  setTimeout(() => t.style.display = "none", 6000);
 }
 
 async function api(path, body) {
@@ -378,7 +410,7 @@ function renderList() {
     e.stopPropagation();
     const id = s.dataset.star, on = (DATA.starred || []).includes(id);
     try { await api("/api/mail/" + id + (on ? "/unstar" : "/star"), {}); await reload(false); }
-    catch (err) { toast(err.message); }
+    catch (err) { toastErr(err.message); }
   }));
 }
 
@@ -387,7 +419,7 @@ function renderDrafts() {
   document.getElementById("list-sub").textContent = ds.length ? ds.length + " 封" : "";
   if (!ds.length) { document.getElementById("list").innerHTML = '<div class="placeholder">没有草稿 —— 点「＋ 写一封信」</div>'; return; }
   document.getElementById("list").innerHTML = ds.map(d =>
-    '<div class="listrow" data-draft="' + esc(d.id) + '"><span class="star">✎</span>' +
+    '<div class="listrow" data-draft="' + esc(d.id) + '"><span class="star"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg></span>' +
     '<span class="from">草稿</span><div><div class="subj">' + esc(d.subject || "(无主题)") + '</div>' +
     '<div class="snip">收件人：' + esc(d.to || "（未填）") + '</div></div>' +
     '<span class="time">' + fmtTime(d.saved_at) + '</span></div>').join("");
@@ -483,6 +515,31 @@ function renderRead(x) {
         '<span class="t">' + fmtFull(t.created_at) + '</span></div>' +
         '<div>' + (t.redacted === "sealed" ? "<i>（密封信 · 仅元数据）</i>" : esc((t.body || "").slice(0, 300))) + '</div></div>').join("") + '</div>'
     : "";
+
+  /* 件五-D 回执链：handled_log 逐条（谁/何时/动作/时延），三态可区分；monitor 信不展示（权限面） */
+  const wl = x.monitor ? [] : (x.handled_log || []);
+  const t0 = Date.parse(x.created_at);
+  const ACT = { wake: "唤醒", sampling: "采样唤醒", done: "已处理", intent: "开始处理",
+    outcome: "处理完成", wake_alert: "唤醒失败告警", jev_skip: "低分跳过唤醒", reclaim: "过期重投" };
+  const rcState = wl.some(e => e.action === "done") ? '<span class="rc-state done">已处理</span>'
+    : wl.some(e => e.action === "wake" || e.action === "sampling") ? '<span class="rc-state waking">已唤醒 · 尚未处理</span>'
+    : '<span class="rc-state">尚未唤醒</span>';
+  const rcRows = wl.map(e => {
+    let lat = "";
+    const at = Date.parse(e.at);
+    if (!isNaN(at) && !isNaN(t0)) {
+      const sec = Math.max(0, Math.round((at - t0) / 1000));
+      lat = sec < 1 ? "同秒" : sec < 60 ? "距来信 " + sec + " 秒" : "距来信 " + Math.floor(sec / 60) + " 分 " + (sec % 60) + " 秒";
+    }
+    return '<div class="rc-row"><b>' + esc(e.by || "?") + '</b>' +
+      '<span class="rc-act">' + esc(ACT[e.action] || e.action) +
+      ' <span style="opacity:.7;font-weight:400">' + esc(e.action) + '</span></span>' +
+      '<span>' + esc(fmtFull(e.at)) + '</span>' + (lat ? '<span>' + esc(lat) + '</span>' : '') +
+      (e.note ? '<span style="opacity:.75">' + esc(String(e.note)) + '</span>' : '') + '</div>';
+  }).join("");
+  const rcHtml = x.monitor ? "" :
+    '<div class="rc"><div class="h">回执链 · handled_log' + rcState + '</div>' +
+    (rcRows || '<div class="rc-row">这封信还没有任何回执 —— 唤醒后这里会出现 wake / done 时间线。</div>') + '</div>';
   r.innerHTML =
     '<div class="head"><span class="av">' + esc((x.from || "?").slice(0, 2).toUpperCase()) + '</span>' +
     '<div style="flex:1"><div><b>' + esc(x.from) + '</b> <span class="dim">→ ' + esc(x.to) + '</span>' + tagHtml(x) + '</div>' +
@@ -498,7 +555,7 @@ function renderRead(x) {
     '<div class="kv">信 vs 任务卡：信用来说话（读完为止）；任务卡要人动手、有状态流转、动了会自动叫醒承办人。</div>' +
     (x.redacted === "sealed" ? '<div class="body dim"><i>（已密封 · 内容不进人类视图）</i></div>'
       : '<div class="body">' + esc(x.body || "") + '</div>') +
-    needNote + sealedNote + extNote + threadHtml +
+    needNote + sealedNote + extNote + threadHtml + rcHtml +
     '<div class="note warn" style="margin-top:16px">发件人 <b>' + esc(x.from) + '</b> 的唤醒通道：<span class="dot ' + dot + '"></span>' + dotLabel +
     '。如果发件人<b>收不到回信</b>，回信前这里会先警告你 —— 免得白回。</div>' +
     '<div class="hint" style="padding:12px 0 0">人是<b>只读监看</b> agent 之间的信；要发话就「写一封信」或「派成任务卡」。</div>';
@@ -506,7 +563,7 @@ function renderRead(x) {
   if (star) star.addEventListener("click", async () => {
     const on = (DATA.starred || []).includes(x.id);
     try { await api("/api/mail/" + x.id + (on ? "/unstar" : "/star"), {}); await reload(false); }
-    catch (err) { toast(err.message); }
+    catch (err) { toastErr(err.message); }
   });
   const bind = (id2, fn) => { const el = document.getElementById(id2); if (el) el.addEventListener("click", fn); };
   bind("btn-reply", () => compose({ to: x.from, subject: "Re: " + (x.subject || "").replace(/^Re:\\s*/i, ""), reply_to: x.id, body: "" }));
@@ -515,11 +572,11 @@ function renderRead(x) {
     body: (x.redacted === "sealed" ? "（密封信，内容不转发）" : "---------- 转发 ----------\\n" + x.body) }));
   bind("btn-task", () => makeTask(x));
   bind("btn-archive", () => api("/api/mail/" + x.id + "/archive", {}).then(() => { sel = null; reload(); })
-    .catch(err => toast(err.message)));
-  bind("btn-unread", () => api("/api/mail/" + x.id + "/unread", {}).then(() => reload()).catch(err => toast(err.message)));
+    .catch(err => toastErr(err.message)));
+  bind("btn-unread", () => api("/api/mail/" + x.id + "/unread", {}).then(() => reload()).catch(err => toastErr(err.message)));
   bind("btn-confirm-ext", () => api("/api/mail/" + x.id + "/confirm-external", {})
     .then(() => { toast("已确认：这封信此后可触发动作（已留痕）"); reload(); })
-    .catch(err => toast(err.message)));
+    .catch(err => toastErr(err.message)));
 }
 
 async function makeTask(x) {
@@ -530,7 +587,7 @@ async function makeTask(x) {
   try {
     const out = await api("/api/mail/" + x.id + "/task", { assignee });
     toast("已派成任务卡 " + out.task.id + " 给 " + assignee + "（承办人会收到提醒，看板可跟踪）");
-  } catch (err) { toast(err.message); }
+  } catch (err) { toastErr(err.message); }
 }
 function promptBind(candidates, suggest) {
   const who = prompt("派给谁（任务卡承办人）？", suggest && suggest !== DATA.owner ? suggest : (candidates[0] || ""));
@@ -575,12 +632,12 @@ function compose(prefill) {
       await api("/api/mail/send", d);
       if (p.id) await api("/api/mail/drafts/delete", { id: p.id }).catch(() => {});
       toast("已发给 " + d.to); reload();
-    } catch (err) { toast(err.message); }
+    } catch (err) { toastErr(err.message); }
   });
   document.getElementById("f-draft").addEventListener("click", async () => {
     const d = payload();
     try { await api("/api/mail/drafts", { ...d, id: p.id }); toast("草稿已存"); folder = "drafts"; reload(); }
-    catch (err) { toast(err.message); }
+    catch (err) { toastErr(err.message); }
   });
   document.getElementById("f-cancel").addEventListener("click", () => { reload(); });
 }
@@ -601,7 +658,7 @@ function bindCta() {
         to, subject: document.getElementById("cta-subject").value.trim() || "(无主题)",
         body: document.getElementById("cta-body").value, attention: "decision" });
       toast("第一封信已发给 " + to); reload();
-    } catch (err) { toast(err.message); }
+    } catch (err) { toastErr(err.message); }
   });
 }
 
@@ -634,7 +691,7 @@ document.getElementById("btn-add-member").addEventListener("click", async () => 
   if (!id) return;
   const kind = (prompt("类型：owner（人）/ agent / guest？（留空默认 agent）", "agent") || "agent").trim();
   try { await api("/api/members", { id, kind }); toast("成员 " + id + " 已加入名册"); reload(false); }
-  catch (err) { toast(err.message); }
+  catch (err) { toastErr(err.message); }
 });
 document.getElementById("btn-refresh").addEventListener("click", () => reload());
 const searchEl = document.getElementById("search");
@@ -654,11 +711,13 @@ document.addEventListener("keydown", e => {
     openLetter(items[idx === -1 ? 0 : next].id);
   } else if (e.key === "e" && sel) {
     const x = letterById(sel);
-    if (x && !x.monitor) api("/api/mail/" + sel + "/archive", {}).then(() => reload()).catch(err => toast(err.message));
+    if (x && !x.monitor) api("/api/mail/" + sel + "/archive", {}).then(() => reload()).catch(err => toastErr(err.message));
     else toast("agent 之间的信是只读监看，不能由人归档");
   } else if (e.key === "r" && sel) { const x = letterById(sel); if (x) compose({ to: x.from, subject: "Re: " + (x.subject || "").replace(/^Re:\\s*/i, ""), reply_to: x.id, body: "" }); }
   else if (e.key === "t" && sel) { const x = letterById(sel); if (x) makeTask(x); }
 });
+
+document.getElementById("empty-write").addEventListener("click", () => compose({}));
 
 reload();
 setInterval(() => { if (document.visibilityState === "visible") reload(false).catch(() => {}); }, 5000);
@@ -700,25 +759,30 @@ SETUP_PAGE = """<!doctype html>
   html[data-theme="dark"] header .logo:not(.dark){display:none}
   html[data-theme="dark"] header .logo.dark{display:inline}
   .dim{color:var(--dim);font-size:12px}
-  .chip{background:var(--chip);color:var(--chip-ink);border-radius:999px;padding:2px 9px;font-size:11px;font-weight:600}
+  .chip{background:var(--chip);color:var(--chip-ink);border-radius:999px;padding:2px 8px;font-size:11px;font-weight:600}
   .spacer{flex:1}
-  button{font:inherit;border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:6px;padding:6px 13px;cursor:pointer}
+  button{font:inherit;border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:6px;padding:8px 12px;cursor:pointer}
   button:hover{border-color:var(--accent)}
   button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
-  button.small{padding:3px 10px;font-size:12px}
+  button.small{padding:4px 8px;font-size:12px}
   button.ghost{background:transparent}
   button:disabled{opacity:.5;cursor:default}
   .steps{display:flex;gap:10px;align-items:center;margin:16px 0 0;flex-wrap:wrap}
-  .step{display:flex;gap:9px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:5px 13px 5px 6px;font-weight:600;cursor:pointer}
+  .step{display:flex;gap:9px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:4px 12px 4px 4px;font-weight:600;cursor:pointer}
   .step .n{width:20px;height:20px;border-radius:50%;background:var(--chip);color:var(--chip-ink);display:grid;place-items:center;font-size:11px}
   .step.on{border-color:var(--accent)} .step.on .n{background:var(--accent);color:var(--accent-ink)}
+  .step.done{border-color:var(--ok)} .step.done .n{background:var(--ok);color:#fff}
+  /* 骨架屏（件五-C）：加载中不再空白，脉冲不用渐变（anti-cheap） */
+  .skel{height:12px;border-radius:6px;background:var(--chip);margin:10px 0;animation:skel 1.2s ease-in-out infinite}
+  @keyframes skel{50%{opacity:.45}}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .arrow{color:var(--dim)}
   section{display:none;padding-top:18px} section.on{display:block}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px 18px;box-shadow:var(--shadow);margin-bottom:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px;box-shadow:var(--shadow);margin-bottom:16px}
   .card h2{font-size:13px;font-weight:600;margin:0 0 4px}
   .hint{margin:0 0 14px}
   table{width:100%;border-collapse:collapse}
-  th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+  th,td{text-align:left;padding:12px 8px;border-bottom:1px solid var(--line-soft);vertical-align:top}
   th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);font-weight:600}
   .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;vertical-align:1px}
   .dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)} .dot.warn{background:var(--warn)} .dot.idle{background:var(--dim)}
@@ -730,7 +794,7 @@ SETUP_PAGE = """<!doctype html>
   details{margin-top:12px;border-top:1px solid var(--line-soft);padding-top:10px}
   summary{cursor:pointer;color:var(--dim);font-size:12px}
   .bar{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 0}
-  .bar .b{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:7px 11px;font-size:12px}
+  .bar .b{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px 12px;font-size:12px}
   .foot{display:flex;gap:10px;align-items:center;padding-top:6px;flex-wrap:wrap}
   .prog{height:4px;background:var(--chip);border-radius:2px;overflow:hidden;margin:6px 0 0}
   .prog i{display:block;height:100%;background:var(--accent);width:33%;transition:width .2s}
@@ -815,7 +879,11 @@ async function api(path, body) {
 const steps = [...document.querySelectorAll(".step")];
 const secs = [document.getElementById("s1"), document.getElementById("s2"), document.getElementById("s3")];
 function go(i) {
-  steps.forEach((s, j) => s.classList.toggle("on", j === i));
+  steps.forEach((s, j) => {
+    s.classList.toggle("on", j === i);
+    s.classList.toggle("done", j < i);          // 已完步骤打勾（✓ 字符，非 emoji）
+    s.querySelector(".n").textContent = j < i ? "✓" : String(j + 1);
+  });
   secs.forEach((s, j) => s.classList.toggle("on", j === i));
   document.getElementById("prog").style.width = ((i + 1) / 3 * 100) + "%";
   window.scrollTo(0, 0);
@@ -837,7 +905,10 @@ async function scan() {
   const btn = document.getElementById("btn-rescan");
   btn.disabled = true;
   document.getElementById("s1-title").textContent = "正在扫描本机…（探测只读，不动任何配置）";
-  document.getElementById("s1-body").innerHTML = "";
+  document.getElementById("s1-body").innerHTML =
+    '<div class="skel" style="width:62%"></div><div class="skel" style="width:85%"></div>' +
+    '<div class="skel" style="width:74%"></div><div class="skel" style="width:90%"></div>' +
+    '<div class="skel" style="width:45%"></div>';
   try { REPORT = await api("/api/discover", {}); }
   catch (err) {
     document.getElementById("s1-title").textContent = "扫描失败";
@@ -919,7 +990,7 @@ document.getElementById("btn-to3").addEventListener("click", () => go(2));
 /* ===== 第 3 步：完事 ===== */
 async function loadSummary() {
   const box = document.getElementById("s3-body");
-  box.innerHTML = '<div class="b dim">汇总中…</div>';
+  box.innerHTML = '<div class="skel" style="width:70%"></div><div class="skel" style="width:55%"></div><div class="skel" style="width:64%"></div>';
   let s;
   try { s = await api("/api/setup-summary"); }
   catch (err) { box.innerHTML = '<div class="b">加载失败：' + esc(err.message) + '</div>'; return; }
@@ -978,14 +1049,14 @@ VISIBILITY_PAGE = """<!doctype html>
   html[data-theme="dark"] header .logo:not(.dark){display:none}
   html[data-theme="dark"] header .logo.dark{display:inline}
   .dim{color:var(--dim);font-size:12px}
-  .chip{background:var(--chip);color:var(--chip-ink);border-radius:999px;padding:2px 9px;font-size:11px;font-weight:600}
+  .chip{background:var(--chip);color:var(--chip-ink);border-radius:999px;padding:2px 8px;font-size:11px;font-weight:600}
   .spacer{flex:1}
-  button{font:inherit;border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:6px;padding:6px 13px;cursor:pointer}
+  button{font:inherit;border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:6px;padding:8px 12px;cursor:pointer}
   button:hover{border-color:var(--accent)}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:15px 17px;box-shadow:var(--shadow);margin-bottom:13px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px;box-shadow:var(--shadow);margin-bottom:16px}
   .card h2{font-size:13px;font-weight:600;margin:0 0 8px}
   .hint{margin:0 0 12px}
-  .row{display:flex;gap:12px;align-items:center;margin-bottom:11px;flex-wrap:wrap}
+  .row{display:flex;gap:12px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
   .row label.lb{width:170px;flex:none;color:var(--dim)}
   .sw{width:34px;height:19px;border-radius:999px;background:var(--accent);position:relative;flex:none;cursor:pointer;border:none;padding:0}
   .sw i{position:absolute;top:2px;right:2px;width:15px;height:15px;border-radius:50%;background:#fff}
@@ -995,9 +1066,10 @@ VISIBILITY_PAGE = """<!doctype html>
   .note.ok{background:var(--ok-bg);border-color:var(--ok-line)}
   code{background:var(--chip);border-radius:4px;padding:1px 5px;font-size:12px}
   .foot{display:flex;gap:10px;align-items:center;padding-top:8px;flex-wrap:wrap}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 16px;font-size:13px;display:none;max-width:80vw;box-shadow:var(--shadow)}
   table{width:100%;border-collapse:collapse}
-  th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line-soft);font-size:12px}
+  th,td{text-align:left;padding:8px 8px;border-bottom:1px solid var(--line-soft);font-size:12px}
   th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim)}
 </style>
 </head>
@@ -1084,7 +1156,7 @@ for (const key of Object.keys(NAMES)) {
       for (const k of Object.keys(NAMES)) renderSw(k, out.visibility[k], (out.hard_locked || []).includes(k));
       renderAudit(out.audit);
       toast((NAMES[key]) + " 已" + (next ? "开启" : "关闭") + "（已留痕）");
-    } catch (err) { toast(err.message); }
+    } catch (err) { toastErr(err.message); }
   });
 }
 load();
