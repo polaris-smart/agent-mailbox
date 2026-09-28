@@ -81,6 +81,7 @@ MAILBOX_PAGE = """<!doctype html>
   .bar{display:flex;gap:8px;align-items:center;padding:9px 12px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);z-index:2}
   .bar .h{font-weight:600}
   .listrow{display:grid;grid-template-columns:22px 96px 1fr 60px;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line-soft);cursor:pointer}
+  .listrow>div{min-width:0}  /* 标签 chip 参与nowrap行会把400px列撑出横向滚动——收住溢出 */
   .listrow:hover{background:var(--sel)}
   .listrow.on{background:var(--sel);box-shadow:inset 3px 0 0 var(--accent)}
   .listrow .from{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
@@ -127,10 +128,35 @@ MAILBOX_PAGE = """<!doctype html>
   th,td{text-align:left;padding:8px;border-bottom:1px solid var(--line-soft);vertical-align:top}
   th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);font-weight:600}
   .me .av{width:24px;height:24px;border-radius:50%;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;font-size:11px;font-weight:700}
+  /* 窄屏适配（t-50 件五）：宽屏三栏不动；<1180 导航收成抽屉；<900 列表与详情上下堆叠 */
+  .top .navbtn{display:none}
+  .backdrop{display:none}
+  #readbar{display:none;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);
+    position:sticky;top:0;background:var(--panel);z-index:2}
+  @media (max-width:1180px){
+    .top .navbtn{display:inline-block}
+    .app{grid-template-columns:400px 1fr}
+    .app .col:first-child{position:fixed;top:53px;bottom:0;left:0;width:264px;margin:0;z-index:7;
+      transform:translateX(-105%);transition:transform .18s ease;background:var(--panel)}
+    body.nav-open .app .col:first-child{transform:none;box-shadow:8px 0 24px rgba(29,32,38,.18)}
+    body.nav-open .backdrop{display:block;position:fixed;top:53px;right:0;bottom:0;left:0;background:rgba(29,32,38,.28);z-index:6}
+  }
+  @media (max-width:900px){
+    .top{flex-wrap:wrap;row-gap:6px}
+    .search{order:9;flex-basis:100%;max-width:none}
+    /* 上下结构：列表在上（限高内滚），详情在下（自然高，页面滚动） */
+    .app{display:block;height:auto}
+    .app .col{overflow:visible;border-right:none;border-bottom:1px solid var(--line)}
+    .app .col:nth-child(2){max-height:46vh;overflow:auto}
+    .app .col:last-child{border-bottom:none;min-height:50vh}
+    .read{padding:14px 16px 60px}
+    #readbar{display:flex}
+  }
 </style>
 </head>
 <body>
   <div class="top">
+    <button class="ghost navbtn" id="navbtn" title="收起 / 展开导航">☰ 导航</button>
     <a href="/mail?token=" id="homelink"><img class="logo" src="/brand/lockup-h-light.svg" alt="agent-mailbox · 信箱"><img class="logo dark" src="/brand/lockup-h-dark.svg" alt="" aria-hidden="true"></a>
     <input class="search" id="search" placeholder="搜索全部往来（人 + agent）…（快捷键 /）">
     <span class="spacer"></span>
@@ -140,6 +166,7 @@ MAILBOX_PAGE = """<!doctype html>
     <span class="dim aux">＜ <b id="owner-name">boss</b>（主人 · 全可见）</span>
     <span class="me"><span class="av" id="owner-av">B</span></span>
   </div>
+  <div class="backdrop" id="backdrop"></div>
 
   <div class="app">
     <!-- ============ 左栏 ============ -->
@@ -184,6 +211,7 @@ MAILBOX_PAGE = """<!doctype html>
 
     <!-- ============ 右栏：正文 ============ -->
     <div class="col">
+      <div id="readbar"><button class="small ghost" id="backtolist">← 返回列表</button><span class="dim aux">信件详情</span></div>
       <div class="read" id="read"><div class="placeholder">← 从中间选一封信</div></div>
     </div>
   </div>
@@ -203,6 +231,18 @@ rootEl.dataset.theme = qTheme || localStorage.getItem("mb_theme")
 document.getElementById("theme").addEventListener("click", () => {
   const next = rootEl.dataset.theme === "dark" ? "light" : "dark";
   rootEl.dataset.theme = next; localStorage.setItem("mb_theme", next);
+});
+
+/* 窄屏（t-50 件五）：<1180 导航抽屉（☰ 开、背板/选中关）；<900 详情区给「← 返回列表」 */
+const closeNav = () => document.body.classList.remove("nav-open");
+document.getElementById("navbtn").addEventListener("click", () =>
+  document.body.classList.toggle("nav-open"));
+document.getElementById("backdrop").addEventListener("click", closeNav);
+document.querySelector(".app .col:first-child").addEventListener("click", e => {
+  if (e.target.closest(".item, .write")) closeNav();   // 选完即收，列表始终可见
+});
+document.getElementById("backtolist").addEventListener("click", () => {
+  document.querySelector(".app .col:nth-child(2)").scrollIntoView({ behavior: "smooth", block: "start" });
 });
 
 function toast(msg) {
@@ -414,6 +454,9 @@ function openLetter(id) {
   if (!x) return;
   api("/api/mail/" + id + "/read", {}).then(reload.bind(null, false)).catch(() => {});
   renderList(); renderRead(x);
+  /* 窄屏（上下结构）：详情在列表下方 —— 打开后滚到详情，返回按钮滚回列表 */
+  if (matchMedia("(max-width:900px)").matches)
+    document.getElementById("readbar").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function renderRead(x) {
