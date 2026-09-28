@@ -378,7 +378,7 @@ def test_member_receipt_ok(tmp_path):
     add_cli(tmp_path / "home", "codex")
 
     def fake_receipt():
-        time.sleep(0.3)
+        time.sleep(1.0)  # 系统忙时 0.3s 会飘出轮询窗口（09-28 flaky 实录）
         st.check("codex")
 
     threading.Thread(target=fake_receipt, daemon=True).start()
