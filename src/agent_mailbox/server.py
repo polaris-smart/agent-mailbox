@@ -225,8 +225,12 @@ def _read_scope(me: str, target: str) -> None:
     if kind in ("agent", "guest") and not load_visibility(_store_instance().root).get(
         "agent_cross_read"
     ):
+        # v0.7.6 (A6 同形, HS 增补令⑫): the rejection text is IDENTICAL for a
+        # registered target (boss) and an unregistered probe (NOSUCHPROBE) —
+        # no candidates, no kind leak. Different shapes would let a caller
+        # enumerate which agent ids exist (existence oracle).
         raise MailboxError(
-            f"permission denied: {me!r} ({kind}) may only read its own mailbox, not {target!r}'s",
+            f"permission denied: {me!r} may only read its own mailbox",
             code="permission_denied",
         )
 

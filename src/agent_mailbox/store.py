@@ -67,7 +67,17 @@ MAX_BODY_BYTES = 1048576  # 1 MiB, counted in UTF-8 bytes (config-overridable)
 # rejected by default (config `unregistered_recipients: warn` to downgrade).
 # v0.7.6 (A7): single authoritative member-id slug whitelist (was the
 # hyphen-only pattern at module top — dot now legal per task brief).
-AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+AGENT_ID_RE = re.compile(r"^(?=.{1,64}$)[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
+
+
+def _normalize_member_id(mid: str) -> str:
+    """HS 硬化(a): one normalization for all three member sources.
+
+    casefold + strip + ``-``→``_`` so ``HS``/``hs ``/``H-S`` resolve alike.
+    The original display form is kept in the roster; only membership
+    comparison normalizes.
+    """
+    return (mid or "").strip().casefold().replace("-", "_")
 
 # v0.5.0 delivery-side duplicate suppression (design A) + lifecycle windows.
 # 铁1: reap_ttl must stay strictly below dedup_ttl — a reclaim window at or
@@ -529,7 +539,7 @@ class MailStore:
             or ".." in (agent_id or "")
         ):
             raise MailboxError(
-                f"invalid agent id {agent_id!r}: use [A-Za-z0-9][A-Za-z0-9._-], max 64 chars; "
+                f"invalid agent id {agent_id!r}: use [A-Za-z0-9][A-Za-z0-9._-] ending alnum, max 64 chars; "
                 "no separators, no '..'",
                 code="invalid_field",
             )
@@ -1133,29 +1143,38 @@ class MailStore:
         # is first-class and must not be required to "register" to get mail.
         # wake.json 的 agents 名册 = 第二合法成员源（锚 C 信 HS 口径）：codex
         # 等命令式唤醒目标登记在那边，不在 registry.json。
-        registered = set(reg["agents"].keys()) | OWNER_IDS
+        # HS 硬化(a): all three member sources normalize through
+        # _normalize_member_id (casefold + strip + '-'→'_') — one function,
+        # no per-source drift. Map: normalized key → original display form
+        # (candidates in rejections show the human form). Conflicts resolve
+        # in registry's favor (registry.json is the roster of record).
+        registered: dict[str, str] = {_normalize_member_id(k): k for k in reg["agents"]}
+        for k in OWNER_IDS:
+            registered.setdefault(_normalize_member_id(k), k)
         try:
             wake_cfg = json.loads((self.root / "wake.json").read_text(encoding="utf-8"))
-            registered |= set((wake_cfg.get("agents") or {}).keys())
+            for k in (wake_cfg.get("agents") or {}):
+                registered.setdefault(_normalize_member_id(k), k)
         except (FileNotFoundError, OSError, json.JSONDecodeError):
             pass
-        for t in to:
-            self._validate_id(t)
-            if t in seen:
+        norm_to = [_normalize_member_id(t) for t in to]
+        for orig, t in zip(to, norm_to):
+            self._validate_id(orig)
+            if orig in seen:
                 continue
             if t not in registered:
                 if mode == "reject":
-                    candidates = sorted(registered)[:5]
+                    candidates = sorted(registered.values())[:5]
                     raise MailboxError(
-                        f"recipient {t!r} is not a registered member — the letter would "
+                        f"recipient {orig!r} is not a registered member — the letter would "
                         f"never be read. Registered members include: {candidates}. "
                         "Register first (mailbox_register) or fix the id.",
                         code="not_found",
                     )
-                self.audit("unregistered_recipient", by=t, detail="warn-mode: letter not delivered")
-                warns.append({"to": t, "warn": "unregistered"})
+                self.audit("unregistered_recipient", by=orig, detail="warn-mode: letter not delivered")
+                warns.append({"to": orig, "warn": "unregistered"})
                 continue
-            seen.append(t)
+            seen.append(orig)  # 原始显示形式投递/落盘——归一只用于成员比对
         return seen, warns
 
     def check(self, agent_id: str, *, mark: bool = True) -> list[dict[str, Any]]:
