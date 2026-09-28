@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import plistlib
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ import pytest
 from agent_mailbox import cli, server
 from agent_mailbox.cli import cli_main
 from agent_mailbox.store import MailStore
+from agent_mailbox.wake import WAKE_LABEL
 
 
 def make_env(tmp_path: Path, *, agents: tuple[str, ...] = ()) -> tuple[Path, Path]:
@@ -201,17 +203,56 @@ def test_cli_uninstall_residual_exits_nonzero(tmp_path, capsys, monkeypatch, fak
     assert rc == 1 and "残留" in text
 
 
-def test_cli_uninstall_stops_own_wake_plists(tmp_path, capsys, monkeypatch, fake_home):
+def test_cli_uninstall_stops_own_wake_plists(tmp_path, capsys, fake_home):
+    """uninstall 只清自家 wake 集成面，而面随平台不同（判据注释，非静默分支）：
+    macOS=launchd plist（~/Library/LaunchAgents）；Linux=systemd 用户单元
+    (~/.config/systemd/user)；Windows=无 OS 集成面（wake install 在该平台直接
+    拒绝）⇒ 卸载在那里是空操作。launchd 面仅存于 macOS、systemd 用户面仅存于
+    Linux，故按当前平台铺对应面并断言清扫。"""
     home, root = make_env(tmp_path)
-    la_dir = home / "Library" / "LaunchAgents"
-    la_dir.mkdir(parents=True)
-    plist = la_dir / "com.polaris-smart.agent-mailbox-wake-ZC.plist"
-    plist.write_bytes(plistlib.dumps({"Label": "com.polaris-smart.agent-mailbox-wake-ZC"}))
-    rc = cli_main(
-        ["uninstall", "--home", str(root), "--no-activate", "--launch-agents-dir", str(la_dir)]
-    )
-    assert rc == 0 and not plist.exists()
-    assert "已移除唤醒集成" in capsys.readouterr().out
+    if sys.platform == "win32":
+        # Windows: no launchd face exists — even a plist-shaped file laid in a
+        # LaunchAgents dir is not ours to manage there. Pin the no-op contract:
+        # rc=0, nothing reported removed, the laid file untouched.
+        la_dir = home / "Library" / "LaunchAgents"
+        la_dir.mkdir(parents=True)
+        plist = la_dir / f"{WAKE_LABEL}-ZC.plist"
+        plist.write_bytes(plistlib.dumps({"Label": f"{WAKE_LABEL}-ZC"}))
+        rc = cli_main(
+            ["uninstall", "--home", str(root), "--no-activate", "--launch-agents-dir", str(la_dir)]
+        )
+        assert rc == 0 and plist.exists()  # 空操作：集成面不存在，不越权删
+        assert "已移除唤醒集成" not in capsys.readouterr().out
+    elif sys.platform == "linux":
+        # Linux face = systemd user units. A plist is laid alongside purely as
+        # the discovery anchor the uninstall CLI walks (it enumerates agents
+        # from LaunchAgents names); the units are what must actually be swept.
+        la_dir = home / "Library" / "LaunchAgents"
+        la_dir.mkdir(parents=True)
+        plist = la_dir / f"{WAKE_LABEL}-ZC.plist"
+        plist.write_bytes(plistlib.dumps({"Label": f"{WAKE_LABEL}-ZC"}))
+        units_dir = home / ".config" / "systemd" / "user"
+        units_dir.mkdir(parents=True)
+        laid = []
+        for suffix in (".path", ".service"):
+            unit = units_dir / f"{WAKE_LABEL}-ZC{suffix}"
+            unit.write_text("[Unit]\n", encoding="utf-8")
+            laid.append(unit)
+        rc = cli_main(
+            ["uninstall", "--home", str(root), "--no-activate", "--launch-agents-dir", str(la_dir)]
+        )
+        assert rc == 0 and all(not u.exists() for u in laid)
+        assert "已移除唤醒集成" in capsys.readouterr().out
+    else:  # darwin — the original launchd face, strictness unchanged
+        la_dir = home / "Library" / "LaunchAgents"
+        la_dir.mkdir(parents=True)
+        plist = la_dir / f"{WAKE_LABEL}-ZC.plist"
+        plist.write_bytes(plistlib.dumps({"Label": f"{WAKE_LABEL}-ZC"}))
+        rc = cli_main(
+            ["uninstall", "--home", str(root), "--no-activate", "--launch-agents-dir", str(la_dir)]
+        )
+        assert rc == 0 and not plist.exists()
+        assert "已移除唤醒集成" in capsys.readouterr().out
 
 
 def test_cli_setup_yes_headless(tmp_path, capsys, fake_home):

@@ -62,8 +62,9 @@ MAILBOX_PAGE = """<!doctype html>
   button:disabled{opacity:.5;cursor:default}
   input,textarea,select{font:inherit;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 10px}
   input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent)}
-  /* 三栏 */
-  .app{display:grid;grid-template-columns:216px 400px 1fr;height:calc(100vh - 53px)}
+  /* 三栏（A10 连续自适应）：栏宽全流体——侧栏 clamp、列表 minmax、详情 1fr 带下限；
+     断点只负责「少一栏」台阶（见文件尾部三档媒体查询）。 */
+  .app{display:grid;grid-template-columns:clamp(200px,16vw,264px) minmax(320px,min(420px,26vw)) minmax(360px,1fr);height:calc(100vh - 53px)}
   .col{border-right:1px solid var(--line);overflow:auto;background:var(--panel)}
   .col:last-child{border-right:none;background:var(--bg)}
   .write{margin:12px 12px 8px;width:calc(100% - 24px);text-align:center;padding:8px}
@@ -104,7 +105,7 @@ MAILBOX_PAGE = """<!doctype html>
   .empty-cta .row{display:flex;gap:8px}
   .empty-cta .row>*{flex:1;min-width:0}
   /* 正文 */
-  .read{padding:16px 24px 48px;max-width:760px}
+  .read{padding:16px 24px 48px;max-width:78ch}
   .read h2{font-size:18px;margin:6px 0 10px;font-weight:600;word-break:break-word}
   .read .head{display:flex;gap:12px;align-items:flex-start;padding-bottom:12px;border-bottom:1px solid var(--line)}
   .read .head .av{width:34px;height:34px;border-radius:50%;background:var(--chip);color:var(--chip-ink);display:grid;place-items:center;font-weight:700;font-size:12px;flex:none}
@@ -149,23 +150,40 @@ MAILBOX_PAGE = """<!doctype html>
   .rc-row::before{content:"";position:absolute;left:2px;top:10px;width:6px;height:6px;border-radius:50%;background:var(--chip-ink);opacity:.55}
   .rc-row b{color:var(--text);font-weight:600}
   .rc-act{color:var(--accent);font-weight:600}
-  /* 窄屏适配（t-50 件五）：宽屏三栏不动；<1180 导航收成抽屉；<900 列表与详情上下堆叠 */
+  /* 连续自适应台阶（A10）：全部由栏 min 宽度推导——
+     展开三栏 200+320+360=880 起；图标轨 56+320+360=736 起；两栏 320+360=680 起；再窄堆叠 */
   .top .navbtn{display:none}
   .backdrop{display:none}
   #readbar{display:none;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);
     position:sticky;top:0;background:var(--panel);z-index:2}
-  @media (max-width:1180px){
+  @media (max-width:879px){
+    .top{flex-wrap:wrap;row-gap:6px}
+    .search{order:9;flex-basis:100%;max-width:none}
+  }
+  /* 图标轨（A10④）：736–879 侧栏收成 56px，首字符当图标，计数/快捷键说明收起 */
+  @media (min-width:736px) and (max-width:879px){
+    .app{grid-template-columns:56px minmax(320px,min(420px,26vw)) minmax(360px,1fr)}
+    .write{margin:8px 6px;width:calc(100% - 12px);padding:8px 0;font-size:0}
+    .write::before{content:"✎";font-size:16px}
+    .side{padding:6px 6px 16px}
+    .side .h{font-size:0;padding:12px 0 2px;text-align:center;letter-spacing:0}
+    .side .h::first-letter{font-size:10px}
+    .side .item{display:block;font-size:0;text-align:center;padding:8px 0}
+    .side .item::first-letter{font-size:13px}
+    .side .item .c{display:none}
+    .hint{display:none}
+  }
+  /* 抽屉台阶（A10②）：≤735 侧栏转固定抽屉（☰ 开、背板/选中关），列表+详情两栏 */
+  @media (max-width:735px){
     .top .navbtn{display:inline-block}
-    .app{grid-template-columns:400px 1fr}
+    .app{grid-template-columns:minmax(320px,min(420px,26vw)) minmax(360px,1fr)}
     .app .col:first-child{position:fixed;top:53px;bottom:0;left:0;width:264px;margin:0;z-index:7;
       transform:translateX(-105%);transition:transform .18s ease;background:var(--panel)}
     body.nav-open .app .col:first-child{transform:none;box-shadow:8px 0 24px rgba(29,32,38,.18)}
     body.nav-open .backdrop{display:block;position:fixed;top:53px;right:0;bottom:0;left:0;background:rgba(29,32,38,.28);z-index:6}
   }
-  @media (max-width:900px){
-    .top{flex-wrap:wrap;row-gap:6px}
-    .search{order:9;flex-basis:100%;max-width:none}
-    /* 上下结构：列表在上（限高内滚），详情在下（自然高，页面滚动） */
+  /* 堆叠台阶：≤679 放不下两栏 → 列表在上（限高内滚），详情在下（自然高，页面滚动） */
+  @media (max-width:679px){
     .app{display:block;height:auto}
     .app .col{overflow:visible;border-right:none;border-bottom:1px solid var(--line)}
     .app .col:nth-child(2){max-height:46vh;overflow:auto}
@@ -254,7 +272,7 @@ document.getElementById("theme").addEventListener("click", () => {
   rootEl.dataset.theme = next; localStorage.setItem("mb_theme", next);
 });
 
-/* 窄屏（t-50 件五）：<1180 导航抽屉（☰ 开、背板/选中关）；<900 详情区给「← 返回列表」 */
+/* 自适应台阶（A10）：≤735 侧栏抽屉（☰ 开、背板/选中关）；≤679 堆叠时详情区给「← 返回列表」 */
 const closeNav = () => document.body.classList.remove("nav-open");
 document.getElementById("navbtn").addEventListener("click", () =>
   document.body.classList.toggle("nav-open"));

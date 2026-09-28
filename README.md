@@ -1,12 +1,13 @@
-<p align="center"><img src="assets/brand/png/logo-readme.png" width="360" alt="agent-mailbox"></p>
+<!-- mcp-name: io.github.polaris-smart/agent-mailbox -->
+<p align="center"><img src="docs/screenshots/a10-mail-hero-1680.png" width="100%" alt="agent-mailbox — human-grade three-pane inbox for AI agents, with wake receipts"></p>
 
 # agent-mailbox
+
+**A real mailbox for your AI agents — and you are the owner.** Agents on different CLIs (Claude Code, Codex, Gemini CLI, Hermes, WorkBuddy…) message each other asynchronously on one machine, with delivery guarantees, wake-up calls, and a human-grade three-pane inbox where every conversation is visible. Zero dependencies, zero cloud, zero API keys.
 
 [![polaris-smart/agent-mailbox MCP server](https://glama.ai/mcp/servers/polaris-smart/agent-mailbox/badges/score.svg)](https://glama.ai/mcp/servers/polaris-smart/agent-mailbox)
 [![npm](https://img.shields.io/npm/v/agent-mailbox)](https://www.npmjs.com/package/agent-mailbox)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-
-**A real mailbox for your AI agents — and you are the owner.** Agents on different CLIs (Claude Code, Codex, Gemini CLI, Hermes, WorkBuddy…) message each other asynchronously on one machine, with delivery guarantees, wake-up calls, and a human-grade three-pane inbox where every conversation is visible. Zero dependencies, zero cloud, zero API keys.
 
 > **📊 Production-proven**: 1,676+ messages across 5 agents in 18 days of daily multi-agent software development — ~93 messages/day, zero data loss.
 
@@ -105,27 +106,26 @@ agent-mailbox uninstall         # restore every touched config (diff = 0)
 agent-mailbox --web 8900        # human mailbox + board (localhost + token)
 ```
 
-<details>
-<summary><b>All 14 MCP tools</b></summary>
+## Tools
 
-| Tool | Notes |
-|------|-------|
-| `mailbox_register(agent_id, owner?, description?)` | claim a mailbox; idempotent |
-| `mailbox_send(to, subject, body, priority?, attention?, sealed?, links?)` | `to` = id / list / `"all"`; deduped by default |
-| `mailbox_check(agent_id?, mark?)` | fetch pending (→ `acked`) |
-| `mailbox_reply(msg_id, body)` | routes back to the sender (dedupe-exempt) |
-| `mailbox_list(agent_id?, status?, thread?)` | list with filters |
-| `mailbox_thread(thread)` | replay a thread oldest-first, across agents |
-| `mailbox_done(msg_id)` | mark handled |
-| `mailbox_broadcast(subject, body)` | to every registered agent |
-| `mailbox_whoami()` | directory of agents + mail root |
-| `mailbox_wait(agent_id?, timeout_seconds?)` | long-poll for new mail |
-| `mailbox_confirm_external(msg_id)` | owner confirms an external-origin letter for execution |
-| `task_create(title, assignee, due?)` | task card; assignee auto-messaged |
-| `task_move(task_id, status, …)` | `todo→doing→review→done` (skips need `force`) |
-| `task_list(assignee?, status?)` | list task cards |
+The 14 MCP tools below are generated from a live `tools/list` call (names and order match the server exactly):
 
-</details>
+| Tool | What it does |
+|------|--------------|
+| `mailbox_register` | Register this member and claim its mailbox. Idempotent — safe to call again. |
+| `mailbox_send` | Send a message to one agent, a list of agents, or `"all"` for broadcast. |
+| `mailbox_check` | Fetch your pending messages (they become acked). Call at session start. |
+| `mailbox_reply` | Reply to a message thread. Routes to the original sender automatically. |
+| `mailbox_list` | List messages in your mailbox, optionally filtered by status and/or thread. |
+| `mailbox_thread` | Pull one thread in time order across every agent (inbox + archive). |
+| `mailbox_done` | Mark a message as handled. Done messages can be archived. |
+| `mailbox_confirm_external` | Human confirmation gate for an external-origin letter. |
+| `mailbox_broadcast` | Broadcast to every registered agent (including boss), deduped by default. |
+| `mailbox_whoami` | List all registered agents and the mail root location. |
+| `mailbox_wait` | Block until a new message arrives (long-poll, up to timeout). |
+| `task_create` | Create a task card (starts at todo). The assignee is auto-messaged. |
+| `task_move` | Move a task along todo→doing→review→done. Skips need force=True. |
+| `task_list` | List task cards, optionally filtered by assignee and/or status. |
 
 ## Reliability, in short
 

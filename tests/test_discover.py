@@ -53,11 +53,23 @@ def make_ctx(
     )
 
 
-def add_cli(home: Path, name: str, body: str = "#!/bin/sh\nexit 0\n") -> Path:
+def add_cli(
+    home: Path,
+    name: str,
+    body: str = "#!/bin/sh\nexit 0\n",
+    win_body: str | None = None,
+) -> Path:
+    """Fixture CLI, both path flavors. Windows: with the default mode
+    (``X_OK`` included) shutil.which does not match extension-less names
+    (PATHEXT semantics), only a .bat body spawns shell-free; POSIX: bare name."""
     bin_dir = home / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
-    p = bin_dir / name
-    p.write_text(body)
+    if os.name == "nt":
+        p = bin_dir / f"{name}.bat"
+        p.write_text(win_body or "@echo off\r\nexit 0\r\n")
+    else:
+        p = bin_dir / name
+        p.write_text(body)
     p.chmod(0o755)
     return p
 
@@ -100,8 +112,9 @@ def test_l1_cli_on_path(tmp_path):
     report = build_report(ctx, save=False)
     codex = next(m for m in report["members"] if m["member"] == "codex")
     assert codex["kind"] == "cli"
+    expected_tail = os.path.join("bin", "codex.bat") if os.name == "nt" else "/bin/codex"
     assert any(
-        ev["type"] == "cli" and ev["detail"].endswith("/bin/codex") for ev in codex["evidence"]
+        ev["type"] == "cli" and ev["detail"].endswith(expected_tail) for ev in codex["evidence"]
     )
 
 
@@ -201,13 +214,16 @@ def test_l3_port_reverse_lookup_by_exe_path_not_process_name(tmp_path):
     exe.parent.mkdir(parents=True, exist_ok=True)
     exe.write_text("#!/bin/sh\n")
     exe.chmod(0o755)
+    # 反查按路径「字符串」匹配 bundle 段：统一正斜杠形态，Windows 宿主的
+    # 反斜杠路径串（str(exe)）才不会在归属匹配处断链（CI 0.7.5 win 红）。
+    exe_label = exe.as_posix()
     runner = fake_runner(
         {
             ("lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "+c0"): (
                 "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n"
                 "Electron 4242 me 21u IPv4 0x0 0t0 TCP 127.0.0.1:18488 (LISTEN)\n"
             ),
-            ("ps", "-p", "4242", "-o", "command="): f"{exe} --worker\n",
+            ("ps", "-p", "4242", "-o", "command="): f"{exe_label} --worker\n",
         }
     )
     ctx = make_ctx(tmp_path, home=home, runner=runner, probe_urls=False)
@@ -323,7 +339,12 @@ def test_fingerprint_changes_diff():
 
 def test_deep_mode_captures_cli_version(tmp_path):
     home = tmp_path / "home"
-    add_cli(home, "codex", body="#!/bin/sh\necho 'codex 1.2.3'\n")
+    add_cli(
+        home,
+        "codex",
+        body="#!/bin/sh\necho 'codex 1.2.3'\n",
+        win_body="@echo off\r\necho codex 1.2.3\r\n",
+    )
     ctx = make_ctx(tmp_path, home=home)
     ctx.probe_versions = True
     report = build_report(ctx, save=False)

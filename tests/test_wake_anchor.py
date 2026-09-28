@@ -9,7 +9,9 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
+import sys
 from pathlib import Path
 
 from agent_mailbox.store import MailStore
@@ -24,6 +26,12 @@ from agent_mailbox.wake import (
 )
 
 FIELDS = {"ts", "agent", "route", "attempt", "outcome", "error_class", "executor", "latency_ms"}
+
+# Cross-platform spawn fixtures: /usr/bin/false|true don't exist on Windows
+# (Popen → WinError 2 → rows classified spawn_failed, not exit_nonzero).
+# sys.executable spawns and exits identically on every CI flavor.
+FALSE_CMD = [sys.executable, "-c", "import sys; sys.exit(1)"]
+TRUE_CMD = [sys.executable, "-c", "pass"]
 
 
 def _rows(root: Path) -> list[dict]:
@@ -57,7 +65,13 @@ def test_record_wake_attempt_shape_perms_and_append(tmp_path):
         assert r["latency_ms"] is None or isinstance(r["latency_ms"], int)
     assert rows[0]["executor"] == "hermes"
     assert rows[1]["route"] == "belt" and rows[1]["error_class"] == "no_progress"
-    assert _root_mode(tmp_path) == 0o600
+    if os.name == "posix":
+        assert _root_mode(tmp_path) == 0o600  # owner-only iron law (POSIX mode bits)
+    else:
+        # Windows has no POSIX mode bits: os.open(mode=0o600) only toggles the
+        # read-only attribute (st_mode reads 0o666 there). The 0600 creation
+        # law is POSIX-scoped; on Windows assert the file landed as a file.
+        assert (tmp_path / WAKE_ATTEMPTS_FILE).is_file()
 
 
 def test_adapter_error_classes():
@@ -78,9 +92,9 @@ def _fail_cfg(tmp_path: Path) -> WakeConfig:
 def test_failed_wake_writes_fail_rows_and_alerts_once(tmp_path):
     store = _mkstore(tmp_path)
     store.send("HS", "ZC", "please handle", "body")
-    # /usr/bin/false: exits 1 => exit_nonzero, both attempts fail
+    # FALSE_CMD exits 1 => exit_nonzero, both attempts fail
     stats = run_once(
-        tmp_path, _fail_cfg(tmp_path), adapter=LocalCommandAdapter(["/usr/bin/false"]), store=store
+        tmp_path, _fail_cfg(tmp_path), adapter=LocalCommandAdapter(FALSE_CMD), store=store
     )
     assert stats["woke"] == 0 and stats["failed"] == 2
     rows = _rows(tmp_path)
@@ -99,9 +113,7 @@ def test_failed_wake_writes_fail_rows_and_alerts_once(tmp_path):
     )
     assert "wake_alert" in [e["action"] for e in zc_letter["handled_log"]]
     # second round re-runs the failed wake but must NOT re-alert
-    run_once(
-        tmp_path, _fail_cfg(tmp_path), adapter=LocalCommandAdapter(["/usr/bin/false"]), store=store
-    )
+    run_once(tmp_path, _fail_cfg(tmp_path), adapter=LocalCommandAdapter(FALSE_CMD), store=store)
     assert len(list((tmp_path / "inbox" / "boss").glob("*.json"))) == 1
 
 
@@ -109,7 +121,7 @@ def test_successful_wake_writes_ok_row_no_alert(tmp_path):
     store = _mkstore(tmp_path)
     store.send("HS", "ZC", "quick ping", "body")
     stats = run_once(
-        tmp_path, _fail_cfg(tmp_path), adapter=LocalCommandAdapter(["/usr/bin/true"]), store=store
+        tmp_path, _fail_cfg(tmp_path), adapter=LocalCommandAdapter(TRUE_CMD), store=store
     )
     assert stats["woke"] == 1
     rows = _rows(tmp_path)
@@ -126,8 +138,6 @@ def test_unregistered_sender_alerts_boss_only(tmp_path):
     (tmp_path / "config.json").write_text(
         json.dumps({"visibility": {"external_auto_execute": True}}), encoding="utf-8"
     )
-    run_once(
-        tmp_path, _fail_cfg(tmp_path), adapter=LocalCommandAdapter(["/usr/bin/false"]), store=store
-    )
+    run_once(tmp_path, _fail_cfg(tmp_path), adapter=LocalCommandAdapter(FALSE_CMD), store=store)
     assert len(list((tmp_path / "inbox" / "boss").glob("*.json"))) == 1
     assert not (tmp_path / "inbox" / "OUTSIDE").exists()  # 死箱 hygiene: no dead dir

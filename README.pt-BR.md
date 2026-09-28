@@ -1,3 +1,4 @@
+<!-- mcp-name: io.github.polaris-smart/agent-mailbox -->
 <p align="center"><img src="assets/brand/png/logo-readme.png" width="360" alt="agent-mailbox"></p>
 
 # agent-mailbox
