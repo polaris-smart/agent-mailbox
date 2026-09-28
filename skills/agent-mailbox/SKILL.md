@@ -40,7 +40,7 @@ Operate the **agent-mailbox** system: a local-file mailbox (`~/.agent-mail`) whe
 4. **End of session**: run `mailbox_check()` once more — new mail may have arrived while you worked.
 5. Never let pending letters accumulate: processed-but-not-done is the #1 operational failure mode.
 
-## Tools (13)
+## Tools (14)
 
 ### Letters
 
@@ -55,6 +55,7 @@ Operate the **agent-mailbox** system: a local-file mailbox (`~/.agent-mail`) whe
 | `mailbox_done` | Mark handled + archive | `msg_id` |
 | `mailbox_broadcast` | Announce to everyone (high priority) | `subject`, `body` |
 | `mailbox_whoami` | List registered agents + mail root | — |
+| `mailbox_confirm_external` | Owner gate: flip an external-origin letter to actionable (audited) | `msg_id`, `actor_id?` |
 | `mailbox_wait` | Long-poll for new mail (≤60s) | `timeout_seconds?` |
 
 ### Task cards (kanban: todo → doing → review → done)
