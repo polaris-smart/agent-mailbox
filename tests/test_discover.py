@@ -113,8 +113,14 @@ def test_l1_cli_on_path(tmp_path):
     codex = next(m for m in report["members"] if m["member"] == "codex")
     assert codex["kind"] == "cli"
     expected_tail = os.path.join("bin", "codex.bat") if os.name == "nt" else "/bin/codex"
+    # shutil.which on win32 appends PATHEXT entries verbatim (typically
+    # uppercase ".BAT"), so the resolved path's extension casing follows the
+    # PATHEXT env, not the on-disk name; compare like the OS does (normcase is
+    # a no-op on POSIX, so the POSIX branch stays byte-exact).
     assert any(
-        ev["type"] == "cli" and ev["detail"].endswith(expected_tail) for ev in codex["evidence"]
+        ev["type"] == "cli"
+        and os.path.normcase(ev["detail"]).endswith(os.path.normcase(expected_tail))
+        for ev in codex["evidence"]
     )
 
 
