@@ -10,6 +10,7 @@ import json
 import threading
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 from agent_mailbox import server, web
 from agent_mailbox.store import MailStore, load_visibility
@@ -361,7 +362,7 @@ def test_agent_cross_read_switch_wires_tool_layer(root, store, monkeypatch):
     monkeypatch.setenv("AGENT_MAIL_ID", "A")
     monkeypatch.setattr(server, "_store", store)
     monkeypatch.setattr(server, "_binding", {"enabled": False})
-    with pytest.raises(server.MailboxError, match="permission denied"):
+    with pytest.raises(ToolError, match="permission denied"):
         server.mailbox_list(agent_id="B")  # 默认关：结构化拒绝
     store.set_visibility({"agent_cross_read": True}, by="boss")
     out = server.mailbox_list(agent_id="B")  # 开了：公开抄送

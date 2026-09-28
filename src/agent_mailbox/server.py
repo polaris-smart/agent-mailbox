@@ -14,12 +14,14 @@ import argparse
 import functools
 import hashlib
 import hmac
+import json
 import logging
 import os
 import sys
 import time
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from .sampling import SamplingNotifier, SamplingRegistry, stable_connection
 from .store import (
@@ -166,14 +168,17 @@ def _verify_identity(agent_id: str) -> None:
 
 
 def _tool_guard(fn):
-    """v0.7.6 (A7): run one MCP tool body, converting ``MailboxError`` into a
-    structured payload instead of the opaque ``Error executing tool …`` bubble
-    (HS 硬样本: ``mailbox_send(attention="info")`` used to leak nothing at all).
+    """v0.7.6 (A7): run one MCP tool body and let every ``MailboxError`` leave
+    as a ``ToolError`` so the client actually reads ``code`` + ``detail``.
 
-    The returned dict always carries ``error_code`` plus human-readable detail;
-    internal paths and credential material are never echoed (whitelist-tested
-    in ``tests/test_error_surface.py``). Tools that succeed return the callee's
-    value unchanged.
+    定谳链（HS 161707 / 3611 硬判据 + MCP 官方 SDK 口径）：本仓 mcp 把一切非
+    ``ToolError`` 按 crash 处理——客户端只见裸 ``Error executing tool <name>``
+    （``tools/base.py`` UnexpectedToolError 分支），error_code 根本到不了模型；
+    返回"成功形状 dict"同样禁（客户端与模型 UI 判成工具成功）。⇒ 五类统一
+    ``raise ToolError``（is_error=True）。载荷双路（161707 §二）：首行单行
+    JSON（error/code/detail）+ 次行人话（``MBE|<code>|`` 前缀），序列化
+    ≤500 字节；AGENT_MAIL_TOKEN 掩码后出口；非预期异常服务端留痕、客户端
+    只给泛化消息且不丢 is_error=True。
     """
 
     @functools.wraps(fn)
@@ -181,26 +186,37 @@ def _tool_guard(fn):
         try:
             return fn(*args, **kwargs)
         except MailboxError as exc:
-            code = getattr(exc, "code", None)
-            # ① Legacy raises (no code) re-raise untouched: corrupt-config /
-            # fail-loud class errors must never be swallowed into a return
-            # value (t-44 iron law — "想关没关成" beats "继续发").
-            # ② permission_denied / not_found also re-raise: the caller must
-            # see a *failure*, never a success-shaped dict it could mistake
-            # for data (PR-B semantics preserved).
-            # ③ Only explicit A7 input-validation codes convert to the
-            # structured payload (field + valid values + hint).
-            if code is None or code in ("permission_denied", "not_found"):
-                raise
+            code = getattr(exc, "code", None) or "internal"
             detail = str(exc)
             for secret in (os.environ.get("AGENT_MAIL_TOKEN", ""),):
                 if secret and secret in detail:
                     detail = detail.replace(secret, "••••")
-            return {
-                "error": True,
-                "error_code": code,
-                "detail": detail,
-            }
+            # 161707 边界①：整条错误文本（JSON 行 + 人话行）≤500 序列化字节；
+            # 超预算时同步收缩两行共用的 detail，保 JSON 可解析、人话行可读。
+            detail_work = detail
+            while True:
+                payload = {"error": True, "code": code, "detail": detail_work}
+                line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+                human = f"MBE|{code}| {detail_work}"
+                total = len(line.encode()) + 1 + len(human.encode())
+                if total <= 500 or len(detail_work) <= 24:
+                    break
+                detail_work = detail_work[:-24] + "…"
+            if total > 500:  # 极端兜底：code 本身超长时硬切人话行
+                human = (
+                    human.encode()[: 500 - len(line.encode()) - 2].decode("utf-8", "ignore") + "…"
+                )
+                total = len(line.encode()) + 1 + len(human.encode())
+            raise ToolError(f"{line}\n{human}") from exc
+        except ToolError:
+            raise
+        except Exception:
+            logger.exception("tool %s crashed unexpectedly", fn.__name__)
+            raise ToolError(
+                '{"error":true,"code":"internal",'
+                '"detail":"unexpected tool failure (logged server-side)"}\n'
+                "MBE|internal| unexpected tool failure — server log holds the trace"
+            ) from None
 
     return wrapper
 
@@ -471,6 +487,7 @@ def mailbox_done(msg_id: str, agent_id: str = "") -> dict:
 
 
 @server.tool()
+@_tool_guard
 def mailbox_confirm_external(msg_id: str, actor_id: str = "") -> dict:
     """Human confirmation gate for an external-origin letter (§3.3).
 
@@ -498,13 +515,16 @@ def mailbox_broadcast(subject: str, body: str, from_id: str = "", dedupe: bool =
         raise MailboxError("from_id required (or set AGENT_MAIL_ID env)")
     _verify_identity(frm)
     if _store_instance().kind_of(frm) == "guest":
-        raise MailboxError("permission denied: guest members cannot broadcast", code="permission_denied")
+        raise MailboxError(
+            "permission denied: guest members cannot broadcast", code="permission_denied"
+        )
     sent = _store_instance().send(frm, "all", subject, body, priority="high", dedupe=dedupe)
     delivered = sum(1 for e in sent if not e.get("deduped"))
     return {"delivered": sent, "count": delivered}
 
 
 @server.tool()
+@_tool_guard
 def mailbox_whoami() -> dict:
     """List all registered agents and the mail root location."""
     _verify_identity(os.environ.get("AGENT_MAIL_ID", ""))
@@ -518,6 +538,7 @@ def mailbox_whoami() -> dict:
 
 
 @server.tool()
+@_tool_guard
 def mailbox_wait(agent_id: str = "", timeout_seconds: float = 25.0) -> dict:
     """Block until a new message arrives (long-poll, up to timeout). Returns
     immediately if pending messages exist. Import 'time' is at module top."""

@@ -17,6 +17,7 @@ import subprocess
 import sys
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 from agent_mailbox import server
 from agent_mailbox.store import MailboxError, load_identity_binding
@@ -98,14 +99,14 @@ def test_corrupt_config_json_fails_loudly(tmp_path):
 
 def test_enabled_missing_token_rejected(fresh):
     _write_config(fresh, {"identity_binding": {"enabled": True, "HS": _sha("s3cret")}})
-    with pytest.raises(MailboxError, match="identity mismatch"):
+    with pytest.raises(ToolError, match="identity mismatch"):
         server.mailbox_register("HS")
 
 
 def test_enabled_wrong_token_rejected(fresh, monkeypatch):
     _write_config(fresh, {"identity_binding": {"enabled": True, "HS": _sha("s3cret")}})
     monkeypatch.setenv("AGENT_MAIL_TOKEN", "wrong")
-    with pytest.raises(MailboxError, match="identity mismatch"):
+    with pytest.raises(ToolError, match="identity mismatch"):
         server.mailbox_check("HS")
 
 
@@ -144,7 +145,7 @@ def test_unbound_identity_stays_open(fresh, monkeypatch):
 
 def test_malformed_config_fails_on_first_tool_touch(fresh):
     _write_config(fresh, {"identity_binding": {"enabled": True, "HS": "zz"}})
-    with pytest.raises(MailboxError, match="sha256"):
+    with pytest.raises(ToolError, match="sha256"):
         server.mailbox_register("HS")
 
 

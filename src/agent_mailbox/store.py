@@ -79,6 +79,7 @@ def _normalize_member_id(mid: str) -> str:
     """
     return (mid or "").strip().casefold().replace("-", "_")
 
+
 # v0.5.0 delivery-side duplicate suppression (design A) + lifecycle windows.
 # 铁1: reap_ttl must stay strictly below dedup_ttl — a reclaim window at or
 # over the dedup window could resurrect a stale acked original right when its
@@ -534,10 +535,7 @@ class MailStore:
 
     @staticmethod
     def _validate_id(agent_id: str) -> None:
-        if (
-            not AGENT_ID_RE.match(agent_id or "")
-            or ".." in (agent_id or "")
-        ):
+        if not AGENT_ID_RE.match(agent_id or "") or ".." in (agent_id or ""):
             raise MailboxError(
                 f"invalid agent id {agent_id!r}: use [A-Za-z0-9][A-Za-z0-9._-] ending alnum, max 64 chars; "
                 "no separators, no '..'",
@@ -1153,7 +1151,7 @@ class MailStore:
             registered.setdefault(_normalize_member_id(k), k)
         try:
             wake_cfg = json.loads((self.root / "wake.json").read_text(encoding="utf-8"))
-            for k in (wake_cfg.get("agents") or {}):
+            for k in wake_cfg.get("agents") or {}:
                 registered.setdefault(_normalize_member_id(k), k)
         except (FileNotFoundError, OSError, json.JSONDecodeError):
             pass
@@ -1171,7 +1169,9 @@ class MailStore:
                         "Register first (mailbox_register) or fix the id.",
                         code="not_found",
                     )
-                self.audit("unregistered_recipient", by=orig, detail="warn-mode: letter not delivered")
+                self.audit(
+                    "unregistered_recipient", by=orig, detail="warn-mode: letter not delivered"
+                )
                 warns.append({"to": orig, "warn": "unregistered"})
                 continue
             seen.append(orig)  # 原始显示形式投递/落盘——归一只用于成员比对

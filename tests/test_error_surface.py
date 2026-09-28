@@ -135,9 +135,7 @@ def test_body_at_limit_is_delivered(store: MailStore):
 
 
 def test_max_body_bytes_config_override(store: MailStore):
-    (store.root / "config.json").write_text(
-        json.dumps({"max_body_bytes": 10}), encoding="utf-8"
-    )
+    (store.root / "config.json").write_text(json.dumps({"max_body_bytes": 10}), encoding="utf-8")
     e = _err(lambda: store.send(from_id="ZC", to="HS", subject="s", body="x" * 11))
     assert e["error_code"] == "payload_too_large"
     assert "limit 10 bytes" in e["detail"]
@@ -147,20 +145,31 @@ def test_max_body_bytes_config_override(store: MailStore):
 
 
 def test_guard_converts_mailboxerror_to_structured():
+    from mcp.server.mcpserver.exceptions import ToolError
+
     from agent_mailbox.server import _tool_guard
 
     @_tool_guard
     def boom():
-        raise MailboxError("attention must be one of ('decision', 'report', 'archive')",
-                           code="invalid_field")
+        raise MailboxError(
+            "attention must be one of ('decision', 'report', 'archive')", code="invalid_field"
+        )
 
-    out = boom()
-    assert out["error"] is True
-    assert out["error_code"] == "invalid_field"
-    assert "decision" in out["detail"]
+    # 定谳（HS 161707）：校验类也必须 raise —— 客户端 is_error=True 可判失败，
+    # 禁成功形状 dict。首行 = 单行 JSON（error/code/detail），次行 = MBE|code| 人话。
+    with pytest.raises(ToolError) as ei:
+        boom()
+    first_line = str(ei.value).splitlines()[0]
+    payload = json.loads(first_line)
+    assert payload["error"] is True
+    assert payload["code"] == "invalid_field"
+    assert "decision" in payload["detail"]
+    assert str(ei.value).splitlines()[1].startswith("MBE|invalid_field| ")
 
 
 def test_guard_masks_env_token_in_detail(monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+
     from agent_mailbox.server import _tool_guard
 
     monkeypatch.setenv("AGENT_MAIL_TOKEN", "super-secret-token-value")
@@ -169,9 +178,10 @@ def test_guard_masks_env_token_in_detail(monkeypatch):
     def boom():
         raise MailboxError("bad call near super-secret-token-value", code="invalid_field")
 
-    out = boom()
-    assert "super-secret-token-value" not in out["detail"]
-    assert "••••" in out["detail"]
+    with pytest.raises(ToolError) as ei:
+        boom()
+    assert "super-secret-token-value" not in str(ei.value)
+    assert "••••" in str(ei.value)
 
 
 def test_guard_passes_success_through():
@@ -182,6 +192,73 @@ def test_guard_passes_success_through():
         return {"ok": True}
 
     assert fine() == {"ok": True}
+
+
+def test_guard_payload_failure_discriminable_and_capped_500b():
+    """归一令硬约束：失败可判别（is_error=True + error:true）+ 161707 边界①
+    错误文本 ≤500 序列化字节（防重试累积刷上下文）。"""
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from agent_mailbox.server import _tool_guard
+
+    @_tool_guard
+    def boom_big():
+        raise MailboxError("x" * 9000, code="invalid_field")
+
+    with pytest.raises(ToolError) as ei:
+        boom_big()
+    msg = str(ei.value)
+    assert len(msg.encode()) <= 500
+    payload = json.loads(msg.splitlines()[0])
+    assert payload["error"] is True and payload["code"] == "invalid_field"
+
+
+def test_guard_unexpected_exception_stays_is_error_and_generic(caplog):
+    """161707 边界③：非预期异常 → 服务端留痕 + 客户端只给泛化消息，且不丢
+    is_error=True（不得因 crash 掉出 ToolError 面）。"""
+    import logging as _logging
+
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from agent_mailbox.server import _tool_guard
+
+    @_tool_guard
+    def crashed():
+        raise RuntimeError("secret stack detail /Users/interia/x")
+
+    with (
+        caplog.at_level(_logging.ERROR, logger="agent_mailbox.server"),
+        pytest.raises(ToolError) as ei,
+    ):
+        crashed()
+    assert "secret stack detail" not in str(ei.value)  # 泛化，不带栈
+    assert "unexpected tool failure" in str(ei.value)
+    assert any("crashed unexpectedly" in r.message for r in caplog.records)  # 服务端留痕
+
+
+def test_a6_cross_box_same_shape_no_existence_oracle(monkeypatch, tmp_path):
+    """增补令⑫：agent_id=boss（已注册）与 NOSUCHPROBE（未注册）跨箱读必须
+    对外同形同码 —— 异码即存在性 oracle。断言在消息文本层（客户端实收面）。"""
+    from agent_mailbox import server as srv
+
+    class _FakeStore:
+        root = tmp_path
+
+        @staticmethod
+        def kind_of(_me):
+            return "agent"
+
+    monkeypatch.setattr(srv, "_store_instance", lambda: _FakeStore())
+    monkeypatch.setattr(srv, "load_visibility", lambda root: {})
+
+    out = {}
+    for name, target in (("boss", "boss"), ("probe", "NOSUCHPROBE")):
+        with pytest.raises(MailboxError) as ei:
+            srv._read_scope("PROBE1", target)
+        out[name] = (str(ei.value), getattr(ei.value, "code", None))
+    assert out["boss"] == out["probe"]  # 同形同码，一字不差
+    assert out["boss"][1] == "permission_denied"
+    assert "boss" not in out["boss"][0] and "NOSUCH" not in out["boss"][0]  # 零目标存在性泄漏
 
 
 # ── A6: error surface whitelist — no paths/credentials ever echoed ───────

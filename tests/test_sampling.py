@@ -64,7 +64,12 @@ def mailroot(tmp_path, monkeypatch):
     # A7: seed the roster once per root — every sampling test addresses HS/WB
     (tmp_path / "registry.json").write_text(
         json.dumps(
-            {"agents": {"HS": {"owner": "", "description": ""}, "WB": {"owner": "", "description": ""}}},
+            {
+                "agents": {
+                    "HS": {"owner": "", "description": ""},
+                    "WB": {"owner": "", "description": ""},
+                }
+            },
             ensure_ascii=False,
         ),
         encoding="utf-8",

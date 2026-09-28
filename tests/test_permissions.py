@@ -18,6 +18,7 @@ import json
 import threading
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 from agent_mailbox import server
 from agent_mailbox import store as store_mod
@@ -138,15 +139,15 @@ def test_legacy_registry_card_without_kind_still_works(root):
 def test_agent_reading_another_mailbox_is_rejected(store, monkeypatch):
     store.send("A", "B", "for b", "b-body")
     monkeypatch.setenv("AGENT_MAIL_ID", "A")
-    with pytest.raises(MailboxError, match="permission denied"):
+    with pytest.raises(ToolError, match="permission denied"):
         server.mailbox_check(agent_id="B")
-    with pytest.raises(MailboxError, match="permission denied"):
+    with pytest.raises(ToolError, match="permission denied"):
         server.mailbox_list(agent_id="B")
-    with pytest.raises(MailboxError, match="permission denied"):
+    with pytest.raises(ToolError, match="permission denied"):
         server.mailbox_wait(agent_id="B")
-    with pytest.raises(MailboxError, match="permission denied"):
+    with pytest.raises(ToolError, match="permission denied"):
         server.mailbox_done(msg_id="whatever", agent_id="B")
-    with pytest.raises(MailboxError, match="permission denied"):
+    with pytest.raises(ToolError, match="permission denied"):
         server.mailbox_reply(msg_id="whatever", body="x", agent_id="B")
     # own mailbox keeps working
     monkeypatch.setenv("AGENT_MAIL_ID", "B")
@@ -246,7 +247,7 @@ def test_confirm_external_is_owner_only_and_greppable(root, monkeypatch):
     ext = st.send("OUTSIDE", "B", "external", "x", origin="external")
     mid = ext[0]["id"]
     monkeypatch.setenv("AGENT_MAIL_ID", "B")
-    with pytest.raises(MailboxError, match="permission denied"):
+    with pytest.raises(ToolError, match="permission denied"):
         server.mailbox_confirm_external(msg_id=mid)
     monkeypatch.setenv("AGENT_MAIL_ID", "boss")
     out = server.mailbox_confirm_external(msg_id=mid)
@@ -299,7 +300,7 @@ def test_pairing_tokens_malformed_fails_loudly(root):
 def test_guest_cannot_broadcast(root, monkeypatch):
     MailStore(root=root).register("G1", kind="guest")
     monkeypatch.setenv("AGENT_MAIL_ID", "G1")
-    with pytest.raises(MailboxError, match="guest members cannot broadcast"):
+    with pytest.raises(ToolError, match="guest members cannot broadcast"):
         server.mailbox_broadcast(subject="s", body="b")
 
 
