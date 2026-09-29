@@ -332,8 +332,25 @@ def mailbox_send(
 
 @server.tool()
 @_tool_guard
-def mailbox_check(agent_id: str = "", mark: bool = True) -> dict:
-    """Fetch your pending messages (they become acked). Call at session start.
+def mailbox_check(agent_id: str = "", mark: bool = False) -> dict:
+    """Fetch your pending letters and your true backlog. Call at session start.
+
+    v0.7.6 (F 状态可信): by default this is a **read-only probe** — letters
+    stay ``pending``; counting mail never consumes it (禁自动 ack). The
+    numbers report the mailbox as it is *right now*, straight from the store:
+
+    - ``unread`` — 真·待办: letters currently ``pending``. Acked letters are
+      never counted, so a mailbox full of acked-but-unhandled mail reports
+      ``unread: 0`` honestly (the pre-0.7.6 bug: it counted the letters the
+      call itself had just acked).
+    - ``total`` — all non-done letters (pending + acked): the backlog you
+      still owe, visible even when ``unread`` is 0.
+    - ``messages`` — the pending letters themselves (sealed bodies redacted).
+
+    Pass ``mark=True`` to explicitly flip the returned letters to ``acked``
+    (the legacy auto-ack behavior, now opt-in); the numbers above are still
+    computed after that pass, so they never describe consumed mail as
+    unread. Nothing here ever sets ``done`` or moves a status backwards.
 
     Adds ``ghosts`` when any thread you hold more than 5 open (non-done)
     letters in — that is the acked-sinking failure mode; drain those
@@ -348,7 +365,12 @@ def mailbox_check(agent_id: str = "", mark: bool = True) -> dict:
     msgs = st.check(me, mark=mark)
     reader = _effective_reader(os.environ.get("AGENT_MAIL_ID", ""), me)
     msgs = [redact_sealed(m, reader=reader) for m in msgs]
-    out: dict = {"agent_id": me, "unread": len(msgs), "messages": msgs}
+    # F 单元：口径取响应时点的仓内真值（一次锁内遍历），不信 len(msgs)——
+    # mark=True 时 msgs 是刚被翻成 acked 的信，按它计数就是把 acked 报成 unread。
+    inbox_now = st.list_messages(me)
+    unread = sum(1 for m in inbox_now if m.get("status") == "pending")
+    total = sum(1 for m in inbox_now if m.get("status") != "done")
+    out: dict = {"agent_id": me, "unread": unread, "total": total, "messages": msgs}
     ghosts = st.ghost_threads()
     if ghosts:
         out["ghosts"] = ghosts

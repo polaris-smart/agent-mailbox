@@ -476,6 +476,13 @@ def _mailbox_payload(store: MailStore) -> dict:
         "sealed": sum(1 for x in letters if x.get("redacted") == "sealed"),
         "starred": len(starred),
         "drafts": len(state["drafts"]),
+        # v0.7.6 F 单元：主人的「真·待办」口径（status==pending，acked 不算），
+        # 侧栏「待处理 N」的数字源 + 下钻（?folder=pending）的数据面。
+        "pending": sum(
+            1
+            for x in letters
+            if x["to"] == owner and not x["_archived"] and x.get("status") == "pending"
+        ),
     }
     attention_unread = sum(
         1

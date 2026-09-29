@@ -214,6 +214,7 @@ MAILBOX_PAGE = """<!doctype html>
       <div class="side">
         <div class="h">我的</div>
         <div class="item on" data-folder="inbox">收件箱 <span class="c" id="c-inbox"></span></div>
+        <div class="item" data-folder="pending">待处理 <span class="c" id="c-pending"></span></div>
         <div class="item" data-folder="starred">★ 星标 <span class="c" id="c-starred"></span></div>
         <div class="item" data-folder="sent">已发送 <span class="c" id="c-sent"></span></div>
         <div class="item" data-folder="drafts">草稿 <span class="c" id="c-drafts"></span></div>
@@ -343,6 +344,7 @@ function folderLetters() {
   const mine = x => x.to === DATA.owner;
   let out;
   if (folder === "inbox") out = L.filter(x => mine(x) && !x._archived);
+  else if (folder === "pending") out = L.filter(x => mine(x) && !x._archived && x.status === "pending");
   else if (folder === "archived") out = L.filter(x => mine(x) && x._archived);
   else if (folder === "sent") out = L.filter(x => x.from === DATA.owner);
   else if (folder === "starred") out = L.filter(x => (DATA.starred || []).includes(x.id));
@@ -399,7 +401,7 @@ function renderList() {
   const hv = document.getElementById("healthview");
   if (folder === "health") { list.innerHTML = ""; hv.style.display = "block"; renderHealth(); return; }
   hv.style.display = "none";
-  const titles = { inbox: "收件箱", starred: "星标", sent: "已发送", drafts: "草稿", archived: "已归档",
+  const titles = { inbox: "收件箱", pending: "待处理（真·待办 · pending）", starred: "星标", sent: "已发送", drafts: "草稿", archived: "已归档",
     monitor: "agent 之间的全部往来", undelivered: "未送达 / 失败", sealed: "密封信（仅元数据）" };
   document.getElementById("list-title").textContent = (memberFilter ? "成员 · " + memberFilter + " · " : "") + (titles[folder] || "信箱");
   if (folder === "drafts") return renderDrafts();
@@ -682,7 +684,7 @@ function bindCta() {
 
 function renderSidebarCounts() {
   const c = DATA.counts || {};
-  for (const k of ["inbox", "starred", "sent", "drafts", "archived", "monitor", "undelivered", "sealed"]) {
+  for (const k of ["inbox", "pending", "starred", "sent", "drafts", "archived", "monitor", "undelivered", "sealed"]) {
     const el = document.getElementById("c-" + k);
     if (el) el.textContent = c[k] || "";
   }
@@ -736,6 +738,12 @@ document.addEventListener("keydown", e => {
 });
 
 document.getElementById("empty-write").addEventListener("click", () => compose({}));
+
+/* v0.7.6 F 单元：?folder=pending 深链 —— 「待处理 N」数字可下钻成链接目标，
+   白名单内才生效，未知值回落默认收件箱 */
+const qFolder = new URLSearchParams(location.search).get("folder");
+if (qFolder && ["inbox", "pending", "starred", "sent", "drafts", "archived", "monitor", "undelivered", "sealed", "health"].includes(qFolder))
+  folder = qFolder;
 
 reload();
 setInterval(() => { if (document.visibilityState === "visible") reload(false).catch(() => {}); }, 5000);
