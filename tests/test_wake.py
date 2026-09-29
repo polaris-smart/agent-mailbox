@@ -229,12 +229,18 @@ def test_wake_cli_install_and_status(env, monkeypatch, capsys):
     )
     assert (tmp / f"{WAKE_LABEL}-ZC.plist").exists()
     saved = json.loads((root / "wake.json").read_text(encoding="utf-8"))
-    assert saved["agent_id"] == "ZC" and saved["webhook"]["url"] == "http://127.0.0.1:9/h"
+    # t-58（A-1）: install 的通道键写 agents.<ID> 身份段，全局键不再被改写
+    assert saved["agent_id"] == "ZC"
+    assert saved["agents"]["ZC"]["adapter"] == "generic-webhook"
+    assert saved["agents"]["ZC"]["webhook"]["url"] == "http://127.0.0.1:9/h"
+    assert saved["adapter"] == "hermes" and saved["webhook"]["url"] == ""  # 全局=默认兜底
     assert saved["jev"]["enabled"] is False  # Jev 默认关
 
     wake_main(["status", "--root", str(root)])
     info = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert info["configured"] is True and info["agent_id"] == "ZC"
+    assert info["route"]["adapter"] == "generic-webhook"  # run 将按身份解析到此
+    assert info["route"]["sources"]["adapter"] == "agents:ZC"
 
 
 def test_install_preserves_unknown_top_level_keys(env, monkeypatch):
@@ -271,7 +277,9 @@ def test_install_preserves_unknown_top_level_keys(env, monkeypatch):
         ]
     )
     saved = json.loads((root / "wake.json").read_text(encoding="utf-8"))
-    assert saved["agents"] == policy["agents"], "sampling policy 段必须原样保留"
+    # t-58（A-1）: install 给 ZC 写路由段；sampling 的 WB policy 段必须原样保留
+    assert saved["agents"]["WB"] == policy["agents"]["WB"], "sampling policy 段必须原样保留"
+    assert saved["agents"]["ZC"]["adapter"] == "generic-webhook", "路由段与 policy 段共居不互踩"
     assert saved["custom_future_key"] == policy["custom_future_key"]
     assert saved["agent_id"] == "ZC"  # 已知键照常工作
 

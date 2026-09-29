@@ -44,6 +44,7 @@ Jev (F3) plugs in here as an optional, default-off router — see jev.py.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import signal
@@ -121,8 +122,10 @@ def record_wake_attempt(
 
 # ------------------------------------------------------------------- config
 
-# WakeConfig 认识的顶层键；其余（如 sampling 的 "agents" policy 段）在
-# load→save 往返中原样保留，绝不静默丢弃（t-37）。
+# WakeConfig 认识的顶层键；其余（如 "custom_future_key"）在 load→save 往返
+# 中原样保留，绝不静默丢弃（t-37）。t-58（A-1）：顶层 "agents" 段收编为显式
+# 已知键——per-agent 唤醒路由（adapter/command/webhook）与 sampling 的
+# per-agent policy 共居同一段，未知子键照旧原样保留。
 _KNOWN_KEYS = frozenset(
     {
         "agent_id",
@@ -134,8 +137,38 @@ _KNOWN_KEYS = frozenset(
         "retry_interval",
         "retry_max",
         "stale_acked",
+        "agents",
     }
 )
+
+
+@dataclasses.dataclass(frozen=True)
+class WakeRoute:
+    """t-58（A-1）: 一个身份解析后的生效唤醒通道。
+
+    解析优先级（逐键独立）：``--adapter/--command/--webhook-url`` CLI 覆盖 >
+    ``agents.<ID>`` per-agent 段 > 全局 adapter/webhook > 内置默认（hermes）。
+    ``sources`` 记录每个键的来源（``cli`` / ``agents:<ID>`` / ``global`` /
+    ``default``），doctor ④ 收件人路由检查直接可读——「这条通道是谁配的」
+    不再靠猜。
+    """
+
+    adapter: str = "hermes"
+    command: tuple[str, ...] = ()
+    webhook_url: str = ""
+    webhook_secret: str = ""
+    webhook_style: str | None = None
+    command_timeout: float = DEFAULT_COMMAND_TIMEOUT
+    sources: dict[str, str] = dataclasses.field(default_factory=dict)
+
+    def to_display(self) -> dict[str, Any]:
+        """doctor/status 用的一行式摘要（secret 不落输出）。"""
+        return {
+            "adapter": self.adapter,
+            "command": list(self.command),
+            "webhook_url": self.webhook_url,
+            "sources": dict(self.sources),
+        }
 
 
 class WakeConfig:
@@ -180,10 +213,147 @@ class WakeConfig:
         self.retry_interval = float(data.get("retry_interval", DEFAULT_RETRY_INTERVAL))
         self.retry_max = int(data.get("retry_max", DEFAULT_RETRY_MAX))
         self.stale_acked = float(data.get("stale_acked", DEFAULT_STALE_ACKED))
-        # 未知顶层键原样保留（t-37）：sampling 的 per-agent policy 走顶层
-        # "agents" 段（sampling.wake_policy_for），本类不认识它——不保留的话
-        # 任何 load→save 往返（wake install 等）都会把它静默抹掉。
+        # t-58（A-1）: 顶层 "agents" 段——per-agent 唤醒路由（adapter/command/
+        # webhook）与 sampling per-agent policy 共居。整段原样持有（未知子键
+        # 一起保留），写路由只动自己的三键，sampling 键绝不被抹。
+        agents_raw = data.get("agents")
+        self._agents: dict[str, Any] = (
+            {str(k): v for k, v in agents_raw.items()} if isinstance(agents_raw, dict) else {}
+        )
+        # CLI 覆盖（仅内存态，永不落盘）：wake run --adapter/--command/
+        # --webhook-url 的最高优先级覆写，见 effective_route。
+        self._cli_override: dict[str, Any] = {}
+        # 未知顶层键原样保留（t-37）：本类不认识它——不保留的话任何 load→save
+        # 往返（wake install 等）都会把它静默抹掉。
         self._extra = {k: v for k, v in data.items() if k not in _KNOWN_KEYS}
+
+    # -------------------------------------------------- per-agent routing (t-58)
+
+    def agent_section(self, agent_id: str) -> dict[str, Any]:
+        """``agents.<ID>`` 段（dict 值才认）；缺失/形状不对都回 {}（fail-open：
+        旧配置没有这段必须照旧可用，绝不因缺键报错）。大小写不同键作兜底匹配
+        （HS/hs 同一身份）。"""
+        if not agent_id:
+            return {}
+        raw = self._agents.get(agent_id)
+        if isinstance(raw, dict):
+            return raw
+        lowered = str(agent_id).lower()
+        for k, v in self._agents.items():
+            if str(k).lower() == lowered and isinstance(v, dict):
+                return v
+        return {}
+
+    def set_agent_route(
+        self,
+        agent_id: str,
+        *,
+        adapter: str | None = None,
+        command: list[str] | tuple[str, ...] | None = None,
+        webhook_url: str | None = None,
+        webhook_secret: str | None = None,
+        webhook_style: str | None = None,
+    ) -> dict[str, Any]:
+        """只写 ``agents.<ID>`` 段的通道键（t-58 硬约束：install 绝不落全局）。
+
+        传 None 的键一律不动；段内既有键（sampling policy 等）原样保留。
+        返回更新后的段。"""
+        section = dict(self.agent_section(agent_id))
+        if adapter is not None:
+            section["adapter"] = str(adapter)
+        if command is not None:
+            section["command"] = [str(a) for a in command]
+        if webhook_url is not None or webhook_secret is not None or webhook_style is not None:
+            webhook = section.get("webhook")
+            webhook = dict(webhook) if isinstance(webhook, dict) else {}
+            if webhook_url is not None:
+                webhook["url"] = str(webhook_url)
+            if webhook_secret is not None:
+                webhook["secret"] = str(webhook_secret)
+            if webhook_style is not None:
+                webhook["style"] = str(webhook_style)
+            section["webhook"] = webhook
+        self._agents[str(agent_id)] = section
+        return section
+
+    def set_cli_override(
+        self,
+        *,
+        adapter: str | None = None,
+        command: list[str] | tuple[str, ...] | None = None,
+        webhook_url: str | None = None,
+    ) -> None:
+        """wake run 的 CLI 覆盖（最高优先级，仅本进程内存态，永不写盘）。"""
+        if adapter:
+            self._cli_override["adapter"] = str(adapter)
+        if command:
+            self._cli_override["command"] = [str(a) for a in command]
+        if webhook_url:
+            self._cli_override["webhook_url"] = str(webhook_url)
+
+    def effective_route(self, agent_id: str) -> WakeRoute:
+        """解析一个身份的生效唤醒通道（t-58 优先级链）。
+
+        逐键独立解析：CLI 覆盖 > ``agents.<ID>`` > 全局 > 默认。旧配置（无
+        agents 段/缺键）每个键都自然落回全局/默认——fail-open 向后兼容，
+        多身份同机各回各家则靠段内键生效。"""
+        section = self.agent_section(agent_id)
+        webhook = section.get("webhook")
+        webhook = webhook if isinstance(webhook, dict) else {}
+        src_agent = f"agents:{agent_id}" if section else ""
+        sources: dict[str, str] = {}
+
+        adapter = str(self._cli_override.get("adapter") or "") or str(section.get("adapter") or "")
+        if adapter:
+            sources["adapter"] = "cli" if self._cli_override.get("adapter") else src_agent
+        else:
+            adapter = self.adapter
+            sources["adapter"] = "global" if self.adapter != "hermes" else "default"
+
+        command: list[str] = []
+        raw_command = self._cli_override.get("command") or section.get("command")
+        if isinstance(raw_command, (list, tuple)) and raw_command:
+            command = [str(a) for a in raw_command]
+            sources["command"] = "cli" if self._cli_override.get("command") else src_agent
+        elif self.command:
+            command = list(self.command)
+            sources["command"] = "global"
+
+        webhook_url = str(
+            self._cli_override.get("webhook_url") or webhook.get("url") or self.webhook_url or ""
+        )
+        if webhook_url:
+            if self._cli_override.get("webhook_url"):
+                sources["webhook_url"] = "cli"
+            elif webhook.get("url"):
+                sources["webhook_url"] = src_agent
+            else:
+                sources["webhook_url"] = "global"
+        webhook_secret = str(webhook.get("secret") or self.webhook_secret or "")
+        if webhook.get("secret"):
+            sources["webhook_secret"] = src_agent
+        elif self.webhook_secret:
+            sources["webhook_secret"] = "global"
+        webhook_style = str(webhook.get("style") or "") or self.webhook_style
+        if webhook.get("style"):
+            sources["webhook_style"] = src_agent
+
+        command_timeout = self.command_timeout
+        try:
+            if section.get("timeout") is not None:
+                command_timeout = float(section["timeout"])
+        except (TypeError, ValueError):
+            pass
+
+        return WakeRoute(
+            adapter=adapter,
+            command=tuple(command),
+            webhook_url=webhook_url,
+            webhook_secret=webhook_secret,
+            webhook_style=webhook_style,
+            command_timeout=command_timeout,
+            sources=sources,
+        )
 
     @classmethod
     def load(cls, root: Path) -> WakeConfig | None:
@@ -194,9 +364,11 @@ class WakeConfig:
         return cls(data, Path(root))
 
     def to_dict(self) -> dict[str, Any]:
-        # 已知键重建、未知键（_extra，如 "agents" policy 段）原样带回——
-        # 已知键优先，extra 不覆盖。
+        # 已知键重建、未知键（_extra）原样带回——已知键优先，extra 不覆盖。
+        # t-58: agents 段（含 sampling policy 未知子键）整段原样带回。
         out: dict[str, Any] = {**self._extra}
+        if self._agents:
+            out["agents"] = self._agents
         out.update(
             {
                 "agent_id": self.agent_id,
@@ -416,16 +588,26 @@ def _desktop_notify(title: str, body: str) -> None:
         pass  # best-effort only
 
 
-def make_adapter(cfg: WakeConfig) -> WakeAdapter:
-    if cfg.adapter == "local-command":
-        return LocalCommandAdapter(cfg.command, cfg.command_timeout)
-    if cfg.adapter == "claude-code":
+def make_adapter(cfg_or_route: WakeConfig | WakeRoute) -> WakeAdapter:
+    """从 WakeConfig（内部按 agent_id 解析生效路由）或现成 WakeRoute 构建适配器。
+
+    t-58: 传 WakeConfig 时先走 :meth:`WakeConfig.effective_route`——per-agent
+    段优先，旧配置（无段）自然落回全局/默认，dispatch 行为与 0.7.5 逐字节
+    兼容。"""
+    route = (
+        cfg_or_route
+        if isinstance(cfg_or_route, WakeRoute)
+        else cfg_or_route.effective_route(cfg_or_route.agent_id)
+    )
+    if route.adapter == "local-command":
+        return LocalCommandAdapter(list(route.command), route.command_timeout)
+    if route.adapter == "claude-code":
         return ClaudeCodeAdapter()
-    if cfg.adapter == "generic-webhook":
-        return GenericWebhookAdapter(cfg.webhook_url, cfg.webhook_secret)
+    if route.adapter == "generic-webhook":
+        return GenericWebhookAdapter(route.webhook_url, route.webhook_secret)
     # hermes and unknown values share the signed-POST path (fail-open:
     # waking is better than silence).
-    return HermesAdapter(cfg.webhook_url, cfg.webhook_secret)
+    return HermesAdapter(route.webhook_url, route.webhook_secret)
 
 
 # -------------------------------------------------------------------- jev
@@ -825,13 +1007,18 @@ def run_once(
     return stats
 
 
-def run(root: Path, cfg: WakeConfig, poll_interval: float = 2.0, once: bool = False) -> None:
+def run(
+    root: Path, cfg: WakeConfig, poll_interval: float = 2.0, once: bool = False
+) -> dict[str, Any]:
     """Drain loop. WatchPaths/path-unit mode passes ``once=True`` (the OS
-    re-launches us on every inbox change); manual mode loops forever."""
+    re-launches us on every inbox change); manual mode loops forever.
+
+    Returns the last round's stats dict (t-58: callers can inspect it; the
+    A-2 failure-loud exit semantics build on this)."""
     while True:
-        run_once(root, cfg)
+        stats = run_once(root, cfg)
         if once:
-            return
+            return stats
         time.sleep(poll_interval)
 
 
@@ -998,6 +1185,25 @@ def uninstall(
 # ----------------------------------------------------------------------- CLI
 
 
+def _parse_command_arg(raw: str, usage: str) -> list[str]:
+    """--command 只收 JSON argv 列表（与 LocalCommandAdapter 的 argv-list-only
+    注入姿态一致：没有 shell 拼接的唤醒路径，过去没有，以后也不该有）。"""
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(
+            f"{usage}: --command must be a JSON argv list, "
+            f'e.g. ["{Path(sys.executable).name}", "--flag"]: {exc}'
+        ) from exc
+    if (
+        not isinstance(parsed, (list, tuple))
+        or not parsed
+        or not all(isinstance(a, str) and a for a in parsed)
+    ):
+        raise SystemExit(f"{usage}: --command must be a non-empty JSON array of strings")
+    return [str(a) for a in parsed]
+
+
 def _cmd_install(args: argparse.Namespace) -> None:
     root = Path(args.root or os.environ.get("AGENT_MAIL_HOME", Path.home() / ".agent-mail"))
     cfg = WakeConfig.load(root) or WakeConfig({}, root)
@@ -1005,18 +1211,25 @@ def _cmd_install(args: argparse.Namespace) -> None:
         cfg.agent_id = args.agent
     if not cfg.agent_id:
         raise SystemExit("wake install: --agent required (no wake.json and no --agent)")
+    # t-58（A-1）: install 的通道三键只写 agents.<ID> 身份段，绝不落全局——
+    # 一台机装第二个身份不再覆盖第一个的唤醒配置（各回各家）。全局键保留为
+    # 旧配置的默认值（向后兼容，本函数不碰它们）。
     if args.adapter:
-        cfg.adapter = args.adapter
+        cfg.set_agent_route(cfg.agent_id, adapter=args.adapter)
+    if args.command:
+        cfg.set_agent_route(cfg.agent_id, command=_parse_command_arg(args.command, "wake install"))
     if args.webhook_url:
-        cfg.webhook_url = args.webhook_url
+        cfg.set_agent_route(cfg.agent_id, webhook_url=args.webhook_url)
     if args.webhook_secret:
-        cfg.webhook_secret = args.webhook_secret
+        cfg.set_agent_route(cfg.agent_id, webhook_secret=args.webhook_secret)
     if args.jev:
         cfg.jev_enabled = True
         cfg.jev_api_key = args.jev_api_key
         cfg.jev_endpoint = args.jev_endpoint or cfg.jev_endpoint
-    if not cfg.webhook_url and cfg.adapter in ("hermes", "generic-webhook"):
-        # fall back to the store-level webhook.json when wake.json carries none
+    route = cfg.effective_route(cfg.agent_id)
+    if not route.webhook_url and route.adapter in ("hermes", "generic-webhook"):
+        # fall back to the store-level webhook.json when the resolved route
+        # carries none (fills the GLOBAL default — per-agent url above wins).
         try:
             wh = json.loads((root / "webhook.json").read_text(encoding="utf-8"))
             cfg.webhook_url = str(wh.get("url", ""))
@@ -1029,6 +1242,7 @@ def _cmd_install(args: argparse.Namespace) -> None:
         systemd_dir=args.systemd_dir,
         activate=not args.no_activate,
     )
+    out["agent_route"] = cfg.effective_route(cfg.agent_id).to_display()
     print(json.dumps(out, ensure_ascii=False))
 
 
@@ -1050,6 +1264,9 @@ def _cmd_status(args: argparse.Namespace) -> None:
         info["agent_id"] = cfg.agent_id
         info["adapter"] = cfg.adapter
         info["jev_enabled"] = cfg.jev_enabled
+        # t-58: 一并给出该身份解析后的生效通道（agents.<ID> 段优先）。
+        if cfg.agent_id:
+            info["route"] = cfg.effective_route(cfg.agent_id).to_display()
         if sys.platform == "darwin":
             plist = Path.home() / "Library" / "LaunchAgents" / f"{WAKE_LABEL}-{cfg.agent_id}.plist"
             info["plist_installed"] = plist.exists()
@@ -1168,11 +1385,25 @@ def _cmd_run(args: argparse.Namespace) -> None:
         )
     if args.agent:
         cfg.agent_id = args.agent
-    if getattr(args, "adapter", ""):
+    cli_adapter = getattr(args, "adapter", "") or ""
+    if cli_adapter:
         # per-agent plist override: multi-agent installs share one wake.json,
         # each plist passes --adapter to pick its own wake path (HS=hermes
-        # stays untouched, codex=local-command).
-        cfg.adapter = args.adapter
+        # stays untouched, codex=local-command). In-memory only.
+        cfg.adapter = cli_adapter
+    cli_command = getattr(args, "command", "") or ""
+    if cli_command:
+        cfg.command = _parse_command_arg(cli_command, "wake run")
+    cli_webhook = getattr(args, "webhook_url", "") or ""
+    if cli_webhook:
+        cfg.webhook_url = cli_webhook
+    # t-58（A-1）: run 按身份解析生效通道（agents.<ID> 段优先于全局，缺段
+    # fail-open 落回全局/默认）；CLI 覆盖是最高优先级（仅本进程内存态）。
+    cfg.set_cli_override(
+        adapter=cli_adapter,
+        command=_parse_command_arg(cli_command, "wake run") if cli_command else None,
+        webhook_url=cli_webhook,
+    )
     if not cfg.agent_id:
         raise SystemExit("wake run: no agent_id in wake.json — pass --agent")
     run(root, cfg, once=args.once)
@@ -1189,8 +1420,18 @@ def wake_main(argv: list[str] | None = None) -> None:
     p_inst.add_argument(
         "--adapter", default="", help="hermes | claude-code | generic-webhook | local-command"
     )
-    p_inst.add_argument("--webhook-url", default="")
-    p_inst.add_argument("--webhook-secret", default="")
+    p_inst.add_argument(
+        "--command",
+        default="",
+        help='local-command argv list as JSON (e.g. \'["/usr/local/bin/codex","--mail"]\') — '
+        "t-58: written to agents.<ID> only, never the global config",
+    )
+    p_inst.add_argument(
+        "--webhook-url", default="", help="t-58: written to agents.<ID> only, never global"
+    )
+    p_inst.add_argument(
+        "--webhook-secret", default="", help="t-58: written to agents.<ID> only, never global"
+    )
     p_inst.add_argument("--jev", action="store_true", help="enable the Jev router (default off)")
     p_inst.add_argument("--jev-api-key", default="")
     p_inst.add_argument("--jev-endpoint", default="")
@@ -1221,7 +1462,16 @@ def wake_main(argv: list[str] | None = None) -> None:
     p_run.add_argument(
         "--adapter",
         default="",
-        help="override wake.json adapter (e.g. local-command for per-agent plist wake)",
+        help="override the resolved wake route (e.g. local-command for per-agent wake)",
+    )
+    p_run.add_argument(
+        "--command",
+        default="",
+        help="local-command argv list as JSON (e.g. '[\"/usr/local/bin/codex\"]') — "
+        "highest-priority in-memory override (t-58)",
+    )
+    p_run.add_argument(
+        "--webhook-url", default="", help="highest-priority in-memory webhook override (t-58)"
     )
     p_run.add_argument("--once", action="store_true", help="one round then exit (WatchPaths mode)")
     p_run.set_defaults(func=_cmd_run)
