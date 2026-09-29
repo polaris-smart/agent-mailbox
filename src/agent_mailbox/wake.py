@@ -144,6 +144,7 @@ _KNOWN_KEYS = frozenset(
         "retry_max",
         "stale_acked",
         "agents",
+        "digest_fallback",
     }
 )
 
@@ -219,6 +220,10 @@ class WakeConfig:
         self.retry_interval = float(data.get("retry_interval", DEFAULT_RETRY_INTERVAL))
         self.retry_max = int(data.get("retry_max", DEFAULT_RETRY_MAX))
         self.stale_acked = float(data.get("stale_acked", DEFAULT_STALE_ACKED))
+        # t-62（判据7/S4）LLM 可选: 投递失败时自动降级 digest 纯本地路径
+        # （摘要落盘 + 标 done + 告警照发），默认开——「CLI 未登录即全断」
+        # 从根上消除；显式置 false 恢复 0.7.5 语义（信留在收件箱重投）。
+        self.digest_fallback = bool(data.get("digest_fallback", True))
         # t-58（A-1）: 顶层 "agents" 段——per-agent 唤醒路由（adapter/command/
         # webhook）与 sampling per-agent policy 共居。整段原样持有（未知子键
         # 一起保留），写路由只动自己的三键，sampling 键绝不被抹。
@@ -402,6 +407,7 @@ class WakeConfig:
                 "retry_interval": self.retry_interval,
                 "retry_max": self.retry_max,
                 "stale_acked": self.stale_acked,
+                "digest_fallback": self.digest_fallback,
             }
         )
         return out
@@ -842,7 +848,9 @@ def _registered_members(root: Path) -> set[str]:
         return set()
 
 
-def send_wake_alert(store: MailStore, root: Path, agent_id: str, msg: dict[str, Any]) -> bool:
+def send_wake_alert(
+    store: MailStore, root: Path, agent_id: str, msg: dict[str, Any], *, degraded: str = ""
+) -> bool:
     """U2 可见通道: drop an alert letter when a letter's wake has failed.
 
     t-59（A-2）收件人 = 负责方 HS（WAKE_ALERT_RECIPIENT）+ 原发件人（已注册、
@@ -852,7 +860,10 @@ def send_wake_alert(store: MailStore, root: Path, agent_id: str, msg: dict[str, 
     so one letter alerts at most once no matter how many later drain rounds
     retry it. Fail-open end to end: an alert problem is logged and forgotten —
     the wake's own retry path is unaffected.
-    """
+
+    t-62（判据7）: ``degraded`` 非空 = 该信已降级 digest 纯本地路径消化，
+    降级事实必须进告警文本（负责人看到的不是「信卡住了」而是「已摘要落盘、
+    请人工跟进」）。"""
     already = any(e.get("action") == WAKE_ALERT_ACTION for e in (msg.get("handled_log") or []))
     if already:
         return False
@@ -867,13 +878,21 @@ def send_wake_alert(store: MailStore, root: Path, agent_id: str, msg: dict[str, 
     ):
         recipients.append(sender)
     subject = str(msg.get("subject", ""))[:80]
+    degrade_note = (
+        f"\n[降级·t-62] 本信已由 digest 纯本地路径消化（零网络零 LLM）：\n"
+        f"  摘要落盘: {degraded}\n"
+        "  信已标 done——内容不会丢，但收件 agent 没有真正读到它；请按摘要人工跟进。\n"
+        if degraded
+        else ""
+    )
     body = (
         f"[wake-fail 自动告警] {agent_id} 的唤醒通道连续失败，这封信可能没人处理：\n\n"
         f"  信件 id: {msg.get('id', '')}\n"
         f"  发件人: {sender or '?'} → 收件人: {msg.get('to', agent_id)}\n"
         f"  主题: {subject}\n"
-        f"  信箱根: {Path(root)}\n\n"
-        "唤醒侧已按 retry 策略重试仍未投出（信不丢，信还在收件箱）。\n"
+        f"  信箱根: {Path(root)}\n"
+        f"{degrade_note}\n"
+        "唤醒侧已按 retry 策略重试仍未投出（信不丢）。\n"
         "请检查 wake 通道（wake.json / webhook / wake-attempts.jsonl 的 "
         "error_class 行）后重投。此信为系统自动告警，无需回执。"
     )
@@ -926,6 +945,9 @@ def run_once(
         "jev_skipped": 0,
         "skipped_external": 0,
         "claim_denied": 0,
+        # t-62（判据7）: 投递失败但已降级 digest 纯本地流转的信数——降级不是
+        # 成功（rc 仍非零），但信有了下文（摘要落盘 + 标 done + 告警）。
+        "digested": 0,
         # t-59（A-2）失败必响: 整轮异常（fail-open 吞掉的那条）也要在统计里
         # 留痕——run --once 据此非零退出，rc=0 伪装成功从此不可能。
         "round_error": "",
@@ -1045,19 +1067,55 @@ def run_once(
                 )
                 stats["woke"] += 1
             else:
-                # every attempt failed — release OUR claim so the letter is
-                # pending again and the next WatchPaths trigger re-drains it
-                # (信不丢, same recovery as the old un-marked-pending path;
-                # the U2 alert below still fires once per letter).
-                try:
-                    store.release_claim(cfg.agent_id, mid, session_label=label)
-                except Exception as exc:  # noqa: BLE001 — 释放失败信仍在（reap 兜底）
-                    print(
-                        f"[agent-mailbox wake] claim release failed (fail-open): {exc}",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                send_wake_alert(store, root, cfg.agent_id, claimed_msg)
+                # t-62（判据7/S4）LLM 可选降级: 全部重试失败时，若 digest_fallback
+                # 开着（默认），把已认领的信走 digest 纯本地路径——摘要落盘、
+                # 标 done（handled_log digest 动作带降级原因锚）、告警照发。
+                # 「CLI 未登录即全断」从根上消除；降级不是成功（rc 仍非零，
+                # 失败必响不回退）。关掉（digest_fallback=false）则回到原样：
+                # release claim 回 pending，下一个触发重投（信不丢）。
+                err_class = str(getattr(adapter, "last_error_class", "") or "unknown")
+                degraded = ""
+                if getattr(cfg, "digest_fallback", True):
+                    try:
+                        from .digest import digest_claimed_letters
+
+                        d = digest_claimed_letters(
+                            root,
+                            cfg.agent_id,
+                            [claimed_msg],
+                            store=store,
+                            reason=err_class,
+                            session_label=label,
+                        )
+                        if int(d.get("digested") or 0) > 0:
+                            degraded = str(d.get("digest_file") or "digest")
+                            stats["digested"] += 1
+                            print(
+                                f"[agent-mailbox wake] 投递失败({err_class}) 已降级 digest "
+                                f"纯本地流转（零网络零 LLM）: {degraded}",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                    except Exception as exc:  # noqa: BLE001 — 降级失败回退 release 路径
+                        print(
+                            f"[agent-mailbox wake] digest degrade failed (fail-open): {exc}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                if not degraded:
+                    # every attempt failed — release OUR claim so the letter is
+                    # pending again and the next WatchPaths trigger re-drains it
+                    # (信不丢, same recovery as the old un-marked-pending path;
+                    # the U2 alert below still fires once per letter).
+                    try:
+                        store.release_claim(cfg.agent_id, mid, session_label=label)
+                    except Exception as exc:  # noqa: BLE001 — 释放失败信仍在（reap 兜底）
+                        print(
+                            f"[agent-mailbox wake] claim release failed (fail-open): {exc}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                send_wake_alert(store, root, cfg.agent_id, claimed_msg, degraded=degraded)
     except Exception as exc:  # noqa: BLE001 — total fail-open: never raise out of drain
         stats["round_error"] = str(exc)
         print(

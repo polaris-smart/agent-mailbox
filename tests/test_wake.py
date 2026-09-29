@@ -148,11 +148,14 @@ def test_run_once_wakes_and_dedups_second_round(env):
 
 def test_run_once_retries_then_leaves_letter_unmarked(env):
     """All attempts fail -> no wake mark -> the next WatchPaths trigger
-    re-drains the letter (信不丢)."""
+    re-drains the letter (信不丢).
+
+    t-62 起 digest_fallback 默认开（投递失败自动降级 digest 消化信件）——本
+    测试专测 release/retry 路径本身，显式关掉降级（该路径仍是产品行为）。"""
     root, st = env
     out = st.send("HS", "ZC", "hello", "wake me")
     rec = _Recorder([False, False, False])  # retry_max=3 for this test
-    stats = run_once(root, cfg(root, retry_max=3), adapter=rec)
+    stats = run_once(root, cfg(root, retry_max=3, digest_fallback=False), adapter=rec)
     assert stats["failed"] == 3 and stats["woke"] == 0
     letter = json.loads(
         (root / "inbox" / "ZC" / f"{out[0]['id']}.json").read_text(encoding="utf-8")

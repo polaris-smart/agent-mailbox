@@ -38,6 +38,7 @@ from .store import (
 # invocation (--web / --http / plain stdio / `wake ...`) is untouched.
 # v0.7.6 t-53 adds "upgrade" (E 单元: 版本检查+点击更新, see version_check.py).
 # v0.7.6 t-59 adds "doctor" (A-2 单元: 失败必响+六检, see cli.py).
+# v0.7.6 t-62 adds "digest" (判据7/S4 单元: LLM 可选纯本地流转, see digest.py).
 CLI_SUBCOMMANDS = (
     "setup",
     "discover",
@@ -47,6 +48,7 @@ CLI_SUBCOMMANDS = (
     "uninstall",
     "upgrade",
     "doctor",
+    "digest",
 )
 
 logger = logging.getLogger(__name__)
@@ -722,7 +724,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="agent-mailbox",
         epilog="子命令: setup | discover | status | test | connect | uninstall | upgrade | doctor "
-        "(运行 `agent-mailbox <子命令> --help` 查看)",
+        "| digest (运行 `agent-mailbox <子命令> --help` 查看)",
     )
     parser.add_argument(
         "--http",

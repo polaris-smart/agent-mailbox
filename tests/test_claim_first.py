@@ -222,13 +222,18 @@ def test_j4_stale_acked_orphan_bare_claim_denied_then_rescued_by_reap_claim(env)
 
 
 def test_j4_reap_rescue_survives_claim_release_cycle(env):
-    """J4 补充：营救投递失败 → 认领释放回 pending → 下一轮再营救（信不丢）。"""
+    """J4 补充：营救投递失败 → 认领释放回 pending → 下一轮再营救（信不丢）。
+
+    t-62 起 digest_fallback 默认开（失败降级 digest 消化信件）——本测试专测
+    release/retry 路径本身，显式关掉降级。"""
     root, st = env
     mid = st.send("HS", "ZC", "orphan", "rescue me")[0]["id"]
     st.check("ZC")
     _backdate_acked(root, mid, seconds_ago=700)
     rec = _Recorder([False, False])  # 本轮投递全失败
-    stats = run_once(root, cfg(root, retry_max=2), adapter=rec, now=time.time())
+    stats = run_once(
+        root, cfg(root, retry_max=2, digest_fallback=False), adapter=rec, now=time.time()
+    )
     assert stats["woke"] == 0 and stats["failed"] == 2
     letter = st.get_letter("ZC", mid)
     assert letter["status"] == "pending"  # 认领已释放
@@ -409,10 +414,15 @@ def test_wake_release_cli_returns_undone_only_and_respects_label(env, tmp_path, 
 
 
 def test_daemon_failure_releases_claim_letter_still_drainable(env):
-    """投递全失败 → 认领释放回 pending（信不丢）→ 下次触发重投并留痕。"""
+    """投递全失败 → 认领释放回 pending（信不丢）→ 下次触发重投并留痕。
+
+    t-62 起 digest_fallback 默认开——本测试专测 release/retry 路径本身，
+    显式关掉降级。"""
     root, st = env
     mid = st.send("HS", "ZC", "hello", "wake me")[0]["id"]
-    stats = run_once(root, cfg(root, retry_max=2), adapter=_Recorder([False, False]))
+    stats = run_once(
+        root, cfg(root, retry_max=2, digest_fallback=False), adapter=_Recorder([False, False])
+    )
     assert stats["failed"] == 2 and stats["woke"] == 0
     letter = st.get_letter("ZC", mid)
     assert letter["status"] == "pending"

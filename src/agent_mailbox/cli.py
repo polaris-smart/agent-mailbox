@@ -42,7 +42,17 @@ from .discover import (
     test_member,
 )
 
-SUBCOMMANDS = ("setup", "discover", "status", "test", "connect", "uninstall", "upgrade", "doctor")
+SUBCOMMANDS = (
+    "setup",
+    "discover",
+    "status",
+    "test",
+    "connect",
+    "uninstall",
+    "upgrade",
+    "doctor",
+    "digest",
+)
 
 STATUS_MARK = {"ok": "✅", "broken": "❌", "unknown": "· 未实测"}
 
@@ -911,6 +921,47 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return 0 if report["healthy"] else 1
 
 
+# ------------------------------------------------------------------ digest
+#
+# t-62（判据7/S4）: `agent-mailbox digest` — LLM 可选的纯本地信件流转。
+# 零网络、零 LLM、零 subprocess：读信 → 写摘要 → 标 done → 列「建议回复」。
+# 引擎在 digest.py；本命令是手动触发面（自动降级在 wake.run_once）。
+
+
+def _cmd_digest(args: argparse.Namespace) -> int:
+    from .digest import run_digest  # local import: digest 是可选路径，保持 CLI 引入轻
+
+    root = _root_from(args)
+    if getattr(args, "agent", ""):
+        agents = [str(args.agent)]
+    else:
+        inbox = root / "inbox"
+        agents = sorted(p.name for p in inbox.glob("*") if p.is_dir()) if inbox.is_dir() else []
+    results = [run_digest(root, a) for a in agents]
+    total = sum(int(r.get("digested") or 0) for r in results)
+    if getattr(args, "json", False):
+        print(
+            json.dumps(
+                {"root": str(root), "total": total, "results": results},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    print(f"digest 完成（纯本地 · 零网络 · 零 LLM）：消化 {total} 封")
+    for r in results:
+        if r.get("digest_file"):
+            print(f"  · {r['agent']}: {r['digested']} 封 → {r['digest_file']}")
+    suggestions = [line for r in results for line in r.get("suggest_replies", [])]
+    if suggestions:
+        print("建议回复清单（占位 · 要不要回由人拍板，未调用 LLM）:")
+        for line in suggestions:
+            print(f"  {line}")
+    elif total == 0:
+        print("没有待处理的信（pending 为 0，无需摘要）。")
+    return 0
+
+
 # ------------------------------------------------------------------ main
 
 
@@ -1035,6 +1086,15 @@ def cli_main(argv: list[str] | None = None) -> int:
         help="workbuddy 唤醒日志路径重定向（默认 ~/.workbuddy/wb-wake/wake.log；测试/沙箱用）",
     )
     p.set_defaults(func=_cmd_doctor)
+
+    p = sub.add_parser(
+        "digest",
+        parents=[common],
+        help="纯本地信件流转（t-62 判据7/S4：零网络零 LLM）——读信→写摘要→标 done→列建议回复",
+    )
+    p.add_argument("--agent", default="", help="只 digest 这个身份（缺省=inbox 里全部身份）")
+    p.add_argument("--json", action="store_true", help="输出结构化 JSON")
+    p.set_defaults(func=_cmd_digest)
 
     args = parser.parse_args(argv)
     return int(args.func(args) or 0)

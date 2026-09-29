@@ -116,7 +116,13 @@ def test_nonzero_exit_retries_and_letter_not_lost(env):
     re-drained by the next trigger (信不丢), and a later good command wakes it."""
     root, st = env
     out = st.send("HS", "ZC", "hello", "wake me")
-    bad = lcfg(root, command=[sys.executable, "-c", "import sys; sys.exit(3)"], retry_max=2)
+    # t-62: digest_fallback=False = 本测试专测 release/retry 路径（默认已改为降级 digest）
+    bad = lcfg(
+        root,
+        command=[sys.executable, "-c", "import sys; sys.exit(3)"],
+        retry_max=2,
+        digest_fallback=False,
+    )
     stats = run_once(root, bad)
     assert stats["failed"] == 2 and stats["woke"] == 0
     assert not any(
@@ -168,6 +174,7 @@ def test_timeout_keeps_letter_for_retry(env):
         command=[sys.executable, "-c", "import time; time.sleep(30)"],
         timeout=1.0,
         retry_max=1,
+        digest_fallback=False,  # t-62: 本测试专测 release/retry 路径
     )
     stats = run_once(root, hung)
     assert stats["failed"] == 1 and stats["woke"] == 0
