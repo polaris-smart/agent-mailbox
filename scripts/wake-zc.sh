@@ -198,6 +198,15 @@ except Exception:
 
   # t-56: drain turn works the CLAIMED payload, never the raw inbox — the
   # prompt below forbids inbox reads (直读会撞上别的窗已认领在途的信).
+  # t-60: the `-lc` login shell lacks the two ZCODE provider env vars (the app
+  # sets them only interactively) — without them headless zcode dies on its
+  # dead default search paths before reading any letter (2026-09-29 incident,
+  # 5×no_progress → breaker). Resolve deterministically (sort -V version, then
+  # mtime; app-bundle fallback); caller-provided values win. 部署副本 =
+  # scripts/wake-zc.sh 的同步目标，本块必须随仓内源头走，防下次部署静默复发。
+  _ZB="$(bash "$(dirname "$0")/resolve-provider-config.sh" 2>/dev/null || true)"
+  [ -n "$_ZB" ] && export ZCODE_BUILTIN_PROVIDER_CONFIG_FILE="$_ZB"
+  [ -f "$HOME/.zcode/v2/provider_config.json" ] && export ZCODE_PERSONAL_PROVIDER_CONFIG_FILE="$HOME/.zcode/v2/provider_config.json"
   DRAIN_CMD="${WAKE_DRAIN_CMD:-/bin/zsh -lc 'AGENT_MAIL_ID=ZC /Users/interia/.local/bin/zcode -p \"信箱巡检（claim 认领投递）：本轮已认领给你的信件清单在 $AGENT_MAIL_CLAIM_FILE（JSON：claimed[]，每封含 id/from/subject/body），逐封按清单内容执行；不要自行读取 inbox 目录（信已认领给你，重复直读会造成多窗重复处理）；完成后给每封的发件人写回执（/Users/interia/tools/agent-mailbox/.venv/bin/python 调 agent_mailbox.store.MailStore 的 send），并把信的状态更新为 done（store.set_status）。最后一行输出：处理 N 封。\"'}"
   T0=$(date +%s)
   eval "$DRAIN_CMD" >> "$LOG" 2>&1
