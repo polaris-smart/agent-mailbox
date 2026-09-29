@@ -31,7 +31,7 @@ if sys.platform == "win32":
     import msvcrt
 else:
     import fcntl
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -92,6 +92,9 @@ INTENT_TTL_DEFAULT = 1800.0  # 缺口4: a fresh (<30m) handling intent defers re
 DEDUP_BLOCKING = ("pending", "acked")  # non-terminal states that block a re-send
 HANDLED_INTENT = "intent"  # two-phase handled_log: intent first …
 HANDLED_OUTCOME = "outcome"  # … outcome last; set_status(done) only after both
+# t-56 claim-first 投递修复（HS 20260929001242）: delivery-route audit actions.
+HANDLED_CLAIM_DENIED = "claim_denied"  # route saw deliverable mail but claim got none
+HANDLED_CLAIM_RELEASED = "claim_released"  # route gave its un-delivered claim back
 HASH_LOG_CHARS = 16  # store full 64-hex; logs/display truncate to 16
 
 # Self-echo (from == notification target): suppressed by default (R1 of the
@@ -626,10 +629,27 @@ def _handled_session(agent_id: str) -> str:
     return os.environ.get("AGENT_MAIL_SESSION", agent_id)
 
 
-def _append_handled(msg: dict[str, Any], agent_id: str, action: str, **fields: Any) -> None:
-    """Append an entry to the message's ``handled_log`` (in-place, append-only)."""
+def _append_handled(
+    msg: dict[str, Any],
+    agent_id: str,
+    action: str,
+    *,
+    session_label: str | None = None,
+    **fields: Any,
+) -> None:
+    """Append an entry to the message's ``handled_log`` (in-place, append-only).
+
+    ``session_label`` (t-56) overrides the ``AGENT_MAIL_SESSION``/agent-id
+    fallback with an explicit ``路由:会话`` identity (``belt:<pid>`` /
+    ``wake:<runid>`` / ``webhook:<reqid>``) so the delivery routes are
+    auditable per claiming window, not just per process.
+    """
     log = msg.setdefault("handled_log", [])
-    entry: dict[str, Any] = {"by": _handled_session(agent_id), "at": _now_iso(), "action": action}
+    entry: dict[str, Any] = {
+        "by": session_label or _handled_session(agent_id),
+        "at": _now_iso(),
+        "action": action,
+    }
     entry.update(fields)
     log.append(entry)
 
@@ -1466,7 +1486,13 @@ class MailStore:
         # above, on copies — the annotated copies are returned, never saved.
         return self._with_link_states(msgs)
 
-    def claim(self, agent_id: str) -> list[dict[str, Any]]:
+    def claim(
+        self,
+        agent_id: str,
+        *,
+        session_label: str | None = None,
+        only: Iterable[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Atomically claim all pending mail: return it flipped to ``acked``
         in one locked pass (v0.6.2 T3 — mailbox_wait claim semantics).
 
@@ -1481,18 +1507,31 @@ class MailStore:
         mail — ``reap_stale_acked`` (铁1: reap_ttl < dedup_ttl, unchanged)
         returns it to ``pending`` and drops the stale ``claimed_by``, so
         nothing is lost.
+
+        t-56 claim-first 投递修复: ``only`` scopes the claim to the given
+        msg ids (a route claims exactly the candidates its scan saw — other
+        pending letters stay pending for whoever is next); ``session_label``
+        stamps the ``claimed`` entry's ``by`` with a ``路由:会话`` identity
+        (``wake:<runid>`` / ``belt:<pid>`` / ``webhook:<reqid>``) so the
+        claiming window is auditable. A legacy letter without an ``id``
+        field gets its canonical filename-stem id stamped on claim.
         """
         inbox = self._inbox_dir(agent_id)
+        only_ids = {str(i) for i in only} if only is not None else None
         msgs = []
         with self._locked():
             for p in sorted(inbox.glob("*.json")):
                 m = self._read_msg(p)
                 if m.get("status") != "pending":
                     continue
+                if only_ids is not None and str(m.get("id") or p.stem) not in only_ids:
+                    continue  # route-scoped claim: untouched candidates stay pending
+                if not m.get("id"):
+                    m["id"] = p.stem  # legacy letter: stamp the canonical stem id
                 m["status"] = "acked"
                 m["acked_at"] = _now_iso()
                 m["claimed_by"] = agent_id
-                _append_handled(m, agent_id, "claimed")
+                _append_handled(m, agent_id, "claimed", session_label=session_label)
                 p.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
                 msgs.append(m)
         msgs.sort(
@@ -1502,6 +1541,43 @@ class MailStore:
             )
         )
         return msgs
+
+    def release_claim(
+        self, agent_id: str, msg_id: str, *, session_label: str | None = None
+    ) -> bool:
+        """Give an un-delivered claim back: ``acked`` → ``pending`` (t-56, 信不丢).
+
+        The flip side of ``claim`` for the delivery routes: when a route
+        claimed a letter but could not deliver it (every wake attempt failed,
+        or the drain turn finished without marking it done), the claim is
+        released so the next trigger re-drains the letter instead of stalling
+        it in acked limbo until the reap TTL. Only an ``acked`` letter is
+        released — done/archived mail is already handled and stays put. With
+        ``session_label`` the release additionally requires the letter's
+        newest ``claimed`` entry to carry exactly that identity: if the claim
+        was reaped and re-claimed by another window in the meantime, their
+        claim is not ours to release. Appends a ``claim_released`` handled_log
+        entry. Returns True when the letter was released.
+        """
+        path, _ = self._locate_msg(agent_id, msg_id)
+        with self._locked():
+            m = self._read_msg(path)
+            if m.get("status") != "acked":
+                return False
+            if session_label is not None:
+                claimed_bys = [
+                    e.get("by")
+                    for e in (m.get("handled_log") or [])
+                    if e.get("action") == "claimed"
+                ]
+                if not claimed_bys or claimed_bys[-1] != session_label:
+                    return False  # newest claim belongs to another window
+            m["status"] = "pending"
+            m.pop("acked_at", None)
+            m.pop("claimed_by", None)
+            _append_handled(m, agent_id, HANDLED_CLAIM_RELEASED, session_label=session_label)
+            path.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
+        return True
 
     def reap_stale_acked(
         self,
@@ -1612,7 +1688,13 @@ class MailStore:
         return m
 
     def record_handled(
-        self, agent_id: str, msg_id: str, action: str, **fields: Any
+        self,
+        agent_id: str,
+        msg_id: str,
+        action: str,
+        *,
+        session_label: str | None = None,
+        **fields: Any,
     ) -> dict[str, Any]:
         """Append a ``handled_log`` entry through the store (v0.5 B).
 
@@ -1620,14 +1702,40 @@ class MailStore:
         working a claimed letter and ``action="outcome"`` when the work is
         finished (before ``set_status(done)``). Every append reuses the
         mail-root lock; extra keyword fields (e.g. ``note=``) ride along on
-        the entry. Returns the updated message.
+        the entry. ``session_label`` (t-56) stamps the entry's ``by`` with a
+        ``路由:会话`` identity instead of the env/agent fallback. Returns the
+        updated message.
         """
         path, m = self._locate_msg(agent_id, msg_id)
         with self._locked():
             m = self._read_msg(path)  # re-read under the lock
-            _append_handled(m, agent_id, action, **fields)
+            _append_handled(m, agent_id, action, session_label=session_label, **fields)
             path.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
         return m
+
+    def record_claim_denied(
+        self, agent_id: str, msg_id: str, *, session_label: str | None = None
+    ) -> bool:
+        """Audit a denied claim: the route saw deliverable mail but ``claim``
+        could not take it because another window holds it in flight (t-56).
+
+        Appends a ``claim_denied`` entry whose ``by`` carries the
+        ``路由:会话`` identity. 防刷屏：one letter gets at most ONE
+        ``claim_denied`` entry ever — the belt polls on a timer and would
+        otherwise re-audit the same in-flight letter every round, so any
+        existing entry suppresses the append (returns False). Fail-soft by
+        design: a letter that vanished (done/cleaned between scan and audit)
+        raises ``MailboxError`` and the route swallows it.
+        """
+        path, _ = self._locate_msg(agent_id, msg_id)
+        with self._locked():
+            m = self._read_msg(path)  # re-read under the lock
+            log = m.get("handled_log") or []
+            if any(e.get("action") == HANDLED_CLAIM_DENIED for e in log):
+                return False  # 防刷屏: already audited once for this letter
+            _append_handled(m, agent_id, HANDLED_CLAIM_DENIED, session_label=session_label)
+            path.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
+        return True
 
     def resume_plan(self, agent_id: str, msg_id: str) -> dict[str, Any]:
         """Classify a half-handled letter per the v0.5 §3 compensation table.

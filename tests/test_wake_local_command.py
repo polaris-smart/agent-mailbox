@@ -103,7 +103,9 @@ def test_run_once_exit_zero_marks_wake_and_dedups(env):
     wake_entries = [e for e in letter.get("handled_log", []) if e.get("action") == "wake"]
     assert len(wake_entries) == 1 and wake_entries[0].get("note") == "local-command"
     stats2 = run_once(root, lcfg(root))
-    assert stats2["woke"] == 0 and stats2["skipped_woken"] == 1  # idempotent dedup
+    # t-56 claim-first: wake 后信已认领（acked-fresh），第二轮安静（不再计入
+    # skipped_woken）；幂等去重保证不变——绝不二次投递。
+    assert stats2["woke"] == 0 and stats2["skipped_woken"] == 0
 
 
 # --------------------------------------- failure rides the retry path

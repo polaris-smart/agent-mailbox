@@ -38,6 +38,22 @@
 #     box — wake health becomes readable from the mailbox face alone. Static
 #     subject/body => the store's 24h semantic dedup caps alert floods.
 #
+# t-56 claim-first 投递修复 (HS 20260929001242 多窗重复回信·根因①):
+#   - REAP FIRST, CLAIM SECOND: the loop still reaps stale-acked mail first,
+#     but the old "count pending via grep + tell the session to read the whole
+#     inbox" is GONE — reading the inbox directly bypasses claim entirely, so
+#     two windows could both work the same letter (two done entries, four
+#     replies on one thread). Instead the loop runs
+#     ``python -m agent_mailbox.wake claim`` (atomic store.claim, only-scoped)
+#     and hands the session the CLAIM RESULT (id/from/subject/body per letter)
+#     as the delivery payload; claim 0 封 ⇒ 不拉会话、直接收工. Letters the
+#     claim could not take (another window holds them in flight) are audited
+#     as claim_denied by the claim action (deduped per letter, 防刷屏).
+#   - 信不丢: after each turn the loop releases its still-not-done claims back
+#     to pending (``wake release``), so the next round re-claims and re-drains
+#     them — same recovery the old pending-count loop provided. by labels:
+#     ``belt:<pid>`` lands in handled_log (J3 auditability).
+#
 # Environment knobs (all optional; defaults preserve historical behavior):
 #   MAIL_ROOT        mail root (default ~/.agent-mail); also exported to python
 #                    children as AGENT_MAIL_HOME so reap/archive/alert share it
@@ -134,39 +150,75 @@ if [ -f "$BREAKER_LATCH" ]; then
   rm -f "$BREAKER_LATCH"
 fi
 
-DRAIN_CMD="${WAKE_DRAIN_CMD:-/bin/zsh -lc 'AGENT_MAIL_ID=ZC /Users/interia/.local/bin/zcode -p \"信箱巡检：读 ~/.agent-mail/inbox/ZC/ 下全部 status=pending 的信（JSON：from/subject/body），逐封按内容执行；完成后给每封的发件人写回执（/Users/interia/tools/agent-mailbox/.venv/bin/python 调 agent_mailbox.store.MailStore 的 send），并把信的状态更新为 done。最后一行输出：处理 N 封。\"'}"
-
 BACKOFF=30
 NO_PROGRESS=0
 while true; do
-  # v0.5.0: reclaim stale-acked mail BEFORE counting pending (先回收后计数) —
-  # order matters: counting first would see zero and break with mail hidden.
+  # v0.5.0: reclaim stale-acked mail BEFORE claiming (先回收后认领) — order
+  # matters: without it an orphaned acked letter stays invisible to claim.
   # Fail-open: reap problems are logged loudly but never block the wake.
   if ! "$MB_PY" -m agent_mailbox.reap --agent "$REAP_AGENT" --ttl "$REAP_TTL" >> "$LOG" 2>&1; then
     echo "$(date '+%F %T') reap FAILED (fail-open, continuing) agent=$REAP_AGENT ttl=${REAP_TTL}s" >> "$LOG"
   fi
 
-  PENDING=$(grep -l '"status": *"pending"' "$INBOX"/*.json 2>/dev/null | wc -l | tr -d ' ')
-  [ "$PENDING" = "0" ] && break
-  echo "$(date '+%F %T') wake: $PENDING mail files" >> "$LOG"
+  # t-56 claim-first: claim BEFORE delivering — the belt no longer counts
+  # pending and tells the session to read the inbox (the multi-window
+  # duplicate-handling root cause). The claim result IS the delivery payload:
+  # each claimed letter's id/from/subject/body lands in the 0600 claim file
+  # the drain turn processes; claim 0 封 ⇒ 不拉会话、直接收工. Letters claimed
+  # in flight by another window are audited claim_denied inside the action.
+  CLAIM_FILE="$MAIL_ROOT/wake-zc-claim.$$.json"
+  if ! "$MB_PY" -m agent_mailbox.wake claim --agent "$REAP_AGENT" \
+      --root "$MAIL_ROOT" --label "belt:$$" --out "$CLAIM_FILE" >> "$LOG" 2>&1; then
+    echo "$(date '+%F %T') claim FAILED (fail-open, continuing) agent=$REAP_AGENT" >> "$LOG"
+  fi
+  CLAIMED=$("$MB_PY" -c 'import json,sys
+try:
+    print(len(json.load(open(sys.argv[1])).get("claimed", [])))
+except Exception:
+    print(0)' "$CLAIM_FILE" 2>>"$LOG")
+  if [ "$CLAIMED" = "0" ]; then
+    rm -f "$CLAIM_FILE"
+    break
+  fi
+  echo "$(date '+%F %T') wake: claimed $CLAIMED mail files (by belt:$$)" >> "$LOG"
+  export AGENT_MAIL_CLAIM_FILE="$CLAIM_FILE"   # drain override (WAKE_DRAIN_CMD) reads this too
+
+  # t-56: drain turn works the CLAIMED payload, never the raw inbox — the
+  # prompt below forbids inbox reads (直读会撞上别的窗已认领在途的信).
+  DRAIN_CMD="${WAKE_DRAIN_CMD:-/bin/zsh -lc 'AGENT_MAIL_ID=ZC /Users/interia/.local/bin/zcode -p \"信箱巡检（claim 认领投递）：本轮已认领给你的信件清单在 $AGENT_MAIL_CLAIM_FILE（JSON：claimed[]，每封含 id/from/subject/body），逐封按清单内容执行；不要自行读取 inbox 目录（信已认领给你，重复直读会造成多窗重复处理）；完成后给每封的发件人写回执（/Users/interia/tools/agent-mailbox/.venv/bin/python 调 agent_mailbox.store.MailStore 的 send），并把信的状态更新为 done（store.set_status）。最后一行输出：处理 N 封。\"'}"
   T0=$(date +%s)
   eval "$DRAIN_CMD" >> "$LOG" 2>&1
   # exit code is NOT trustworthy (headless zcode can exit 0 on a failed turn) —
-  # judge by outcome: mail count must drop, otherwise back off (429 peak hours)
-  PENDING_AFTER=$(grep -l '"status": *"pending"' "$INBOX"/*.json 2>/dev/null | wc -l | tr -d ' ')
+  # judge by outcome: claimed letters must be done, otherwise back off (429 peak hours)
+  DONE_N=$("$MB_PY" -c 'import json,sys
+from agent_mailbox.store import MailStore
+root, agent, cf = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    ids = [m["id"] for m in json.load(open(cf))["claimed"]]
+except Exception:
+    ids = []
+store = MailStore(root)
+done = 0
+for i in ids:
+    try:
+        if store.get_letter(agent, i).get("status") == "done":
+            done += 1
+    except Exception:
+        done += 1  # letter gone from inbox+archive = handled and cleaned up
+print(done)' "$MAIL_ROOT" "$REAP_AGENT" "$CLAIM_FILE" 2>>"$LOG")
   TURN_MS=$(( ($(date +%s) - T0) * 1000 ))
-  if [ "$PENDING_AFTER" -ge "$PENDING" ]; then
+  if [ "${DONE_N:-0}" -lt 1 ]; then
     NO_PROGRESS=$(( NO_PROGRESS + 1 ))
     anchor_attempt belt "$NO_PROGRESS" fail no_progress zcode-drain "$TURN_MS"
-    echo "$(date '+%F %T') drain made NO progress ($PENDING -> $PENDING_AFTER), round $NO_PROGRESS/$BREAKER_N, backoff ${BACKOFF}s" >> "$LOG"
+    echo "$(date '+%F %T') drain made NO progress (claimed $CLAIMED, done ${DONE_N:-0}), round $NO_PROGRESS/$BREAKER_N, backoff ${BACKOFF}s" >> "$LOG"
     if [ "$NO_PROGRESS" = "1" ]; then
       alert_wake_fail "round 1 no-progress"
     fi
     if [ "$NO_PROGRESS" -ge "$BREAKER_N" ]; then
-      echo "$(date '+%F %T') CIRCUIT BREAKER: $NO_PROGRESS consecutive no-progress rounds (pending stuck at $PENDING) — latching and stopping drain turns. Reset: rm $BREAKER_LATCH" >> "$LOG"
+      echo "$(date '+%F %T') CIRCUIT BREAKER: $NO_PROGRESS consecutive no-progress rounds (claimed $CLAIMED stuck at done ${DONE_N:-0}) — latching and stopping drain turns. Reset: rm $BREAKER_LATCH" >> "$LOG"
       {
         echo "latched_at=$(date '+%F %T')"
-        echo "pending_before=$PENDING pending_after=$PENDING_AFTER"
+        echo "claimed=$CLAIMED done_after=${DONE_N:-0}"
         echo "rounds=$NO_PROGRESS breaker_n=$BREAKER_N"
       } > "$BREAKER_LATCH"
       alert_wake_fail "circuit breaker latched after $NO_PROGRESS rounds"
@@ -179,6 +231,14 @@ while true; do
     BACKOFF=30
     anchor_attempt belt 1 ok "" zcode-drain "$TURN_MS"
   fi
+  # t-56 信不丢: release this round's still-not-done claims back to pending so
+  # the next iteration re-claims and re-drains them (done letters auto-skip;
+  # only claims still owned by label belt:$$ are touched).
+  if ! "$MB_PY" -m agent_mailbox.wake release --agent "$REAP_AGENT" \
+      --root "$MAIL_ROOT" --label "belt:$$" --claim-file "$CLAIM_FILE" >> "$LOG" 2>&1; then
+    echo "$(date '+%F %T') release FAILED (fail-open, continuing) agent=$REAP_AGENT" >> "$LOG"
+  fi
+  rm -f "$CLAIM_FILE"
   # drain made progress: archive finished mail via the native store API so done
   # letters stop re-triggering wake scans (root cause of the idle-loop churn)
   "$MB_PY" -c \

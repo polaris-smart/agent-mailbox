@@ -7,6 +7,25 @@ POST — the mailbox stays fully offline by default. Pure stdlib.
 The target is pinned: http/https only, loopback/private addresses by default
 (the designed use is a local gateway), redirects refused, system proxy
 bypassed. Delivery is best-effort and never raises into the send path.
+
+t-56 claim-first 对齐点（投递路由③，HS 20260929001242 多窗重复回信）: the
+POST consumer is the local gateway (out of this repo) — this module is the
+producer only. The gateway MUST treat the event as a *wake*, not as the
+letter of record: before pulling a recipient session, claim the letter
+through the store's claim channel
+
+    python -m agent_mailbox.wake claim --agent <id> --label webhook:<reqid>
+
+deliver only the letters in the JSON result's ``claimed`` list (each carries
+id/from/subject/body — that is the delivery payload), and pull no session at
+all when it comes back empty. The claim action audits letters held in flight
+by another window as ``claim_denied`` (deduped per letter) and
+``wake release`` gives un-delivered claims back to pending (信不丢). A
+gateway that pushes this POST payload straight into a session bypasses the
+claim and re-introduces the duplicate-handling defect (two ``done`` entries,
+repeated replies on one thread). The in-repo primitives live in
+``store.claim`` / ``store.release_claim`` / ``store.record_claim_denied`` and
+``wake.claim_route_mail`` (shared with the belt and daemon routes).
 """
 
 from __future__ import annotations

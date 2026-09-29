@@ -136,9 +136,13 @@ def test_run_once_wakes_and_dedups_second_round(env):
     rec = _Recorder([True])
     stats = run_once(root, cfg(root), adapter=rec)
     assert stats["woke"] == 1 and rec.calls
-    # same letter again: handled_log carries the wake outcome -> no second POST
+    # same letter again: claimed (acked, fresh) + handled_log carries the wake
+    # outcome -> no second POST. t-56 claim-first: the round goes quiet at the
+    # acked-fresh check, so the letter no longer counts as skipped_woken —
+    # the reclaim→pending cycle still hits that branch (see test_claim_first).
     stats2 = run_once(root, cfg(root), adapter=rec)
-    assert stats2["woke"] == 0 and stats2["skipped_woken"] == 1
+    assert stats2["woke"] == 0 and stats2["skipped_woken"] == 0
+    assert stats2["claim_denied"] == 0
     assert len(rec.calls) == 1  # 同一封信只唤醒一次
 
 

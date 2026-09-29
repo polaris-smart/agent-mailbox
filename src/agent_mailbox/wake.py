@@ -27,6 +27,17 @@ files and appends through the store's own locked APIs — if the daemon dies,
 mail still lands and the next ``mailbox_check`` still delivers. Nothing in
 the send path depends on wake existing.
 
+t-56 claim-first 投递修复（HS 20260929001242 多窗重复回信）: every delivery
+route claims BEFORE it delivers — ``reap_stale_acked`` (orphan rescue) then
+``claim`` (store.py, atomic), and only the claimed letters go out. A letter
+another window already claimed is never delivered twice: the loser's round
+audits ``claim_denied`` (deduped per letter) and pulls no session. The
+shared primitive is :func:`claim_route_mail`; the ``wake claim`` /
+``wake release`` subcommands expose the same discipline to the belt script
+and to out-of-repo consumers (the webhook gateway alignment point, see
+webhook.py). Each round stamps handled_log ``by`` with ``wake:<runid>``
+(J3 auditability).
+
 Jev (F3) plugs in here as an optional, default-off router — see jev.py.
 """
 
@@ -515,6 +526,38 @@ def jev_gate(cfg: WakeConfig, msg: dict[str, Any], log_path: Path) -> tuple[bool
 # ------------------------------------------------------------------- drain
 
 
+def claim_route_mail(
+    store: MailStore,
+    agent_id: str,
+    candidate_ids: list[str] | tuple[str, ...] | set[str],
+    session_label: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """t-56 claim-first 路由原语：认领候选信，只把认领到的交给投递。
+
+    belt / daemon / 仓外网关（webhook 对齐点）共用这一条纪律：投递前先
+    ``claim``（原子、locked），没认领到的信＝别的窗已认领在途，逐封落
+    ``claim_denied`` 审计（store 侧按信去重，防定时轮询刷屏）。返回
+    ``(claimed_letters, denied_ids)``——调用方只投 ``claimed``；denied 的
+    信本次不投、不拉会话。认领 0 封 ⇒ 投递列表为空，天然不拉会话。
+    """
+    only = list(dict.fromkeys(str(i) for i in candidate_ids))
+    if not only:
+        return [], []
+    claimed = store.claim(agent_id, only=only, session_label=session_label)
+    claimed_ids = {str(m.get("id", "")) for m in claimed}
+    denied = [mid for mid in only if mid not in claimed_ids]
+    for mid in denied:
+        try:
+            store.record_claim_denied(agent_id, mid, session_label=session_label)
+        except Exception as exc:  # noqa: BLE001 — 审计 fail-open，绝不影响投递主链路
+            print(
+                f"[agent-mailbox wake] claim_denied audit failed for {mid} (fail-open): {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+    return claimed, denied
+
+
 def should_wake(msg: dict[str, Any], now: float, stale_acked: float) -> bool:
     """Count semantics v2: every pending letter counts; an acked letter only
     counts once it has sat acked longer than ``stale_acked`` (a handler died
@@ -617,8 +660,20 @@ def run_once(
     adapter: WakeAdapter | None = None,
     store: MailStore | None = None,
     now: float | None = None,
+    session_label: str | None = None,
 ) -> dict[str, Any]:
-    """One drain round: scan, route (optional Jev), wake, dedup, retry.
+    """One drain round: reap orphans, scan, claim-first, route (optional
+    Jev), wake, dedup, retry.
+
+    t-56 claim-first: the round first reaps stale-acked orphans (with the
+    same TTL as count semantics v2, so ``reap(stale_acked) → claim`` is
+    exactly equivalent to "pending 全数 + acked>stale_acked 兑底"), then
+    claims every candidate letter and delivers ONLY the claimed ones. A
+    letter another window already claimed is never delivered twice — the
+    loser's round records ``claim_denied`` (deduped per letter) instead, and
+    zero claimed letters means nothing is delivered and no session is pulled.
+    A letter whose delivery ultimately failed gets its claim released back to
+    pending so the next trigger re-drains it (信不丢, unchanged semantics).
 
     Never raises — the wake side failing must never take anything else down
     (fail-open iron law). Returns a stats dict for logging/tests.
@@ -631,15 +686,32 @@ def run_once(
         "failed": 0,
         "jev_skipped": 0,
         "skipped_external": 0,
+        "claim_denied": 0,
     }
     try:
         store = store or MailStore(root)
         adapter = adapter or make_adapter(cfg)
         ref = time.time() if now is None else now
+        # t-56: per-round session identity for handled_log ``by`` (J3) —
+        # "wake:<runid>" makes the claiming window auditable across windows.
+        label = session_label or f"wake:{ref:.0f}-{os.urandom(3).hex()}"
         jev_log = Path(root) / "wake-jev.log"
         inbox = Path(root) / "inbox" / cfg.agent_id
         if not inbox.is_dir():
             return stats
+        # claim-first 前置（孤儿营救组合）: stale-acked orphans go back to
+        # pending so the claim below can take them. TTL = stale_acked keeps
+        # this exactly equivalent to count semantics v2. Fail-open, same as
+        # the belt's own reap step.
+        try:
+            store.reap_stale_acked(cfg.agent_id, ttl_seconds=cfg.stale_acked, now=ref)
+        except Exception as exc:  # noqa: BLE001 — reap 失败不挡 wake（fail-open）
+            print(
+                f"[agent-mailbox wake] reap failed (fail-open, continuing): {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+        candidates: list[dict[str, Any]] = []
         for p in sorted(inbox.glob("*.json")):
             stats["scanned"] += 1
             try:
@@ -661,8 +733,9 @@ def run_once(
                 # failure keeps it shut (fail-closed).
                 stats["skipped_external"] += 1
                 continue
-            stats["due"] += 1 if should_wake(m, ref, cfg.stale_acked) else 0
-            if not should_wake(m, ref, cfg.stale_acked):
+            due = should_wake(m, ref, cfg.stale_acked)
+            stats["due"] += 1 if due else 0
+            if not due:
                 continue
             if _already_woken(m):
                 stats["skipped_woken"] += 1
@@ -680,11 +753,24 @@ def run_once(
                             flush=True,
                         )
                     continue
+            candidates.append(m)
+        # t-56 claim-first: claim the candidates, deliver ONLY the claimed
+        # ones. Zero claimed ⇒ nothing delivered, no session pulled.
+        claimed, denied = claim_route_mail(
+            store, cfg.agent_id, [str(m.get("id", "")) for m in candidates], label
+        )
+        stats["claim_denied"] += len(denied)
+        claimed_by_id = {str(m.get("id", "")): m for m in claimed}
+        for m in candidates:
+            mid = str(m.get("id", ""))
+            claimed_msg = claimed_by_id.get(mid)
+            if claimed_msg is None:
+                continue  # claim_denied 已审计 — this window does not own it
             delivered = False
             for attempt in range(1, cfg.retry_max + 1):
                 t0 = time.monotonic()
                 try:
-                    delivered = adapter.deliver(m)
+                    delivered = adapter.deliver(claimed_msg)
                 except Exception:  # noqa: BLE001 — adapter bugs never kill the loop
                     delivered = False
                 # 锚A: every attempt lands a row — success and failure alike
@@ -710,17 +796,26 @@ def run_once(
                 # rounds skip it even after a reclaim cycles acked->pending.
                 store.record_handled(
                     cfg.agent_id,
-                    m["id"],
+                    mid,
                     "wake",
                     note=getattr(adapter, "name", "adapter"),
+                    session_label=label,
                 )
                 stats["woke"] += 1
             else:
-                # every attempt failed — leave the letter un-marked so the
-                # next WatchPaths trigger re-drains it (信不丢), and drop the
-                # U2 alert letter (once per letter) so the failure is visible
-                # from the mailbox face alone.
-                send_wake_alert(store, root, cfg.agent_id, m)
+                # every attempt failed — release OUR claim so the letter is
+                # pending again and the next WatchPaths trigger re-drains it
+                # (信不丢, same recovery as the old un-marked-pending path;
+                # the U2 alert below still fires once per letter).
+                try:
+                    store.release_claim(cfg.agent_id, mid, session_label=label)
+                except Exception as exc:  # noqa: BLE001 — 释放失败信仍在（reap 兜底）
+                    print(
+                        f"[agent-mailbox wake] claim release failed (fail-open): {exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                send_wake_alert(store, root, cfg.agent_id, claimed_msg)
     except Exception as exc:  # noqa: BLE001 — total fail-open: never raise out of drain
         print(
             f"[agent-mailbox wake] drain round failed (fail-open): {exc}",
@@ -961,6 +1056,109 @@ def _cmd_status(args: argparse.Namespace) -> None:
     print(json.dumps(info, ensure_ascii=False))
 
 
+def _cmd_claim(args: argparse.Namespace) -> None:
+    """t-56 claim-first 认领通道（belt 脚本与仓外网关共用的对齐点）。
+
+    扫描收件箱 pending 候选 → ``claim``（只认领扫到的）→ 没认领到的逐封落
+    ``claim_denied`` 审计（按信去重）→ 输出 JSON：``claimed`` 每封带
+    id/from/subject/body（即投递物），``denied`` 是被别的窗认领在途的 id。
+    ``claimed`` 为空 ⇒ 调用方本轮不投、不拉会话。认领结果文件 0600（信体
+    落盘，权限对齐 letter 文件本身）。
+    """
+    root = Path(args.root or os.environ.get("AGENT_MAIL_HOME", Path.home() / ".agent-mail"))
+    agent = str(args.agent or "").strip()
+    if not agent:
+        raise SystemExit("wake claim: --agent required")
+    store = MailStore(root)
+    label = str(args.label or "").strip() or f"claim:{os.getpid()}"
+    inbox = root / "inbox" / agent
+    candidate_ids: list[str] = []
+    if inbox.is_dir():
+        for p in sorted(inbox.glob("*.json")):
+            try:
+                m = json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue  # partially-written letters wait for the next round
+            if isinstance(m, dict) and m.get("status") == "pending":
+                candidate_ids.append(str(m.get("id") or p.stem))
+    claimed, denied = claim_route_mail(store, agent, candidate_ids, label)
+    payload: dict[str, Any] = {
+        "agent": agent,
+        "label": label,
+        "root": str(root),
+        "claimed": [
+            {
+                "id": str(m.get("id", "")),
+                "from": str(m.get("from", "")),
+                "to": str(m.get("to", agent)),
+                "subject": str(m.get("subject", "")),
+                "body": str(m.get("body", "") or ""),
+                "priority": str(m.get("priority", "normal")),
+                **({"thread_id": m["thread_id"]} if m.get("thread_id") else {}),
+            }
+            for m in claimed
+        ],
+        "denied": denied,
+        "denied_note": (
+            "claimed in-flight by another window; audited as claim_denied (deduped per letter)"
+        ),
+    }
+    out = json.dumps(payload, ensure_ascii=False)
+    if args.out:
+        target = Path(args.out)
+        try:
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(out + "\n")
+        except OSError as exc:
+            raise SystemExit(f"wake claim: cannot write {target}: {exc}") from exc
+    else:
+        print(out)
+
+
+def _cmd_release(args: argparse.Namespace) -> None:
+    """t-56: 释放本路由没投出去/没做完的认领信（翻回 pending，信不丢）。
+
+    id 来源二选一：``--claim-file``（``wake claim --out`` 的 JSON，取其中
+    claimed 的 id）或 ``--ids``（逗号分隔）。已 done/archived 的信自动跳过；
+    带 ``--label`` 时只释放仍是本标识认领的信（别的窗接手的不动）。
+    """
+    root = Path(args.root or os.environ.get("AGENT_MAIL_HOME", Path.home() / ".agent-mail"))
+    agent = str(args.agent or "").strip()
+    if not agent:
+        raise SystemExit("wake release: --agent required")
+    store = MailStore(root)
+    label = str(args.label or "").strip() or f"claim:{os.getpid()}"
+    ids: list[str] = []
+    if args.claim_file:
+        try:
+            data = json.loads(Path(args.claim_file).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(f"wake release: cannot read claim file: {exc}") from exc
+        ids = [str(m.get("id", "")) for m in (data.get("claimed") or []) if isinstance(m, dict)]
+    if args.ids:
+        ids += [i.strip() for i in str(args.ids).split(",") if i.strip()]
+    released: list[str] = []
+    skipped: list[str] = []
+    for mid in dict.fromkeys(ids):
+        ok = False
+        try:
+            ok = store.release_claim(agent, mid, session_label=label)
+        except Exception as exc:  # noqa: BLE001 — fail-open：释放失败信仍在（reap 兜底）
+            print(
+                f"[agent-mailbox wake] release {mid} failed (fail-open): {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+        (released if ok else skipped).append(mid)
+    print(
+        json.dumps(
+            {"agent": agent, "label": label, "released": released, "skipped": skipped},
+            ensure_ascii=False,
+        )
+    )
+
+
 def _cmd_run(args: argparse.Namespace) -> None:
     root = Path(args.root or os.environ.get("AGENT_MAIL_HOME", Path.home() / ".agent-mail"))
     cfg = WakeConfig.load(root)
@@ -1031,6 +1229,31 @@ def wake_main(argv: list[str] | None = None) -> None:
     p_st = sub.add_parser("status", help="show wake configuration and install state")
     p_st.add_argument("--root", default="")
     p_st.set_defaults(func=_cmd_status)
+
+    # t-56 claim-first 认领/释放通道（belt 脚本与仓外网关的对齐点）
+    p_claim = sub.add_parser(
+        "claim", help="claim pending mail for one delivery round (JSON; claim-first t-56)"
+    )
+    p_claim.add_argument("--agent", default="", help="agent inbox to claim from (required)")
+    p_claim.add_argument("--root", default="", help="mail root (default ~/.agent-mail)")
+    p_claim.add_argument(
+        "--label", default="", help="路由:会话 标识落 handled_log by（如 belt:<pid>）"
+    )
+    p_claim.add_argument("--out", default="", help="write the claim JSON here (default stdout)")
+    p_claim.set_defaults(func=_cmd_claim)
+
+    p_release = sub.add_parser(
+        "release",
+        help="release this route's un-delivered claimed letters back to pending (t-56)",
+    )
+    p_release.add_argument("--agent", default="", help="agent inbox (required)")
+    p_release.add_argument("--root", default="")
+    p_release.add_argument("--label", default="", help="must match the claim label")
+    p_release.add_argument(
+        "--claim-file", default="", help="wake claim --out JSON; releases its claimed ids"
+    )
+    p_release.add_argument("--ids", default="", help="comma-separated msg ids (alternative)")
+    p_release.set_defaults(func=_cmd_release)
 
     args = parser.parse_args(argv)
     args.func(args)

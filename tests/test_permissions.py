@@ -372,5 +372,12 @@ def test_legacy_letter_without_new_fields_flows_as_before(root, monkeypatch):
     assert redact_sealed(m, reader="boss") is m  # redaction is a no-op
     rec = _Recorder()  # the wake path treats it as local and wakes it
     assert run_once(root, _wake_cfg(root), adapter=rec)["woke"] == 1
+    # t-56 claim-first: the wake route CLAIMED the letter and pushed its body
+    # to the woken window — a later mailbox_check finds nothing pending (a
+    # lost push is rescued by reap). Legacy compat: the claimed letter still
+    # flows with its body readable and none of the new fields.
+    claimed = st.get_letter("B", "20260101000000-legacy")
+    assert claimed["status"] == "acked" and claimed["body"] == "old body"
+    assert "origin" not in claimed and "sealed" not in claimed and "attention" not in claimed
     monkeypatch.setenv("AGENT_MAIL_ID", "B")
-    assert server.mailbox_check("B")["messages"][0]["body"] == "old body"
+    assert server.mailbox_check("B")["messages"] == []  # claimed by the wake route
