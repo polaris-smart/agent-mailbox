@@ -26,6 +26,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -503,6 +504,11 @@ def _cmd_upgrade(args: argparse.Namespace) -> int:
 #   G-3 ⑧ 仓内/线上脚本一致——scripts/wake-zc.sh、scripts/resolve-
 #       provider-config.sh 与 <root>/ 同名文件逐对 sha256 比对（只查不同
 #       步，不同步——同步属合入批动作）。
+# t-65（收口批第 2 批）：
+#   ⑨ 告警投递可达性（G-5）——告警收件人（负责方 + 各箱发件人）逐人验证
+#       ①已注册 ②inbox 目录存在 ③可写；只读探测，绝不真发信。
+#   ④ 顺带孤儿进程只读提示（G-4 可选面）——该入口二进制有 PPID=1、存活
+#       超阈值（>10 分钟）的残留 = 历史唤醒没被回收干净，只提示不判死。
 
 
 DOCTOR_TITLES = (
@@ -515,6 +521,7 @@ DOCTOR_TITLES = (
     ("host_auth", "⑥ 宿主认证态"),
     ("breaker", "⑦ 唤醒断路器（breaker）"),
     ("wake_scripts", "⑧ 仓内/线上脚本一致"),
+    ("alert_reach", "⑨ 告警投递可达性"),
 )
 
 # ⑥ 宿主认证态的已知故障特征（对日志尾部逐行匹配；spawn_failed 用组提取
@@ -605,6 +612,59 @@ def _doctor_route_problem(route: wake_mod.WakeRoute) -> tuple[str, str] | None:
             "wake install --agent <id> --webhook-url <url>，或检查 <root>/webhook.json",
         )
     return None
+
+
+# G-4 孤儿探测阈值（秒）：存活超过 10 分钟的 PPID=1 残留才算样态（对齐
+# 任务书验收「ps 里无超 10 分钟的残留」）。
+DOCTOR_ORPHAN_MIN_ETIME_S = 600.0
+
+
+def _parse_ps_etime(s: str) -> float:
+    """ps 的 etime（``[[dd-]hh:]mm:ss``）→ 秒；解析不了回 0（宁可不报）。"""
+    try:
+        days = 0
+        core = str(s)
+        if "-" in core:
+            days, core = core.split("-", 1)
+            days = int(days)
+        parts = [int(x) for x in core.split(":") if x != ""]
+        while len(parts) < 3:
+            parts.insert(0, 0)
+        return days * 86400 + parts[-3] * 3600 + parts[-2] * 60 + parts[-1]
+    except (ValueError, AttributeError):
+        return 0.0
+
+
+def _doctor_probe_key(command: list[str]) -> str:
+    """④ 孤儿探测的匹配键：经唤醒包装脚本起的命令匹配**脚本路径**而非
+    通用 shell（``/bin/bash /root/wake-cmd-X.sh`` 若匹配 bash 会满屏误报）。"""
+    head = str(command[0]) if command else ""
+    if Path(head).name in ("bash", "sh", "zsh", "dash") and len(command) > 1:
+        return str(command[1])
+    return head
+
+
+def _doctor_orphan_rows() -> list[tuple[str, str, str]]:
+    """只读 ps 探测（G-4）：返回 PPID=1 的 ``(pid, etime, command)`` 行。
+
+    被收养（PPID=1）正是 G-4 病灶样态——旧式裸 kill PID 看门狗把孙进程
+    留给了 launchd。绝不 kill、只读；探测失败（ps 缺席等）回空列表。"""
+    try:
+        out = subprocess.run(
+            ["ps", "-axo", "pid=,ppid=,etime=,command="],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        ).stdout
+    except Exception:  # noqa: BLE001 — 探测失败 = 无样本，不挡其他判定
+        return []
+    rows: list[tuple[str, str, str]] = []
+    for line in out.splitlines():
+        parts = line.strip().split(None, 3)
+        if len(parts) == 4 and parts[1] == "1":
+            rows.append((parts[0], parts[2], parts[3]))
+    return rows
 
 
 def _doctor_last_attempts(root: Path) -> dict[str, dict[str, Any]]:
@@ -842,13 +902,15 @@ def doctor_report(
     systemd_dir: Path | None = None,
     loaded_probe: Callable[[], tuple[set[str], str]] | None = None,
     repo_scripts_dir: Path | None = None,
+    orphan_probe: Callable[[], list[tuple[str, str, str]]] | None = None,
 ) -> dict[str, Any]:
-    """doctor 诊断面数据（t-59 六检基座 + t-64 ⑦⑧）。``--json`` 原样输出；
-    人读格式见 :func:`_print_doctor`。任何可执行环境差异（wb 日志路径 /
-    plist 目录 / systemd 目录）都留了参数位，测试用 tmp 替身，不碰真机
-    状态。t-64 追加两个注入点：``loaded_probe``（G-1 加载实况探测，测试
+    """doctor 诊断面数据（t-59 六检基座 + t-64 ⑦⑧ + t-65 ⑨）。``--json``
+    原样输出；人读格式见 :func:`_print_doctor`。任何可执行环境差异（wb 日志
+    路径 / plist 目录 / systemd 目录）都留了参数位，测试用 tmp 替身，不碰
+    真机状态。t-64 追加两个注入点：``loaded_probe``（G-1 加载实况探测，测试
     monkeypatch 替身，不真跑 launchctl）与 ``repo_scripts_dir``（G-3 仓内
-    基准目录，测试用 tmp 替身）。"""
+    基准目录，测试用 tmp 替身）。t-65 追加 ``orphan_probe``（G-4 孤儿进程
+    只读探测替身，测试不真跑 ps）。"""
     root = Path(root)
     cfg = wake_mod.WakeConfig.load(root)
     targets = _doctor_wake_targets(cfg)
@@ -1089,6 +1151,7 @@ def doctor_report(
     else:
         route_lines: list[str] = []
         route_bad: list[tuple[str, str, str]] = []
+        probe_keys: set[str] = set()  # G-4 孤儿探测的匹配键（存在的入口路径）
         for tid in targets:
             route = (cfg or wake_mod.WakeConfig({}, root)).effective_route(tid)
             desc = route.adapter
@@ -1107,15 +1170,42 @@ def doctor_report(
             problem = _doctor_route_problem(route)
             if problem:
                 route_bad.append((tid, problem[0], problem[1]))
+            elif route.adapter == "local-command" and route.command:
+                key = _doctor_probe_key([str(a) for a in route.command])
+                if key and Path(key).exists():
+                    probe_keys.add(key)
+        # G-4（可选提示）: 孤儿进程只读探测——该入口有 PPID=1、存活超阈值的
+        # 残留 = 历史唤醒的看门狗没回收干净（旧式裸 kill PID → 孙进程被
+        # launchd 收养）。只提示不判死；真回收属本机属主动作，诊断面不动手。
+        orphan_note = ""
+        if probe_keys:
+            try:
+                rows = (orphan_probe or _doctor_orphan_rows)()
+            except Exception:  # noqa: BLE001 — 探测失败不挡路由判定
+                rows = []
+            hits = [
+                f"pid={pid} etime={et} cmd={cmd[:80]}"
+                for pid, et, cmd in rows
+                if _parse_ps_etime(et) >= DOCTOR_ORPHAN_MIN_ETIME_S
+                and any(k in cmd for k in probe_keys)
+            ]
+            if hits:
+                orphan_note = (
+                    f"；⚠ 疑似孤儿残留（PPID=1，>{DOCTOR_ORPHAN_MIN_ETIME_S / 60:g}min 未回收，"
+                    "看门狗进程组语义未覆盖历史唤醒）: " + "；".join(hits[:5])
+                )
         if route_bad:
             _check(
                 "routing",
                 False,
-                "；".join(f"{t}: {p}" for t, p, _ in route_bad) + "；" + "；".join(route_lines),
+                "；".join(f"{t}: {p}" for t, p, _ in route_bad)
+                + "；"
+                + "；".join(route_lines)
+                + orphan_note,
                 route_bad[0][2],
             )
         else:
-            _check("routing", True, "；".join(route_lines))
+            _check("routing", True, "；".join(route_lines) + orphan_note)
 
     # ⑤ 积压（各身份 pending 计数）
     backlog_lines: list[str] = []
@@ -1241,6 +1331,66 @@ def doctor_report(
         )
     else:
         _check("wake_scripts", True, "；".join(script_rows))
+
+    # ⑨ 告警投递可达性（G-5）: 「告警的告警断了」的防线——告警收件人 =
+    # 负责方（WAKE_ALERT_RECIPIENT）+ 各箱信件里出现过的发件人（
+    # send_wake_alert 的收件人集合）。逐人验证 ①已注册 ②inbox 目录存在
+    # ③可写；只读探测，绝不真发信。无信件且无 registry = 无告警样本，
+    # 不作判据（免得空机器被误判）。registry 直读（MailStore 构造器会
+    # mkdir，诊断面零写盘）。
+    try:
+        _reg_raw = json.loads((root / "registry.json").read_text(encoding="utf-8"))
+        _agents_raw = _reg_raw.get("agents", {}) if isinstance(_reg_raw, dict) else {}
+        _reg_agents = {k for k, v in _agents_raw.items() if isinstance(v, dict)}
+    except (OSError, json.JSONDecodeError, ValueError):
+        _reg_agents = set()
+    alert_senders: set[str] = set()
+    _inbox_root = root / "inbox"
+    if _inbox_root.is_dir():
+        for _box in sorted(_inbox_root.glob("*")):
+            if not _box.is_dir():
+                continue
+            for _n, _p in enumerate(sorted(_box.glob("*.json"))):
+                if _n >= 200:  # 每箱采样上限：可达性判定不需要全量扫描
+                    break
+                try:
+                    _f = str(json.loads(_p.read_text(encoding="utf-8")).get("from", "") or "")
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if _f:
+                    alert_senders.add(_f)
+    if not alert_senders and not _reg_agents:
+        _check("alert_reach", True, "无告警收件人样本（无信件且无 registry）——无可达性判据")
+    else:
+        _alert_targets = sorted(alert_senders | {wake_mod.WAKE_ALERT_RECIPIENT})
+        _alert_bad: list[str] = []
+        _alert_ok: list[str] = []
+        for _aid in _alert_targets:
+            _dir = root / "inbox" / _aid
+            if _aid not in _reg_agents:
+                _alert_bad.append(f"{_aid}: 未注册（告警无落点）")
+            elif not _dir.is_dir():
+                _alert_bad.append(f"{_aid}: inbox 目录缺失")
+            elif not (os.access(_dir, os.W_OK | os.X_OK) and os.access(_dir, os.R_OK)):
+                _alert_bad.append(f"{_aid}: inbox 目录不可写")
+            else:
+                _alert_ok.append(_aid)
+        if _alert_bad:
+            _check(
+                "alert_reach",
+                False,
+                "；".join(_alert_bad) + (f"；可达: {' '.join(_alert_ok)}" if _alert_ok else ""),
+                "未注册 → agent-mailbox setup --agent <id> 补注册（setup 自动建箱）；"
+                "目录缺失/不可写 → 检查 <root>/inbox/<id> 的存在与权限后重跑 doctor；"
+                "可达性只读探测，投递确认见 alerts.deliver_confirmed（send 后回读）",
+            )
+        else:
+            _check(
+                "alert_reach",
+                True,
+                f"告警收件人均可达（已注册 + inbox 在且可写）: {' '.join(_alert_ok)}"
+                "（只读探测, 未真发信）",
+            )
 
     unhealthy = [c for c in checks if not c["ok"]]
     return {

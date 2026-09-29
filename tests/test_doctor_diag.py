@@ -103,7 +103,7 @@ def _short_sha(path: Path) -> str:
 
 
 def test_doctor_g1_titles_have_installed_loaded_split():
-    """② 拆两行 + ⑦⑧ 就位：DOCTOR_TITLES 顺序契约。"""
+    """② 拆两行 + ⑦⑧⑨ 就位：DOCTOR_TITLES 顺序契约（t-65 追加 ⑨ 告警可达性）。"""
     assert [i for i, _ in DOCTOR_TITLES] == [
         "root",
         "wake_installed",
@@ -114,6 +114,7 @@ def test_doctor_g1_titles_have_installed_loaded_split():
         "host_auth",
         "breaker",
         "wake_scripts",
+        "alert_reach",
     ]
 
 

@@ -149,20 +149,31 @@ def belt_script_body(
     root: Path | str,
     python_exe: str,
     drain_cmd: str,
+    watchdog_secs: float = 900.0,
 ) -> str:
     """per-身份 belt 脚本模板（包内渲染，绝对路径自动填）。
 
     单轮语义（与 wake run --once 同款）：reap → claim（t-56 认领纪律）→
     有信才 drain → 校验 done → release（信不丢）→ archive。失败必响（t-59）：
     claim 基建失败 / drain 无进展都 exit 1 + 锚A fail 行，禁 rc=0 伪装成功。
-    部署副本 = 本文件；真实 drain 语义用 ``WAKE_DRAIN_CMD`` 覆盖。
+    G-4（收口批第 2 批）：drain 不再裸 ``eval``——经**纯 Python 进程组看门狗**
+    （``agent_mailbox.watchdog``）执行：超时对整个进程组 SIGTERM → 宽限 →
+    SIGKILL（``start_new_session`` 起组 + ``killpg``，不用 shell 拼 sleep/
+    kill/pkill——那条路正是 G-4 病灶：父进程一死孙进程被 launchd 收养成
+    PPID=1 孤儿）。G-5：belt 失败告警经 ``agent_mailbox.alerts`` 真投递 +
+    回读确认（store.send → get_letter 回读），不再只写日志没人读。
+    部署副本 = 本文件；真实 drain 语义用 ``WAKE_DRAIN_CMD`` 覆盖；看门狗
+    秒数用 ``WAKE_WATCHDOG_SECS`` 覆盖。
     """
     return f"""#!/bin/bash
 # agent-mailbox per-身份 wake belt — `{agent_id}`（agent-mailbox setup --belt 生成, t-61）
 # 部署副本 = 本文件（生成产物）；模板见 src/agent_mailbox/installer.py::belt_script_body。
 # 单轮: reap → claim → 有信才 drain → 校验 done → release → archive。
 # 失败必响: claim 基建失败 / drain 无进展 exit 1 + 锚A fail 行（禁 rc=0 伪装, t-59）。
+# G-4: drain 经进程组看门狗（超时 SIGTERM 整组→宽限→SIGKILL, 治孤儿）。
+# G-5: belt 失败告警真投递 + 回读确认（agent_mailbox.alerts, 不再只写日志）。
 # drain 语义覆盖: WAKE_DRAIN_CMD env（默认=本身份的唤醒命令）。
+# 看门狗秒数覆盖: WAKE_WATCHDOG_SECS env（默认={watchdog_secs:g}s）。
 set -u
 MAIL_ROOT="${{MAIL_ROOT:-{_sh_quote(str(Path(root)))}}}"
 export AGENT_MAIL_HOME="$MAIL_ROOT"
@@ -172,6 +183,7 @@ LOG="$MAIL_ROOT/{BELT_PREFIX}{agent_id}.log"
 ANCHOR="$MAIL_ROOT/{wake_mod.WAKE_ATTEMPTS_FILE}"
 DRAIN_DEFAULT={_sh_quote(drain_cmd)}
 DRAIN_CMD="${{WAKE_DRAIN_CMD:-$DRAIN_DEFAULT}}"
+WD_SECS="${{WAKE_WATCHDOG_SECS:-{int(watchdog_secs)}}}"
 LOCK="${{WAKE_LOCK:-$MAIL_ROOT/{BELT_PREFIX}{agent_id}.lock}}"
 mkdir "$LOCK" 2>/dev/null || exit 0   # 已有 belt 在跑（幂等锁）
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT
@@ -184,6 +196,12 @@ anchor_attempt() {{ # route attempt outcome error_class executor latency_ms
   {{ umask 077; printf '%s\\n' "$line" >> "$ANCHOR"; }} 2>>"$LOG" || true
 }}
 
+# G-5: belt 失败告警（store.send + 回读确认；确定性内容走去重窗防刷屏）
+belt_alert() {{
+  "$MB_PY" -m agent_mailbox.alerts belt-fail --root "$MAIL_ROOT" --agent "$AGENT" \\
+    --reason "$1" --claimed "${{2:-0}}" --done "${{3:-0}}" >> "$LOG" 2>&1 || true
+}}
+
 if ! "$MB_PY" -m agent_mailbox.reap --agent "$AGENT" >> "$LOG" 2>&1; then
   echo "$(date '+%F %T') reap FAILED (fail-open, continuing) agent=$AGENT" >> "$LOG"
 fi
@@ -192,6 +210,7 @@ CLAIM_FILE="$MAIL_ROOT/{BELT_PREFIX}{agent_id}-claim.$$.json"
 if ! "$MB_PY" -m agent_mailbox.wake claim --agent "$AGENT" --root "$MAIL_ROOT" \\
     --label "belt:$$" --out "$CLAIM_FILE" >> "$LOG" 2>&1; then
   anchor_attempt belt 1 fail claim_failed belt-claim 0
+  belt_alert claim_failed
   echo "$(date '+%F %T') claim infrastructure FAILED — exit 1 (失败必响, 禁 rc=0 伪装)" >> "$LOG"
   exit 1
 fi
@@ -208,7 +227,10 @@ echo "$(date '+%F %T') belt: claimed $CLAIMED mail files (by belt:$$)" >> "$LOG"
 export AGENT_MAIL_CLAIM_FILE="$CLAIM_FILE"
 
 T0=$(date +%s)
-eval "$DRAIN_CMD" >> "$LOG" 2>&1
+# G-4: drain 经纯 Python 进程组看门狗（--shell 把命令串当数据传入, 超时
+# killpg SIGTERM→宽限→SIGKILL 整组回收；rc=124 = 看门狗超时）
+"$MB_PY" -m agent_mailbox.watchdog --timeout "$WD_SECS" --shell "$DRAIN_CMD" >> "$LOG" 2>&1
+DRAIN_RC=$?
 DONE_N=$("$MB_PY" -c 'import json,sys
 from agent_mailbox.store import MailStore
 root, agent, cf = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -230,8 +252,16 @@ TURN_MS=$(( ($(date +%s) - T0) * 1000 ))
 "$MB_PY" -m agent_mailbox.wake release --agent "$AGENT" --root "$MAIL_ROOT" \\
   --label "belt:$$" --claim-file "$CLAIM_FILE" >> "$LOG" 2>&1 || true
 rm -f "$CLAIM_FILE"
+if [ "$DRAIN_RC" -eq 124 ]; then
+  # G-4: 看门狗超时——进程组已回收（SIGTERM→宽限→SIGKILL），失败必响
+  anchor_attempt belt 1 fail timeout belt-drain "$TURN_MS"
+  belt_alert timeout "$CLAIMED" "${{DONE_N:-0}}"
+  echo "$(date '+%F %T') belt drain WATCHDOG TIMEOUT (rc=124, watchdog ${{WD_SECS}}s, process group reclaimed) — exit 1" >> "$LOG"
+  exit 1
+fi
 if [ -z "${{DONE_N:-}}" ] || [ "${{DONE_N:-0}}" -lt 1 ]; then
   anchor_attempt belt 1 fail no_progress belt-drain "$TURN_MS"
+  belt_alert no_progress "$CLAIMED" "${{DONE_N:-0}}"
   echo "$(date '+%F %T') belt drain made NO progress (claimed $CLAIMED, done ${{DONE_N:-0}}) — exit 1" >> "$LOG"
   exit 1
 fi
@@ -394,8 +424,20 @@ def install_agent(
                 f"{_sh_quote(py)} -m agent_mailbox.wake run "
                 f"--root {_sh_quote(str(root))} --agent {_sh_quote(agent_id)} --once"
             )
+        # G-4: 看门狗秒数 = agents.<ID> 段 timeout（未配回 300s 默认）；
+        # belt 现场可用 WAKE_WATCHDOG_SECS env 再覆盖。
+        watchdog_secs = wake_mod.DEFAULT_COMMAND_TIMEOUT
+        try:
+            watchdog_secs = float(
+                (cfg.agent_section(agent_id) or {}).get("timeout")
+                or wake_mod.DEFAULT_COMMAND_TIMEOUT
+            )
+        except (TypeError, ValueError):
+            pass
         belt_file = belt_path(root, agent_id)
-        _write_executable(belt_file, belt_script_body(agent_id, root, py, drain))
+        _write_executable(
+            belt_file, belt_script_body(agent_id, root, py, drain, watchdog_secs=watchdog_secs)
+        )
         out["belt"] = str(belt_file)
     return out
 

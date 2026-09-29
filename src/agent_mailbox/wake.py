@@ -47,7 +47,6 @@ import argparse
 import dataclasses
 import json
 import os
-import signal
 import subprocess
 import sys
 import threading
@@ -55,7 +54,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .alerts import deliver_confirmed
 from .store import MailStore, _now_iso, load_visibility
+from .watchdog import DEFAULT_GRACE_SECS, terminate_group
 from .webhook import post_message
 
 WAKE_LABEL = "com.polaris-smart.agent-mailbox-wake"  # + "-<agent>" per instance
@@ -468,15 +469,14 @@ class GenericWebhookAdapter(HermesAdapter):
 
 
 def _kill_group(proc: subprocess.Popen) -> None:
-    """Timeout = hard kill. On POSIX the child was started with
-    ``start_new_session`` so killing its process group also takes any
-    grandchildren it spawned; elsewhere kill the direct child. Never raises —
-    a kill racing an already-exited process is normal life."""
+    """Timeout = 进程组回收（G-4，先礼后兵）。On POSIX the child was started
+    with ``start_new_session`` so the whole group — any grandchildren it
+    spawned included — gets SIGTERM first; after a grace window survivors
+    get SIGKILL. 直杀单 PID 再 ``pkill -P`` 那条路是 G-4 病灶：父进程一死
+    孙进程被 launchd 收养（PPID=1）就永远追不回来。Never raises — a kill
+    racing an already-exited process is normal life."""
     try:
-        if hasattr(os, "killpg"):
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        else:
-            proc.kill()
+        terminate_group(proc.pid, DEFAULT_GRACE_SECS)
     except OSError:
         try:
             proc.kill()
@@ -484,7 +484,7 @@ def _kill_group(proc: subprocess.Popen) -> None:
             pass
     finally:
         try:
-            proc.communicate(timeout=5)  # reap — no zombies left behind
+            proc.communicate(timeout=15)  # reap — no zombies left behind
         except (OSError, subprocess.SubprocessError, ValueError):
             pass
 
@@ -580,7 +580,8 @@ class LocalCommandAdapter(WakeAdapter):
             _kill_group(proc)
             self.last_error_class = "timeout"
             print(
-                f"[agent-mailbox wake] local-command timed out after {self.timeout:g}s (killed)",
+                f"[agent-mailbox wake] local-command timed out after {self.timeout:g}s "
+                f"(进程组 SIGTERM→{DEFAULT_GRACE_SECS:g}s 宽限→SIGKILL, G-4)",
                 file=sys.stderr,
                 flush=True,
             )
@@ -863,7 +864,14 @@ def send_wake_alert(
 
     t-62（判据7）: ``degraded`` 非空 = 该信已降级 digest 纯本地路径消化，
     降级事实必须进告警文本（负责人看到的不是「信卡住了」而是「已摘要落盘、
-    请人工跟进」）。"""
+    请人工跟进」）。
+
+    G-5（收口批第 2 批）: 告警**真投递 + 回读确认**——统一走
+    ``alerts.deliver_confirmed``（store.send → 逐收件人 ``get_letter``
+    回读信在且 status 非终态才算投递成功）。回读确认成功才在 source 信上
+    标 ``wake_alert``（告警至多一次）；回读失败 ⇒ 审计留痕（
+    ``alert_delivery_unconfirmed``）+ **不标记** ⇒ 下一轮 drain 重投
+    （信不丢语义：告警没真到就反复投，直到收件人箱里真的有）。"""
     already = any(e.get("action") == WAKE_ALERT_ACTION for e in (msg.get("handled_log") or []))
     if already:
         return False
@@ -896,15 +904,33 @@ def send_wake_alert(
         "请检查 wake 通道（wake.json / webhook / wake-attempts.jsonl 的 "
         "error_class 行）后重投。此信为系统自动告警，无需回执。"
     )
-    sent = False
     try:
-        out = store.send(agent_id, recipients, f"[wake-fail] {subject}", body)
-        sent = bool(out)
+        result = deliver_confirmed(
+            store,
+            agent_id,
+            recipients,
+            f"[wake-fail] {subject}",
+            body,
+            context=f"wake_alert:{agent_id}:{msg.get('id', '')}",
+        )
+        sent = bool(result.get("confirmed"))
     except Exception as exc:  # noqa: BLE001 — alert must never break the drain
+        sent = False
         print(f"[agent-mailbox wake] alert send failed (fail-open): {exc}", file=sys.stderr)
+    if not sent:
+        # 回读未确认 = 告警没真到收件人箱：不标记（下一轮 drain 重投，信不丢）。
+        # 审计留痕由 deliver_confirmed 落 audit.log（alert_delivery_unconfirmed）。
+        print(
+            "[agent-mailbox wake] alert NOT confirmed by readback — will retry next round",
+            file=sys.stderr,
+        )
+        return False
     try:
         store.record_handled(
-            agent_id, str(msg.get("id", "")), WAKE_ALERT_ACTION, note="alert letter dropped"
+            agent_id,
+            str(msg.get("id", "")),
+            WAKE_ALERT_ACTION,
+            note="alert letter delivered+readback-confirmed",
         )
     except Exception as exc:  # noqa: BLE001
         print(f"[agent-mailbox wake] alert mark failed (fail-open): {exc}", file=sys.stderr)
