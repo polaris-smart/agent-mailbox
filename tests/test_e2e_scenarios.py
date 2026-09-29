@@ -225,10 +225,12 @@ def test_S3_fault_injection_triple(tmp_path, clean_home, capsys):
     last_wake = checks["last_wake"]
     assert last_wake["ok"] is False and "auth_required" in last_wake["detail"]
     assert "未登录" in last_wake["next_step"]
-    # ③ 身份不在名单 → ② 判 gamma 需补注册/补装
-    wake_loaded = checks["wake_loaded"]
-    assert wake_loaded["ok"] is False and "gamma" in wake_loaded["detail"]
-    assert "agent-mailbox setup --agent gamma" in wake_loaded["next_step"]
+    # ③ 身份不在名单 → ② 判 gamma 需补注册/补装（t-64 装/加载分行后归「装」维；
+    #    加载维另行如实报未加载单元——假环境 launchctl 永无真加载，两维同真）
+    wake_installed = checks["wake_installed"]
+    assert wake_installed["ok"] is False and "gamma" in wake_installed["detail"]
+    assert "agent-mailbox setup --agent gamma" in wake_installed["next_step"]
+    assert checks["wake_loaded"]["ok"] is False and "缺失" in checks["wake_loaded"]["detail"]
     assert report["healthy"] is False
     # CLI 面: 非零退出
     assert cli_main(["doctor", "--home", str(root), "--json"]) == 1
@@ -246,7 +248,7 @@ def test_S5_doctor_pasteable_fix_commands(tmp_path, clean_home, capsys):
     checks = {c["id"]: c for c in report["checks"]}
     a_cmd = checks["routing"]["next_step"]  # which bin-agent …
     b_cmd = checks["last_wake"]["next_step"]  # agent-mailbox wake run --agent unauth --once
-    c_cmd = checks["wake_loaded"]["next_step"]  # agent-mailbox setup --agent gamma …
+    c_cmd = checks["wake_installed"]["next_step"]  # agent-mailbox setup --agent gamma …
     assert a_cmd.startswith("which ")
     assert "agent-mailbox wake run --agent unauth --once" in b_cmd
     assert "agent-mailbox setup --agent gamma" in c_cmd

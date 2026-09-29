@@ -8,7 +8,7 @@
     agent-mailbox connect <name> [--yes]
     agent-mailbox uninstall [--letters keep|export|archive|delete]
     agent-mailbox upgrade [--check] [--yes]   # v0.7.6 E 单元（t-53）
-    agent-mailbox doctor [--json]             # v0.7.6 A-2 单元（t-59）六检
+    agent-mailbox doctor [--json]             # v0.7.6 A-2 单元（t-59 六检基座 + t-64 ⑦⑧诊断面）
 
 Compatibility iron rule: the legacy invocations keep working untouched —
 ``agent-mailbox [--web PORT] [--http PORT]`` (stdio/HTTP/kanban server),
@@ -27,6 +27,7 @@ import json
 import os
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -488,19 +489,32 @@ def _cmd_upgrade(args: argparse.Namespace) -> int:
 # ------------------------------------------------------------------ doctor
 #
 # t-59（A-2）: `agent-mailbox doctor` 一条命令输出「哪段断了 + 怎么修」。
-# 六检：① 信箱根可读 ② 唤醒器已加载 ③ 最近一次唤醒是否真成功（区分「被
+# 六检基座：① 信箱根可读 ② 唤醒器 ③ 最近一次唤醒是否真成功（区分「被
 # 拉起」与「真消费」）④ 收件人路由指向谁 ⑤ 积压 ⑥ 宿主认证态。每项失败
 # 必带可执行的下一步；全部正常输出健康摘要。日志存在才扫，不存在跳过
 # 不报错。
+# t-64（0.7.6 收口批第 1 批诊断面）：
+#   G-1 ② 拆两行——「装载」= wake 单元文件在盘；「加载」= label 出现在
+#       launchctl list / systemctl --user list-unit-files 实况（只读探测，
+#       绝不 load/bootstrap）。装了没加载 = 链子是死的，加载缺失判 fail。
+#   G-2 ⑦ breaker——<root>/wake-zc.breaker 存在且 age > 10 分钟判闩死
+#       fail（输出 latched_at/rounds/pending_before→pending_after）；闩死
+#       期间 ③ 不得报「唤醒正常」，顺带降级。
+#   G-3 ⑧ 仓内/线上脚本一致——scripts/wake-zc.sh、scripts/resolve-
+#       provider-config.sh 与 <root>/ 同名文件逐对 sha256 比对（只查不同
+#       步，不同步——同步属合入批动作）。
 
 
 DOCTOR_TITLES = (
     ("root", "① 信箱根可读"),
-    ("wake_loaded", "② 唤醒器已加载"),
+    ("wake_installed", "② 装载（wake 单元文件在盘）"),
+    ("wake_loaded", "② 加载（launchctl/systemctl 实况）"),
     ("last_wake", "③ 最近一次唤醒"),
     ("routing", "④ 收件人路由"),
     ("backlog", "⑤ 积压"),
     ("host_auth", "⑥ 宿主认证态"),
+    ("breaker", "⑦ 唤醒断路器（breaker）"),
+    ("wake_scripts", "⑧ 仓内/线上脚本一致"),
 )
 
 # ⑥ 宿主认证态的已知故障特征（对日志尾部逐行匹配；spawn_failed 用组提取
@@ -639,21 +653,209 @@ def _doctor_scan_log(path: Path) -> dict[str, Any] | None:
     )
 
 
+# ---- t-64 诊断面（G-1 装/加载分行 · G-2 breaker · G-3 仓内/线上 sha）----
+
+# G-2: breaker 闩死判据——文件存在且 age 超过该秒数（10 分钟）判 fail。
+DOCTOR_BREAKER_MAX_AGE_S = 600.0
+# G-3: 比对对（仓内 scripts/<name> vs 部署 <root>/<name>）。只查不同步。
+DOCTOR_WAKE_SCRIPT_FILES = ("wake-zc.sh", "resolve-provider-config.sh")
+# 仓内基准目录：干净工作树下 scripts/ 文件 == 当前分支 HEAD 版本（工作树
+# 在施工单红线里收工必须干净）；不引 git 依赖——wheel 安装没有 .git，该
+# 目录不存在时 ⑧ 降级为「跳过比对」而不是误报。CLI 测试 monkeypatch 此常量。
+DOCTOR_REPO_SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
+
+
+def _doctor_unit_path(
+    agent_id: str,
+    launch_agents_dir: Path | None,
+    systemd_dir: Path | None,
+) -> Path | None:
+    """G-1「装」的判物：该身份的 wake 单元文件路径（None = 平台无法判装态）。"""
+    if sys.platform == "darwin":
+        return (
+            Path(launch_agents_dir or (Path.home() / "Library" / "LaunchAgents"))
+            / f"{wake_mod.WAKE_LABEL}-{agent_id}.plist"
+        )
+    if sys.platform == "linux":
+        return (
+            Path(systemd_dir or (Path.home() / ".config" / "systemd" / "user"))
+            / f"{wake_mod.WAKE_LABEL}-{agent_id}.path"
+        )
+    return None  # 其他平台：run 手动模式，安装态无从判起
+
+
+def _doctor_query_loaded_labels(platform: str = "") -> tuple[set[str], str]:
+    """G-1「加载」实况：只读探测已加载的唤醒单元 label。
+
+    返回 (label 集合, 探测状态)；状态 ``ok`` / ``unavailable``（命令失败/
+    不存在）/ ``unsupported``（平台不认识）。macOS 走 ``/bin/launchctl
+    list``（launchd 环境 PATH 不可信，写死绝对路径），Linux 走
+    ``systemctl --user list-unit-files``。**只 list 绝不 load/bootstrap**
+    ——装维写操作是老板权限面，诊断面只读。测试注入：
+    monkeypatch 本函数或向 :func:`doctor_report` 传 ``loaded_probe``。
+    """
+    import subprocess
+
+    platform = platform or sys.platform
+    try:
+        if platform == "darwin":
+            proc = subprocess.run(
+                ["/bin/launchctl", "list"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,  # 探测失败按 unavailable 降级，不抛
+            )
+        elif platform == "linux":
+            proc = subprocess.run(
+                ["systemctl", "--user", "list-unit-files", "--no-legend"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        else:
+            return set(), "unsupported"
+    except (OSError, subprocess.SubprocessError):
+        return set(), "unavailable"
+    if proc.returncode != 0:
+        return set(), "unavailable"
+    # launchctl list 行 = "PID 状态 Label"；systemd 行 = "单元名 状态"。
+    # 统一用正则抠 WAKE_LABEL 开头的 token（systemd 单元带 .path/.service
+    # 后缀也一并捕获，加载判定按前缀匹配兜住）。
+    pat = re.compile(re.escape(wake_mod.WAKE_LABEL) + r"-\S*")
+    return set(pat.findall(proc.stdout or "")), "ok"
+
+
+def _doctor_loaded_probe(
+    loaded_probe: Callable[[], tuple[set[str], str]] | None,
+) -> tuple[set[str], str]:
+    """加载探测统一入口：注入优先，缺省走真实只读探测。"""
+    if loaded_probe is not None:
+        return loaded_probe()
+    return _doctor_query_loaded_labels()
+
+
+def _doctor_breaker_fields(text: str) -> dict[str, str]:
+    """G-2: 解析 breaker 文件的 key=value 键值。
+
+    特例：``latched_at=2026-09-29 16:08:10`` 的值含空格——按 token 扫，
+    带 ``=`` 的 token 开新键，不带 ``=`` 的 token 续填上一个键的值。
+    """
+    fields: dict[str, str] = {}
+    last_key = ""
+    for line in text.splitlines():
+        for token in line.split():
+            if "=" in token:
+                key, _, value = token.partition("=")
+                if key:
+                    fields[key] = value
+                    last_key = key
+            elif last_key:
+                fields[last_key] += " " + token
+    return fields
+
+
+def _doctor_breaker_state(root: Path) -> dict[str, Any] | None:
+    """G-2: 读 <root>/wake-zc.breaker，返回状态面。
+
+    文件不存在回 None（无闩死样本）；存在时回
+    ``{"fields": {…}, "age_s": float, "status": "fresh"|"latched"}``。
+    age 优先取 ``latched_at``（本地时间，与写入方 ``date '+%F %T'`` 同
+    源），解析不了退回文件 mtime——两类「自造闩死样本」（改 latched_at /
+    改 mtime）都能命中。
+    """
+    from datetime import datetime, timezone
+
+    path = root / "wake-zc.breaker"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    fields = _doctor_breaker_fields(text)
+    age_s: float
+    latched = fields.get("latched_at", "")
+    try:
+        # latched_at 是 wake-zc.sh 用 `date '+%F %T'` 写的本地钟面时刻；
+        # naive 解析后 .astimezone() 挂本地时区，与 UTC now 相减得真间隔。
+        latched_dt = datetime.strptime(latched, "%Y-%m-%d %H:%M:%S").astimezone()
+        age_s = max(0.0, (datetime.now(timezone.utc) - latched_dt).total_seconds())
+    except ValueError:
+        from time import time
+
+        age_s = max(0.0, time() - mtime)
+    return {
+        "path": str(path),
+        "fields": fields,
+        "age_s": age_s,
+        "status": "latched" if age_s > DOCTOR_BREAKER_MAX_AGE_S else "fresh",
+    }
+
+
+def _doctor_file_digest(path: Path) -> tuple[str, int]:
+    """G-3: 返回 (sha256 前 8 位短值, 行数)。读不了回 ("?", 0)。"""
+    import hashlib
+
+    try:
+        data = path.read_bytes()
+        return hashlib.sha256(data).hexdigest()[:8], len(data.decode("utf-8").splitlines())
+    except OSError:
+        return "?", 0
+
+
+def _doctor_script_pairs(root: Path, repo_scripts_dir: Path) -> tuple[list[str], bool]:
+    """G-3: 仓内/线上脚本逐对 sha256 比对。回 (摘要行, 是否有坏对)。
+
+    只比对不同步（同步属合入批，doctor 不写部署面）；仓内基准缺失
+    （wheel 安装无 scripts/）降级为跳过不误报。
+    """
+    rows: list[str] = []
+    bad = False
+    for name in DOCTOR_WAKE_SCRIPT_FILES:
+        repo_f = repo_scripts_dir / name
+        dep_f = root / name
+        if not repo_f.is_file():
+            rows.append(f"{name}: 仓内基准缺失（{repo_scripts_dir}），跳过比对")
+            continue
+        repo_sha, repo_lines = _doctor_file_digest(repo_f)
+        if not dep_f.is_file():
+            rows.append(f"{name}: 线上未部署（仓内 {repo_sha}({repo_lines}行) vs 线上 缺）")
+            bad = True
+            continue
+        dep_sha, dep_lines = _doctor_file_digest(dep_f)
+        if repo_sha == dep_sha and repo_sha != "?":
+            rows.append(f"{name}: 一致（{repo_sha}…/{repo_lines}行）")
+        else:
+            rows.append(
+                f"{name}: 不一致 仓内 {repo_sha}({repo_lines}行) vs 线上 {dep_sha}({dep_lines}行)"
+            )
+            bad = True
+    return rows, bad
+
+
 def doctor_report(
     root: Path,
     *,
     wb_wake_log: Path | None = None,
     launch_agents_dir: Path | None = None,
     systemd_dir: Path | None = None,
+    loaded_probe: Callable[[], tuple[set[str], str]] | None = None,
+    repo_scripts_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """doctor 六检的数据面（t-59）。``--json`` 原样输出；人读格式见
-    :func:`_print_doctor`。任何可执行环境差异（wb 日志路径 / plist 目录 /
-    systemd 目录）都留了参数位，测试用 tmp 替身，不碰真机状态。"""
+    """doctor 诊断面数据（t-59 六检基座 + t-64 ⑦⑧）。``--json`` 原样输出；
+    人读格式见 :func:`_print_doctor`。任何可执行环境差异（wb 日志路径 /
+    plist 目录 / systemd 目录）都留了参数位，测试用 tmp 替身，不碰真机
+    状态。t-64 追加两个注入点：``loaded_probe``（G-1 加载实况探测，测试
+    monkeypatch 替身，不真跑 launchctl）与 ``repo_scripts_dir``（G-3 仓内
+    基准目录，测试用 tmp 替身）。"""
     root = Path(root)
     cfg = wake_mod.WakeConfig.load(root)
     targets = _doctor_wake_targets(cfg)
     checks: list[dict[str, Any]] = []
     boxes: list[str] = []  # ① 填充；② 的「身份不在唤醒名单」检查复用
+    # G-2: breaker 状态先读出——⑦ 直接用；③ 的「唤醒正常」也要被它按住。
+    breaker = _doctor_breaker_state(root)
 
     def _check(cid: str, ok: bool, detail: str, next_step: str = "") -> dict[str, Any]:
         c = {"id": cid, "ok": ok, "detail": detail}
@@ -684,44 +886,48 @@ def doctor_report(
             "确认 AGENT_MAIL_HOME/--home 指向对的根；首次使用先跑 agent-mailbox setup --yes",
         )
 
-    # ② 唤醒器已加载（launchd plist / systemd unit 存在性）
+    # ② 装/加载分开报（G-1，两行两判）：「装」= wake 单元文件在盘；
+    # 「加载」= label 出现在 launchctl/systemctl 实况。装了没加载 = 链子
+    # 是死的（收口批实况：WB 在盘未加载），加载缺失判 fail 并点名 label。
     if not cfg:
         _check(
-            "wake_loaded",
+            "wake_installed",
             False,
             f"{root}/wake.json 不存在（唤醒器从未安装）",
             "python -m agent_mailbox.wake install --agent <id> 安装（macOS 写 launchd plist / Linux 写 systemd path unit）",
         )
-    elif not targets:
         _check(
             "wake_loaded",
+            False,
+            "无 wake.json，加载态无从谈起（同 ② 装载）",
+            "同 ② 装载：先 install 再复核加载",
+        )
+    elif not targets:
+        _check(
+            "wake_installed",
             False,
             "wake.json 存在但没有 agents.<ID> 身份段，也没有 agent_id",
             "wake install --agent <id> --adapter <通道> 逐身份安装",
         )
+        _check(
+            "wake_loaded",
+            False,
+            "没有可查加载态的唤醒身份（同 ② 装载）",
+            "同 ② 装载",
+        )
     else:
-        loaded: list[str] = []
-        missing: list[str] = []
+        # ② 装：单元文件在盘
+        installed: list[str] = []
+        not_installed: list[str] = []
         for tid in targets:
-            if sys.platform == "darwin":
-                unit = (
-                    Path(launch_agents_dir or (Path.home() / "Library" / "LaunchAgents"))
-                    / f"{wake_mod.WAKE_LABEL}-{tid}.plist"
-                )
-            elif sys.platform == "linux":
-                unit = (
-                    Path(systemd_dir or (Path.home() / ".config" / "systemd" / "user"))
-                    / f"{wake_mod.WAKE_LABEL}-{tid}.path"
-                )
-            else:
-                unit = None  # 其他平台：run 手动模式，安装态无从判起
-            (loaded if (unit is None or unit.exists()) else missing).append(tid)
-        if missing:
+            unit = _doctor_unit_path(tid, launch_agents_dir, systemd_dir)
+            (installed if (unit is None or unit.exists()) else not_installed).append(tid)
+        if not_installed:
             _check(
-                "wake_loaded",
+                "wake_installed",
                 False,
-                f"已装 {len(loaded)}/{len(targets)}（{', '.join(loaded) or '无'}）；"
-                f"未装: {' '.join(missing)}",
+                f"已装 {len(installed)}/{len(targets)}（{', '.join(installed) or '无'}）；"
+                f"未装: {' '.join(not_installed)}",
                 "对缺失身份补跑 python -m agent_mailbox.wake install --agent <id>",
             )
         else:
@@ -753,18 +959,54 @@ def doctor_report(
                 orphans = []
             if orphans:
                 _check(
-                    "wake_loaded",
+                    "wake_installed",
                     False,
                     f"身份 {', '.join(orphans)} 收件箱有信但不在唤醒名单（信到了永远没人被叫醒）",
                     "；".join(f"agent-mailbox setup --agent {o}" for o in orphans)
                     + "（setup 自动注册+接线 CLI 形态身份）",
                 )
             else:
-                kind = "launchd plist" if sys.platform == "darwin" else "systemd unit"
+                kind = (
+                    "launchd plist"
+                    if sys.platform == "darwin"
+                    else ("systemd unit" if sys.platform == "linux" else "单元文件")
+                )
+                _check(
+                    "wake_installed",
+                    True,
+                    f"{kind} 已装 {len(targets)}/{len(targets)}：{' '.join(targets)}",
+                )
+        # ② 加载：launchctl/systemctl 实况（只读探测）
+        labels, probe = _doctor_loaded_probe(loaded_probe)
+        expected = [f"{wake_mod.WAKE_LABEL}-{tid}" for tid in targets]
+        if probe != "ok":
+            _check(
+                "wake_loaded",
+                True,
+                f"加载态无法探测（{probe}）——不作判据，请人工 launchctl list / "
+                "systemctl --user list-unit-files 复核",
+            )
+        else:
+            not_loaded = [
+                lbl
+                for lbl in expected
+                if lbl not in labels and not any(l.startswith(lbl + ".") for l in labels)
+            ]
+            if not_loaded:
+                _check(
+                    "wake_loaded",
+                    False,
+                    f"已加载 {len(expected) - len(not_loaded)}/{len(expected)}"
+                    f"（{', '.join(l for l in expected if l not in not_loaded) or '无'}）；"
+                    f"缺失: {' '.join(not_loaded)}——单元在盘没加载 = 链子死的",
+                    "对缺失身份补跑 python -m agent_mailbox.wake install --agent <id>；"
+                    "launchctl load/bootstrap 属装维写操作，由本人执行（诊断面只读探测）",
+                )
+            else:
                 _check(
                     "wake_loaded",
                     True,
-                    f"{kind} 已装 {len(targets)}/{len(targets)}：{' '.join(targets)}",
+                    f"launchctl/systemctl 实况已加载 {len(expected)}/{len(expected)}：{' '.join(expected)}",
                 )
 
     # ③ 最近一次唤醒是否真成功（被拉起 ≠ 真消费）
@@ -818,6 +1060,22 @@ def doctor_report(
         else:
             _check(
                 "last_wake", True, f"最近一次均真成功：{' '.join(good)}（wake-attempts.jsonl 尾部）"
+            )
+
+    # ③ 顺带降级（G-2）：breaker 闩死期间「唤醒正常」不可信——即便
+    # attempts 全 ok 也压成 fail 并说明，绝不让 ⑦ 闩死而 ③ 独绿。
+    if breaker and breaker["status"] == "latched":
+        lw = next((c for c in checks if c["id"] == "last_wake"), None)
+        if lw is not None:
+            bf = breaker["fields"]
+            lw["ok"] = False
+            lw["detail"] += (
+                f"；⚠ breaker 已闩死（latched_at={bf.get('latched_at', '?')} "
+                f"rounds={bf.get('rounds', '?')}）——「唤醒正常」不可信，见⑦"
+            )
+            lw["next_step"] = (
+                "先按⑦处理 breaker（复位需老板授权且留痕：时刻+命令+"
+                "pending_before→pending_after），再手动 wake run --agent <id> --once 复核"
             )
 
     # ④ 收件人路由（依赖 A-1 的 effective_route 解析）
@@ -939,6 +1197,51 @@ def doctor_report(
             else "无 wake 日志可扫（从未跑过唤醒）",
         )
 
+    # ⑦ 唤醒断路器（G-2）：文件存在且 age > 10 分钟 = 闩死，判 fail 并
+    # 原样吐出 latched_at / rounds / pending_before→pending_after；
+    # 新鲜样本（≤10 分钟冷却窗）只提示不判死；无文件 = 无闩死样本。
+    if breaker is None:
+        _check("breaker", True, "无闩死样本（wake-zc.breaker 不存在）")
+    elif breaker["status"] == "latched":
+        bf = breaker["fields"]
+        _check(
+            "breaker",
+            False,
+            f"闩死 age≈{breaker['age_s']:.0f}s > {DOCTOR_BREAKER_MAX_AGE_S:.0f}s；"
+            f"latched_at={bf.get('latched_at', '?')} rounds={bf.get('rounds', '?')} "
+            f"pending={bf.get('pending_before', '?')}→{bf.get('pending_after', '?')}"
+            f"（{breaker['path']}）",
+            "复位 rm <root>/wake-zc.breaker 需老板授权且必须留痕（复位时刻+命令+"
+            "pending_before→pending_after）；先看③⑥定位空转根因再复位",
+        )
+    else:
+        bf = breaker["fields"]
+        _check(
+            "breaker",
+            True,
+            f"闩死文件存在但新鲜（age≈{breaker['age_s']:.0f}s ≤ {DOCTOR_BREAKER_MAX_AGE_S:.0f}s "
+            f"冷却窗，暂不判闩死）：latched_at={bf.get('latched_at', '?')} "
+            f"rounds={bf.get('rounds', '?')} "
+            f"pending={bf.get('pending_before', '?')}→{bf.get('pending_after', '?')}；"
+            "持续存在请复位或排查③",
+        )
+
+    # ⑧ 仓内/线上脚本一致（G-3）：scripts/<name>（干净工作树 = HEAD 版本）
+    # vs <root>/<name> 逐对 sha256 + 行数。只查不同步——同步属合入批动作，
+    # 诊断面绝不写部署面。
+    repo_scripts = Path(repo_scripts_dir) if repo_scripts_dir else DOCTOR_REPO_SCRIPTS_DIR
+    script_rows, script_bad = _doctor_script_pairs(root, repo_scripts)
+    if script_bad:
+        _check(
+            "wake_scripts",
+            False,
+            "；".join(script_rows),
+            "把仓内 scripts/<name> 同步到 <root>/<name>（tmp+rename 原子写，先备份线上副本）；"
+            "同步动作归合入批，本项只诊断",
+        )
+    else:
+        _check("wake_scripts", True, "；".join(script_rows))
+
     unhealthy = [c for c in checks if not c["ok"]]
     return {
         "root": str(root),
@@ -959,7 +1262,7 @@ def _print_doctor(report: dict[str, Any]) -> None:
         if check.get("next_step"):
             print(f"   → 下一步: {check['next_step']}")
     if report["healthy"]:
-        print("\n结论: 六检全过，唤醒链路健康。")
+        print(f"\n结论: {len(report['checks'])} 检全过，唤醒链路健康。")
     else:
         print(
             f"\n结论: {report['unhealthy_count']} 项待修——逐条按上方「下一步」处理后重跑 "
@@ -1137,7 +1440,7 @@ def cli_main(argv: list[str] | None = None) -> int:
     p = sub.add_parser(
         "doctor",
         parents=[common],
-        help="六检一条命令：哪段断了 + 怎么修（信箱根/唤醒器/最近唤醒/路由/积压/宿主认证态）",
+        help="诊断一条命令：哪段断了 + 怎么修（信箱根/装/加载/最近唤醒/路由/积压/宿主认证/breaker/仓内线上脚本一致）",
     )
     p.add_argument("--json", action="store_true", help="输出结构化 JSON")
     p.add_argument(

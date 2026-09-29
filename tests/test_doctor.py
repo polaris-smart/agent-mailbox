@@ -1,6 +1,7 @@
-"""t-59（A-2 失败必响 + doctor 六检）。
+"""t-59（A-2 失败必响 + doctor 六检）+ t-64（诊断面 ⑦⑧ 与 ② 拆分）。
 
 - doctor 六检各态全部用 tmp root + 假日志 fixture（真机日志绝不进测试）。
+- 加载实况（G-1）与仓内基准（G-3）一律注入替身，测试绝不真跑 launchctl。
 - run --once 投递失败必须非零退出（禁 rc=0 伪装成功）。
 - 告警收件人无 boss（boss 席仅存档语义，老板只看飞书）。
 - LocalCommandAdapter 未登录态特征（Authentication required）判失败。
@@ -14,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+import agent_mailbox.cli as cli_mod
 from agent_mailbox.cli import SUBCOMMANDS, cli_main, doctor_report
 from agent_mailbox.store import MailStore
 from agent_mailbox.wake import (
@@ -22,6 +24,8 @@ from agent_mailbox.wake import (
     send_wake_alert,
     wake_main,
 )
+
+WAKE_LABEL = "com.polaris-smart.agent-mailbox-wake"
 
 CODEX_SPAWN_LINE = (
     "[agent-mailbox wake] local-command spawn failed: [Errno 2] No such file or directory: 'codex'"
@@ -63,6 +67,16 @@ def _mkla(tmp_path: Path, *ids: str) -> Path:
     return la
 
 
+def _loaded_probe(*ids: str):
+    """假 launchctl/systemctl 实况：只有列出的 id 已加载（绝不真跑 launchctl）。"""
+    return lambda: ({f"{WAKE_LABEL}-{i}" for i in ids}, "ok")
+
+
+def _norepo(tmp_path: Path) -> Path:
+    """⑧ 仓内基准替身：不存在的目录 → 「仓内基准缺失，跳过比对」不误报。"""
+    return tmp_path / "no-repo-scripts"
+
+
 def _check(report: dict, cid: str) -> dict:
     return next(c for c in report["checks"] if c["id"] == cid)
 
@@ -90,12 +104,28 @@ def test_doctor_healthy_root(tmp_path):
         + "\n",
         encoding="utf-8",
     )
-    report = doctor_report(root, wb_wake_log=tmp_path / "no-such-wb.log", launch_agents_dir=la)
+    report = doctor_report(
+        root,
+        wb_wake_log=tmp_path / "no-such-wb.log",
+        launch_agents_dir=la,
+        loaded_probe=_loaded_probe("ZC"),
+        repo_scripts_dir=_norepo(tmp_path),
+    )
     assert report["healthy"] is True and report["unhealthy_count"] == 0
     assert [
         _check(report, c)["ok"]
-        for c in ("root", "wake_loaded", "last_wake", "routing", "backlog", "host_auth")
-    ] == [True] * 6
+        for c in (
+            "root",
+            "wake_installed",
+            "wake_loaded",
+            "last_wake",
+            "routing",
+            "backlog",
+            "host_auth",
+            "breaker",
+            "wake_scripts",
+        )
+    ] == [True] * 9
     assert "真成功" in _check(report, "last_wake")["detail"]
 
 
@@ -104,7 +134,11 @@ def test_doctor_detects_codex_spawn_failed_with_fix(tmp_path):
     root = _mkroot(tmp_path)
     (root / "wake-daemon.log").write_text(CODEX_SPAWN_LINE + "\n", encoding="utf-8")
     report = doctor_report(
-        root, wb_wake_log=tmp_path / "no-such-wb.log", launch_agents_dir=_mkla(tmp_path, "ZC")
+        root,
+        wb_wake_log=tmp_path / "no-such-wb.log",
+        launch_agents_dir=_mkla(tmp_path, "ZC"),
+        loaded_probe=_loaded_probe("ZC"),
+        repo_scripts_dir=_norepo(tmp_path),
     )
     auth_check = _check(report, "host_auth")
     assert auth_check["ok"] is False
@@ -118,7 +152,13 @@ def test_doctor_detects_wb_auth_required_with_plain_reason(tmp_path):
     root = _mkroot(tmp_path)
     wb_log = tmp_path / "wb-wake.log"
     wb_log.write_text(WB_AUTH_LINE + "\n", encoding="utf-8")
-    report = doctor_report(root, wb_wake_log=wb_log, launch_agents_dir=_mkla(tmp_path, "ZC"))
+    report = doctor_report(
+        root,
+        wb_wake_log=wb_log,
+        launch_agents_dir=_mkla(tmp_path, "ZC"),
+        loaded_probe=_loaded_probe("ZC"),
+        repo_scripts_dir=_norepo(tmp_path),
+    )
     auth_check = _check(report, "host_auth")
     assert auth_check["ok"] is False
     assert "未登录" in auth_check["detail"]
@@ -145,7 +185,13 @@ def test_doctor_last_wake_distinguishes_fake_success(tmp_path):
         + "\n",
         encoding="utf-8",
     )
-    report = doctor_report(root, wb_wake_log=tmp_path / "no-such-wb.log", launch_agents_dir=la)
+    report = doctor_report(
+        root,
+        wb_wake_log=tmp_path / "no-such-wb.log",
+        launch_agents_dir=la,
+        loaded_probe=_loaded_probe("ZC"),
+        repo_scripts_dir=_norepo(tmp_path),
+    )
     check = _check(report, "last_wake")
     assert check["ok"] is False
     assert "假成功" in check["detail"] and "没真消费" in check["detail"]
@@ -159,7 +205,11 @@ def test_doctor_routing_check_uses_effective_route(tmp_path):
         tmp_path, agents_cfg={"ZC": {"adapter": "local-command", "command": ["codex", "--mail"]}}
     )
     report = doctor_report(
-        root_bad, wb_wake_log=tmp_path / "no-such.log", launch_agents_dir=_mkla(tmp_path, "ZC")
+        root_bad,
+        wb_wake_log=tmp_path / "no-such.log",
+        launch_agents_dir=_mkla(tmp_path, "ZC"),
+        loaded_probe=_loaded_probe("ZC"),
+        repo_scripts_dir=_norepo(tmp_path),
     )
     routing = _check(report, "routing")
     assert routing["ok"] is False
@@ -169,21 +219,31 @@ def test_doctor_routing_check_uses_effective_route(tmp_path):
     st.register("HS")
     st.send("HS", "ZC", "ping", "x")
     report2 = doctor_report(
-        root_bad, wb_wake_log=tmp_path / "no-such.log", launch_agents_dir=_mkla(tmp_path, "ZC")
+        root_bad,
+        wb_wake_log=tmp_path / "no-such.log",
+        launch_agents_dir=_mkla(tmp_path, "ZC"),
+        loaded_probe=_loaded_probe("ZC"),
+        repo_scripts_dir=_norepo(tmp_path),
     )
     backlog = _check(report2, "backlog")
     assert backlog["ok"] is True and "pending=1" in backlog["detail"]
 
 
-def test_doctor_cli_exit_codes_and_json(tmp_path, capsys):
-    """CLI 面: doctor 健康退出 0、有断点退出 1；--json 可解析；子命令已注册。"""
+def test_doctor_cli_exit_codes_and_json(tmp_path, capsys, monkeypatch):
+    """CLI 面: doctor 健康退出 0、有断点退出 1；--json 可解析；子命令已注册；
+    ② 拆出的装/加载两 id 都在 checks 里（CLI 路径注入假探测，不真跑 launchctl）。"""
     assert "doctor" in SUBCOMMANDS
+    monkeypatch.setattr(
+        cli_mod, "_doctor_query_loaded_labels", lambda platform="": (set(), "unsupported")
+    )
+    monkeypatch.setattr(cli_mod, "DOCTOR_REPO_SCRIPTS_DIR", _norepo(tmp_path))
     root = _mkroot(tmp_path)
     (root / "wake-daemon.log").write_text(CODEX_SPAWN_LINE + "\n", encoding="utf-8")
     rc = cli_main(["doctor", "--home", str(root), "--json"])
     payload = json.loads(capsys.readouterr().out)
     assert rc == 1 and payload["healthy"] is False
-    # 无 wake.json 的空根 → ② 直接判未安装
+    assert {"wake_installed", "wake_loaded"} <= {c["id"] for c in payload["checks"]}
+    # 无 wake.json 的空根 → ② 装/加载双双判未安装
     empty = tmp_path / "empty-root"
     empty.mkdir()
     rc2 = cli_main(["doctor", "--home", str(empty), "--json"])
