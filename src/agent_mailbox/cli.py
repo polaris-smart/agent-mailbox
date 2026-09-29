@@ -7,6 +7,7 @@
     agent-mailbox test <member> [--timeout 60] [--json]
     agent-mailbox connect <name> [--yes]
     agent-mailbox uninstall [--letters keep|export|archive|delete]
+    agent-mailbox upgrade [--check] [--yes]   # v0.7.6 E 单元（t-53）
 
 Compatibility iron rule: the legacy invocations keep working untouched —
 ``agent-mailbox [--web PORT] [--http PORT]`` (stdio/HTTP/kanban server),
@@ -28,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from . import connect as connect_mod
+from . import version_check as version_mod
 from . import wake as wake_mod
 from .discover import (
     build_report,
@@ -37,7 +39,7 @@ from .discover import (
     test_member,
 )
 
-SUBCOMMANDS = ("setup", "discover", "status", "test", "connect", "uninstall")
+SUBCOMMANDS = ("setup", "discover", "status", "test", "connect", "uninstall", "upgrade")
 
 STATUS_MARK = {"ok": "✅", "broken": "❌", "unknown": "· 未实测"}
 
@@ -325,6 +327,50 @@ def _cmd_uninstall(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_upgrade(args: argparse.Namespace) -> int:
+    """v0.7.6 E 单元（t-53）：查最新版 → 提示 → 确认后起外部命令升级。
+
+    判据③ 禁 self-update：进程内不自替换代码，只 spawn uv tool / pipx /
+    pip 的升级子命令；执行前必先显示完整命令；审计落 <root>/audit.log；
+    判据⑤ fail-open：查不到最新版就到此为止，绝不影响信箱功能。
+    """
+    root = _root_from(args)
+    info = version_mod.check_for_update(root, force=True)
+    if info is None:
+        print("⚠ 未能获取最新版（断网或 PyPI 不可达），本次不执行升级；信箱功能不受影响。")
+        return 0
+    if not info["update_available"]:
+        print(f"已是最新版（当前 {info['current']}，PyPI 最新 {info['latest']}）。")
+        return 0
+    print(version_mod.format_update_notice(info))
+    plan = version_mod.upgrade_plan()
+    command_str = " ".join(plan["command"])
+    if args.check:
+        print("（--check 只查不升；执行升级请跑 agent-mailbox upgrade）")
+        return 0
+    print(f"将运行完整命令：{command_str}")  # 判据③ 执行前显示完整命令
+    if not args.yes:
+        if not sys.stdin.isatty():
+            version_mod.run_upgrade(root, confirm=False, by="cli")  # dry-run 也留痕
+            print("非交互终端：仅预览未执行；确认执行请加 --yes。")
+            return 0
+        try:
+            confirmed = input("确认执行？[y/N]: ").strip().lower() in ("y", "yes", "是")
+        except (EOFError, KeyboardInterrupt):
+            confirmed = False
+        if not confirmed:
+            print("未执行（确认执行请重跑并回答 y，或加 --yes）。")
+            return 0
+    result = version_mod.run_upgrade(root, confirm=True, by="cli")
+    if result["ok"]:
+        print("✅ 升级完成（退出码 0）；重启 agent-mailbox 后新版本生效。")
+        return 0
+    code = result.get("exit_code")
+    detail = code if code is not None else result.get("error", "?")
+    print(f"❌ 升级失败（{detail}）；完整命令已留痕 <root>/audit.log。")
+    return 1
+
+
 # ------------------------------------------------------------------ main
 
 
@@ -388,6 +434,15 @@ def cli_main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--no-activate", action="store_true", help="只动文件，不调用 launchctl")
     p.set_defaults(func=_cmd_uninstall)
+
+    p = sub.add_parser(
+        "upgrade",
+        parents=[common],
+        help="查 PyPI 最新版并升级（uv tool / pipx / pip 自动识别；执行前先显示完整命令）",
+    )
+    p.add_argument("--check", action="store_true", help="只查版本与提示，不执行升级")
+    p.add_argument("--yes", action="store_true", help="跳过确认直接执行（仍会先打印完整命令）")
+    p.set_defaults(func=_cmd_upgrade)
 
     args = parser.parse_args(argv)
     return int(args.func(args) or 0)

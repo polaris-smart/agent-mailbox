@@ -36,7 +36,8 @@ from .store import (
 # v0.7.5 §3.1: unified subcommands routed before the legacy flag parser.
 # Only an exact positional-token match routes here, so every legacy
 # invocation (--web / --http / plain stdio / `wake ...`) is untouched.
-CLI_SUBCOMMANDS = ("setup", "discover", "status", "test", "connect", "uninstall")
+# v0.7.6 t-53 adds "upgrade" (E 单元: 版本检查+点击更新, see version_check.py).
+CLI_SUBCOMMANDS = ("setup", "discover", "status", "test", "connect", "uninstall", "upgrade")
 
 logger = logging.getLogger(__name__)
 

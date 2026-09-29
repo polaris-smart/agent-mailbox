@@ -32,6 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from . import version_check
 from .store import (
     ATTENTION_TIERS,
     HARD_OFF_VISIBILITY,
@@ -169,6 +170,7 @@ PAGE = """<!doctype html>
   <span class="dim">drag between adjacent lanes · every move messages the assignee</span>
   <span class="spacer"></span>
   <button id="theme" class="ghost" title="toggle light / dark">◐</button>
+  <button id="upgrade" class="ghost" title="check PyPI for a newer agent-mailbox">upgrade</button>
   <button id="refresh" class="ghost">refresh</button>
 </header>
 <form id="new">
@@ -276,6 +278,27 @@ document.getElementById("new").addEventListener("submit", async e => {
 });
 
 document.getElementById("refresh").addEventListener("click", reload);
+
+/* v0.7.6 E 单元: one-click upgrade — /api/version is 24h-cached (no polling);
+   the exact command is shown in the confirm dialog BEFORE anything runs
+   (执行前显命令); confirming POSTs {confirm:true} which only ever spawns the
+   external uv tool/pipx/pip command (禁 self-update); every step is audited
+   to <root>/audit.log. */
+document.getElementById("upgrade").addEventListener("click", async () => {
+  try {
+    const v = await api("/api/version");
+    if (!v.update_available) {
+      toast(v.latest ? "already latest: v" + v.current : "update check unavailable (offline)");
+      return;
+    }
+    const cmd = (v.command || []).join(" ");
+    if (!confirm("new version v" + v.latest + " (current v" + v.current + ")\n" +
+                 "will run: " + cmd + "\nrun it now?")) return;
+    const r = await api("/api/upgrade", { confirm: true });
+    toast(r.ok ? "upgraded via " + r.method + " — restart agent-mailbox to apply"
+               : "upgrade failed (exit " + r.exit_code + ") — see audit.log");
+  } catch (err) { toast(err.message); }
+});
 setInterval(() => { if (document.visibilityState === "visible") reload().catch(() => {}); }, 5000);
 reload().catch(err => toast("load failed: " + err.message));
 </script>
@@ -534,6 +557,13 @@ class _BoardHandler(BaseHTTPRequestHandler):
     def _deny(self) -> None:
         self._json(401, {"error": "unauthorized: pass ?token=… or Authorization: Bearer …"})
 
+    def _local_only(self) -> bool:
+        """v0.7.6 E 单元（判据③）owner/本机限定：upgrade 相关端点只接受
+        本机回环对端。服务本就只绑 127.0.0.1（LoopbackServer），这里再显式
+        核对对端地址，防未来改绑时把升级入口暴露给局域网；无凭据请求已由
+        _authorized（token）挡在前面。"""
+        return self.client_address[0] in ("127.0.0.1", "::1")
+
     def _body(self) -> dict:
         n = int(self.headers.get("Content-Length") or 0)
         return json.loads(self.rfile.read(n) or b"{}")
@@ -607,6 +637,21 @@ class _BoardHandler(BaseHTTPRequestHandler):
             return self._json(200, _run_discover(self.store.root, save=False))
         if path == "/api/setup-summary":
             return self._json(200, self._setup_summary())
+        if path == "/api/version":
+            # v0.7.6 E 单元：owner/本机限定 + 判据④非强制查走 ≥24h 缓存限流 +
+            # 判据⑤ fail-open（查不到 → latest=None、不提示，绝不 5xx）。
+            if not self._local_only():
+                return self._json(403, {"error": "upgrade endpoints are loopback-only"})
+            info = version_check.check_for_update(self.store.root)
+            if info is None:
+                info = {
+                    "current": version_check.current_version(),
+                    "latest": None,
+                    "update_available": False,
+                    "command": version_check.upgrade_plan()["command"],
+                    "cached": False,
+                }
+            return self._json(200, info)
         self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
 
     def _setup_summary(self) -> dict:
@@ -769,6 +814,20 @@ class _BoardHandler(BaseHTTPRequestHandler):
                     "audit": store.audit_entries("visibility_change", limit=10),
                 },
             )
+        if path == "/api/upgrade":
+            # v0.7.6 E 单元「点击更新」：owner/本机限定（token 已在 do_POST
+            # 统一挡过）；默认 dry-run 只回显将运行的完整命令（判据③ 执行前
+            # 显命令），带 {"confirm": true} 才真正起外部命令；审计两条落
+            # <root>/audit.log（upgrade_start / upgrade_result）。同源已确认
+            # 语义 = 持 token 的本机主人点按钮即确认。禁 self-update：进程内
+            # 不自替换，upgrade 只 spawn uv tool / pipx / pip 外部命令。
+            if not self._local_only():
+                return self._json(403, {"error": "upgrade endpoints are loopback-only"})
+            data = self._body()
+            result = version_check.run_upgrade(
+                root, confirm=bool(data.get("confirm")), store=store, by=OWNER_ID
+            )
+            return self._json(200, result)
         action = _MAIL_ACTION_RE.match(path)
         if action is None:
             return self._json(404, {"error": f"no such endpoint: {path}"})
