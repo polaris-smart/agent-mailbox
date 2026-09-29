@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [0.7.6] — 2026-09-29
 
+权限基座 + 状态可信 + 投递修复版（A 组 11 条基座 + E/F/PR2/claim-first 五件；四平台同版本发布：PyPI + tag `v0.7.6` + GitHub Release + MCP Registry republish）。
+
+### Added
+
+- **权限基座（A 组，11 条）**: tool-guard 全量 `ToolError` 化（`MailboxError` 统一出口带 `MBE|code` 前缀，mcp SDK 客户端不再只见 "Error executing tool"）；`MAX_BODY_BYTES` 1 MiB 落盘前三段报错（`BODY_TOO_LARGE`，不留半成品/死箱痕迹）；未注册收件人默认硬拒（`unregistered_recipients: reject|warn` 一键降级，warn 模式不再污染 `inbox/<NOSUCH>/`）；agent slug 白名单（`..` 显式拒，任何路径拼接前先过注册表解析）；identity binding 常时校验（`AGENT_MAIL_TOKEN` sha256 恒时比对）；读侧同形防存在性 oracle；成员三源归一化单函数（registry 优先、投递用原始形式）。
+- **版本检查 + 点击更新（E）**: `fetch_latest_version()` 打 PyPI 版本级端点取 `info.version`；CLI `agent-mailbox upgrade`（uv tool/pipx/pip 自动探测，`--check` 只查、默认 dry-run 显完整命令+确认、`--yes` 直执行）+ web `/api/version`、`/api/upgrade` 与看板一键入口。安全三硬约束：owner/本机限定（token 门 + 回环对端核验）、执行前显示将运行的完整命令、`<root>/audit.log` 审计留痕（dry_run/start/result 含退出码）。**禁 self-update**——唯一形态是 spawn 外部命令。非强制查询走 `<root>/version_check.json` 24h 限流；断网/坏 JSON 一律 fail-open 静默跳过，绝不影响信件功能。
+- **状态可信（F）**: `mailbox_check` 的 `unread` 改为「真待办」口径（仓内 pending 计数，acked 永不计入——修掉"18 封全 acked 仍报 unread=18"），新增 `total`（pending+acked 积压）；web 侧栏「待处理 N」可点下钻（`?folder=pending` 白名单深链）。**禁自动 ack/自动已读**：`mailbox_check` 默认变纯读（`mark=False`），消费正路 = `claim()`（恰好一次）或显式 `mark=True`（旧路径保留）——⚠️ 行为变更：依赖 check 默认消费的外部调用方需改走 claim 或传 `mark=True`。
+- **信件 links 字段（PR2）**: `send()` 可选 `links=[{title, uri, kind?, sha256?, note?}]`；校验态 `ok/stale/denied`+拒因在读路径现算（check/list/thread/archived 四处），老信零影响；`file://` 走 allowed-roots 安全模型（config 显式列、不默认放行 `$HOME`、fail-closed、realpath/symlink 归一后前缀匹配、禁 `..` 穿越禁通配）；`http(s)/git` v1 只做 scheme 策略校验零网络请求；sealed 信 links 同权剥除；未知 scheme 发信即结构化拒（A7 同族码）。格式与样例见 `docs/links.md`。
+- **claim-first 投递修复**: belt（`scripts/wake-zc.sh`）与 wake daemon（`agent-mailbox wake run`）三路由改「先认领再投」——投递前 `reap_stale_acked`(600s)→`claim()`，只投认领所得的信，认领 0 封不拉会话；投递全失败 `release_claim` 放回 pending（信不丢，带 label 归属校验防误放他人认领）；第二路撞在途信落 `claim_denied` 审计（每信去重一次）；`handled_log.by` 带 `belt:<pid>`/`wake:<runid>` 路由会话标识。多窗重复回信（一信双 done、一 thread 四回信）就此根治；J1–J4 活体判据 17 测入 CI。webhook 消费端（本地网关）对齐原语已备（`wake claim/release` + docstring 对齐点），网关侧接线随部署同步。
+
 ## [0.7.5] — 2026-09-26
 
 The trust-model release (PR A brand/CLI + PR B identity & permissions + PR C wizard/mailbox/visibility), merged with the 0.7.4 wake-hardening line (`v07-sampling-wake`) onto `release/v0.7.5`. **Ships together with [0.7.4] below** — 0.7.4 was built, gated and verified locally but never uploaded, so PyPI jumps 0.7.3 → 0.7.5 (legal skip; both entries kept with their own anchors). Tool count: 13 → 14 registered MCP tools (`mailbox_confirm_external` joins).
