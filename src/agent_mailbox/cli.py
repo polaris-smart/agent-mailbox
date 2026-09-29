@@ -574,6 +574,16 @@ def _doctor_route_problem(route: wake_mod.WakeRoute) -> tuple[str, str] | None:
                 f"command 首段 '{head}' 不是绝对路径（launchd 环境极简，PATH 不可信）",
                 f"which {head} 找到实际位置，把绝对路径写进 agents.<id>.command",
             )
+        # t-63（S3/S5）: 绝对路径但文件不在——「错路径命令」必须判出并给
+        # 可直接粘贴执行的修法（非只报错误码）。
+        if not Path(head).exists():
+            name = Path(head).name
+            fix = (
+                f"which {name} 找到实际位置；或重装: "
+                f"agent-mailbox setup --agent <id> --adapter local-command "
+                f"--command '[\"<{name} 的正确绝对路径>\"]'"
+            )
+            return (f"command '{head}' 不存在（被移动/卸载或写错了路径）", fix)
         return None
     if route.adapter in ("hermes", "generic-webhook") and not route.webhook_url:
         return (
@@ -643,6 +653,7 @@ def doctor_report(
     cfg = wake_mod.WakeConfig.load(root)
     targets = _doctor_wake_targets(cfg)
     checks: list[dict[str, Any]] = []
+    boxes: list[str] = []  # ① 填充；② 的「身份不在唤醒名单」检查复用
 
     def _check(cid: str, ok: bool, detail: str, next_step: str = "") -> dict[str, Any]:
         c = {"id": cid, "ok": ok, "detail": detail}
@@ -714,12 +725,47 @@ def doctor_report(
                 "对缺失身份补跑 python -m agent_mailbox.wake install --agent <id>",
             )
         else:
-            kind = "launchd plist" if sys.platform == "darwin" else "systemd unit"
-            _check(
-                "wake_loaded",
-                True,
-                f"{kind} 已装 {len(targets)}/{len(targets)}：{' '.join(targets)}",
-            )
+            # t-63（S3/S5）「身份不在唤醒名单」: 收件箱里有**待处理信**的身份却
+            # 不在 wake.json 唤醒名单里 ⇒ 信到了永远没人被叫醒。人类席（owner
+            # kind）不在此列；agent/guest 席必须补注册+补装（给可直接粘贴的
+            # setup 命令，setup 会自动接线 CLI 形态身份）。
+            orphans: list[str] = []
+            try:
+                from .store import MailStore as _MS
+
+                _st = _MS(root)
+                for b in boxes:
+                    if b in targets:
+                        continue
+                    try:
+                        if _st.kind_of(b) == "owner":
+                            continue
+                        has_mail = any(
+                            json.loads(p.read_text(encoding="utf-8")).get("status")
+                            in ("pending", "acked")
+                            for p in (root / "inbox" / b).glob("*.json")
+                        )
+                    except (OSError, json.JSONDecodeError):
+                        has_mail = False
+                    if has_mail:
+                        orphans.append(b)
+            except Exception:  # noqa: BLE001 — 孤儿检查 fail-open，不挡其他判定
+                orphans = []
+            if orphans:
+                _check(
+                    "wake_loaded",
+                    False,
+                    f"身份 {', '.join(orphans)} 收件箱有信但不在唤醒名单（信到了永远没人被叫醒）",
+                    "；".join(f"agent-mailbox setup --agent {o}" for o in orphans)
+                    + "（setup 自动注册+接线 CLI 形态身份）",
+                )
+            else:
+                kind = "launchd plist" if sys.platform == "darwin" else "systemd unit"
+                _check(
+                    "wake_loaded",
+                    True,
+                    f"{kind} 已装 {len(targets)}/{len(targets)}：{' '.join(targets)}",
+                )
 
     # ③ 最近一次唤醒是否真成功（被拉起 ≠ 真消费）
     attempts = _doctor_last_attempts(root)
@@ -732,6 +778,8 @@ def doctor_report(
         )
     else:
         bad: list[str] = []
+        bad_ids: list[str] = []
+        bad_errs: set[str] = set()
         good: list[str] = []
         for agent_id, row in sorted(attempts.items()):
             outcome = str(row.get("outcome", ""))
@@ -746,13 +794,26 @@ def doctor_report(
                     else f"投递失败（error_class={err or '?'})"
                 )
                 bad.append(f"{agent_id} @ {ts}: {why}")
+                bad_ids.append(agent_id)
+                bad_errs.add(err)
         if bad:
+            # t-63（S3/S5）: 每个错误类给人话根因 + 可直接粘贴执行的验证命令
+            # （带真实 agent id，非占位符）。
+            fixes: list[str] = []
+            if "auth_required" in bad_errs:
+                fixes.append("宿主 CLI 未登录 → 去对应 CLI 完成登录（如 codex /login）")
+            if "spawn_failed" in bad_errs:
+                fixes.append(
+                    "唤醒命令不在 PATH/不存在 → "
+                    "agent-mailbox setup --agent <id> --adapter local-command --command '[\"<绝对路径>\"]'"
+                )
+            fixes.append("查日志: <root>/wake-daemon.log 与 ⑥ 的判定")
+            fixes.append(f"修完手动验证一轮: agent-mailbox wake run --agent {bad_ids[0]} --once")
             _check(
                 "last_wake",
                 False,
                 "；".join(bad) + (f"；正常: {' '.join(good)}" if good else ""),
-                "按 agent 查对应日志（<root>/wake-zc.log、<root>/wake-daemon.log）与 ⑥ 的判定；"
-                "修完可手动 wake run --agent <id> --once 验证",
+                "；".join(fixes),
             )
         else:
             _check(
