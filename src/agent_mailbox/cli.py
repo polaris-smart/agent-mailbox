@@ -8,6 +8,7 @@
     agent-mailbox connect <name> [--yes]
     agent-mailbox uninstall [--letters keep|export|archive|delete]
     agent-mailbox upgrade [--check] [--yes]   # v0.7.6 E 单元（t-53）
+    agent-mailbox doctor [--json]             # v0.7.6 A-2 单元（t-59）六检
 
 Compatibility iron rule: the legacy invocations keep working untouched —
 ``agent-mailbox [--web PORT] [--http PORT]`` (stdio/HTTP/kanban server),
@@ -24,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -39,7 +41,7 @@ from .discover import (
     test_member,
 )
 
-SUBCOMMANDS = ("setup", "discover", "status", "test", "connect", "uninstall", "upgrade")
+SUBCOMMANDS = ("setup", "discover", "status", "test", "connect", "uninstall", "upgrade", "doctor")
 
 STATUS_MARK = {"ok": "✅", "broken": "❌", "unknown": "· 未实测"}
 
@@ -371,6 +373,442 @@ def _cmd_upgrade(args: argparse.Namespace) -> int:
     return 1
 
 
+# ------------------------------------------------------------------ doctor
+#
+# t-59（A-2）: `agent-mailbox doctor` 一条命令输出「哪段断了 + 怎么修」。
+# 六检：① 信箱根可读 ② 唤醒器已加载 ③ 最近一次唤醒是否真成功（区分「被
+# 拉起」与「真消费」）④ 收件人路由指向谁 ⑤ 积压 ⑥ 宿主认证态。每项失败
+# 必带可执行的下一步；全部正常输出健康摘要。日志存在才扫，不存在跳过
+# 不报错。
+
+
+DOCTOR_TITLES = (
+    ("root", "① 信箱根可读"),
+    ("wake_loaded", "② 唤醒器已加载"),
+    ("last_wake", "③ 最近一次唤醒"),
+    ("routing", "④ 收件人路由"),
+    ("backlog", "⑤ 积压"),
+    ("host_auth", "⑥ 宿主认证态"),
+)
+
+# ⑥ 宿主认证态的已知故障特征（对日志尾部逐行匹配；spawn_failed 用组提取
+# 命令名，好给出指名道姓的修法）。
+DOCTOR_LOG_SIGNATURES: tuple[tuple[str, re.Pattern[str], str, str | None], ...] = (
+    (
+        "auth_required",
+        re.compile(r"authentication required|please use /login|未登录", re.IGNORECASE),
+        "宿主 CLI 未登录",
+        (
+            "去宿主 CLI 完成登录（如 codex /login 或对应 CLI 的登录命令），"
+            "登录后重跑 agent-mailbox doctor 确认。"
+        ),
+    ),
+    (
+        "spawn_failed",
+        re.compile(r"spawn failed:.*?No such file or directory: '([^']+)'"),
+        "唤醒命令不在 PATH/不存在",
+        "",  # 运行时按捕获到的命令名拼装
+    ),
+    (
+        "provider_missing",
+        re.compile(r"无法定位 CLI"),
+        "zcode provider 配置路径不存在",
+        (
+            "检查 zcode provider 配置：真源在 /Applications/ZCode.app/Contents/Resources/config/"
+            "provider 与 ~/.zcode/v2/provider_config.json，唤醒命令里的路径要指向真源。"
+        ),
+    ),
+)
+
+
+def _doctor_read_tail(path: Path, max_bytes: int = 262144) -> list[str]:
+    """读日志尾部（≤256KB），丢掉开头可能被截断的半行；文件不存在回 []。"""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            data = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return []
+    lines = data.splitlines()
+    if size > max_bytes and lines:
+        lines = lines[1:]  # 丢弃被截断的半行
+    return lines
+
+
+def _doctor_wake_targets(cfg: wake_mod.WakeConfig | None) -> list[str]:
+    """②③④ 的检查范围 = agents.<ID> 段 id ∪ wake.json agent_id。"""
+    ids: dict[str, None] = {}
+    if cfg:
+        if cfg.agent_id:
+            ids[cfg.agent_id] = None
+        for k in cfg.agent_route_ids():
+            ids[k] = None
+    return list(ids)
+
+
+def _doctor_route_problem(route: wake_mod.WakeRoute) -> tuple[str, str] | None:
+    """④ 单身份路由体检：返回 (问题, 下一步) 或 None（健康）。"""
+    if route.adapter == "local-command":
+        if not route.command:
+            return (
+                "local-command 但没配 command",
+                "wake install --agent <id> --command '[\"<绝对路径>\"]'（先 which <命令> 找绝对路径）",
+            )
+        head = route.command[0]
+        if not os.path.isabs(head):
+            return (
+                f"command 首段 '{head}' 不是绝对路径（launchd 环境极简，PATH 不可信）",
+                f"which {head} 找到实际位置，把绝对路径写进 agents.<id>.command",
+            )
+        return None
+    if route.adapter in ("hermes", "generic-webhook") and not route.webhook_url:
+        return (
+            "webhook 通道但没有 url（信到了也叫不醒人）",
+            "wake install --agent <id> --webhook-url <url>，或检查 <root>/webhook.json",
+        )
+    return None
+
+
+def _doctor_last_attempts(root: Path) -> dict[str, dict[str, Any]]:
+    """③ 读 <root>/wake-attempts.jsonl 尾部，取每个 agent 的最后一行。"""
+    rows: dict[str, dict[str, Any]] = {}
+    for line in _doctor_read_tail(root / wake_mod.WAKE_ATTEMPTS_FILE):
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict) and row.get("agent"):
+            rows[str(row["agent"])] = row
+    return rows
+
+
+def _doctor_scan_log(path: Path) -> dict[str, Any] | None:
+    """扫一个日志尾部，返回 {exists, hits:[{class,label,count,line,next_step}]}。"""
+    if not path.is_file():
+        return None
+    lines = _doctor_read_tail(path)
+    hits: dict[str, dict[str, Any]] = {}
+    for line in lines:
+        for sig_class, pattern, label, next_step in DOCTOR_LOG_SIGNATURES:
+            m = pattern.search(line)
+            if not m:
+                continue
+            if sig_class == "spawn_failed":
+                cmd = m.group(1)
+                step = (
+                    f"'{cmd}' 不在 PATH/不存在 → 先 which {cmd} 找到实际位置，"
+                    "然后把绝对路径写进 wake.json 的 agents.<id>.command"
+                    "（wake install --agent <id> --command，JSON 数组、首段用绝对路径）"
+                )
+            else:
+                step = next_step or "查看完整日志定位上下文。"
+            hit = hits.setdefault(
+                sig_class,
+                {"class": sig_class, "label": label, "count": 0, "line": "", "next_step": step},
+            )
+            hit["count"] += 1
+            hit["line"] = line.strip()[:200]
+    return (
+        {"path": str(path), "hits": list(hits.values())}
+        if hits
+        else {"path": str(path), "hits": []}
+    )
+
+
+def doctor_report(
+    root: Path,
+    *,
+    wb_wake_log: Path | None = None,
+    launch_agents_dir: Path | None = None,
+    systemd_dir: Path | None = None,
+) -> dict[str, Any]:
+    """doctor 六检的数据面（t-59）。``--json`` 原样输出；人读格式见
+    :func:`_print_doctor`。任何可执行环境差异（wb 日志路径 / plist 目录 /
+    systemd 目录）都留了参数位，测试用 tmp 替身，不碰真机状态。"""
+    root = Path(root)
+    cfg = wake_mod.WakeConfig.load(root)
+    targets = _doctor_wake_targets(cfg)
+    checks: list[dict[str, Any]] = []
+
+    def _check(cid: str, ok: bool, detail: str, next_step: str = "") -> dict[str, Any]:
+        c = {"id": cid, "ok": ok, "detail": detail}
+        if next_step:
+            c["next_step"] = next_step
+        checks.append(c)
+        return c
+
+    # ① 信箱根可读
+    if root.is_dir() and os.access(root, os.R_OK):
+        inbox_root0 = root / "inbox"
+        boxes = (
+            sorted(p.name for p in inbox_root0.glob("*") if p.is_dir())
+            if inbox_root0.is_dir()
+            else []
+        )
+        _check(
+            "root",
+            True,
+            f"可读；inbox 有 {len(boxes)} 个身份箱"
+            + (f"：{' '.join(boxes[:12])}" if boxes else ""),
+        )
+    else:
+        _check(
+            "root",
+            False,
+            f"{root} 不存在或不可读",
+            "确认 AGENT_MAIL_HOME/--home 指向对的根；首次使用先跑 agent-mailbox setup --yes",
+        )
+
+    # ② 唤醒器已加载（launchd plist / systemd unit 存在性）
+    if not cfg:
+        _check(
+            "wake_loaded",
+            False,
+            f"{root}/wake.json 不存在（唤醒器从未安装）",
+            "python -m agent_mailbox.wake install --agent <id> 安装（macOS 写 launchd plist / Linux 写 systemd path unit）",
+        )
+    elif not targets:
+        _check(
+            "wake_loaded",
+            False,
+            "wake.json 存在但没有 agents.<ID> 身份段，也没有 agent_id",
+            "wake install --agent <id> --adapter <通道> 逐身份安装",
+        )
+    else:
+        loaded: list[str] = []
+        missing: list[str] = []
+        for tid in targets:
+            if sys.platform == "darwin":
+                unit = (
+                    Path(launch_agents_dir or (Path.home() / "Library" / "LaunchAgents"))
+                    / f"{wake_mod.WAKE_LABEL}-{tid}.plist"
+                )
+            elif sys.platform == "linux":
+                unit = (
+                    Path(systemd_dir or (Path.home() / ".config" / "systemd" / "user"))
+                    / f"{wake_mod.WAKE_LABEL}-{tid}.path"
+                )
+            else:
+                unit = None  # 其他平台：run 手动模式，安装态无从判起
+            (loaded if (unit is None or unit.exists()) else missing).append(tid)
+        if missing:
+            _check(
+                "wake_loaded",
+                False,
+                f"已装 {len(loaded)}/{len(targets)}（{', '.join(loaded) or '无'}）；"
+                f"未装: {' '.join(missing)}",
+                "对缺失身份补跑 python -m agent_mailbox.wake install --agent <id>",
+            )
+        else:
+            kind = "launchd plist" if sys.platform == "darwin" else "systemd unit"
+            _check(
+                "wake_loaded",
+                True,
+                f"{kind} 已装 {len(targets)}/{len(targets)}：{' '.join(targets)}",
+            )
+
+    # ③ 最近一次唤醒是否真成功（被拉起 ≠ 真消费）
+    attempts = _doctor_last_attempts(root)
+    if not attempts:
+        _check(
+            "last_wake",
+            True,
+            "无唤醒记录（wake-attempts.jsonl 不存在或为空——从未触发过不算故障）",
+            "",
+        )
+    else:
+        bad: list[str] = []
+        good: list[str] = []
+        for agent_id, row in sorted(attempts.items()):
+            outcome = str(row.get("outcome", ""))
+            err = str(row.get("error_class", ""))
+            ts = str(row.get("ts", ""))
+            if outcome == "ok":
+                good.append(agent_id)
+            else:
+                why = (
+                    "被拉起但没真消费（belt 判定无进展）＝假成功"
+                    if err == "no_progress"
+                    else f"投递失败（error_class={err or '?'})"
+                )
+                bad.append(f"{agent_id} @ {ts}: {why}")
+        if bad:
+            _check(
+                "last_wake",
+                False,
+                "；".join(bad) + (f"；正常: {' '.join(good)}" if good else ""),
+                "按 agent 查对应日志（<root>/wake-zc.log、<root>/wake-daemon.log）与 ⑥ 的判定；"
+                "修完可手动 wake run --agent <id> --once 验证",
+            )
+        else:
+            _check(
+                "last_wake", True, f"最近一次均真成功：{' '.join(good)}（wake-attempts.jsonl 尾部）"
+            )
+
+    # ④ 收件人路由（依赖 A-1 的 effective_route 解析）
+    if not targets:
+        _check(
+            "routing",
+            False,
+            "没有可检查的唤醒身份（wake.json 无 agents 段/agent_id）",
+            "wake install --agent <id> 逐身份配置；多身份各回各家靠 agents.<ID> 段",
+        )
+    else:
+        route_lines: list[str] = []
+        route_bad: list[tuple[str, str, str]] = []
+        for tid in targets:
+            route = (cfg or wake_mod.WakeConfig({}, root)).effective_route(tid)
+            desc = route.adapter
+            if route.command:
+                desc += f" cmd={route.command[0]}"
+            if route.webhook_url:
+                desc += f" url={mask_url(route.webhook_url)}"
+            # 来源全量展示（t-58 的 sources）：adapter/webhook_url/command 各是
+            # 谁配的——per-agent 段、全局默认还是 CLI，一眼分辨「信到了叫谁」。
+            srcs = ",".join(
+                f"{k}={route.sources[k]}"
+                for k in ("adapter", "webhook_url", "command")
+                if k in route.sources
+            )
+            route_lines.append(f"{tid}→{desc}（{srcs or '内置默认'}）")
+            problem = _doctor_route_problem(route)
+            if problem:
+                route_bad.append((tid, problem[0], problem[1]))
+        if route_bad:
+            _check(
+                "routing",
+                False,
+                "；".join(f"{t}: {p}" for t, p, _ in route_bad) + "；" + "；".join(route_lines),
+                route_bad[0][2],
+            )
+        else:
+            _check("routing", True, "；".join(route_lines))
+
+    # ⑤ 积压（各身份 pending 计数）
+    backlog_lines: list[str] = []
+    pending_total = 0
+    inbox_root = root / "inbox"
+    if inbox_root.is_dir():
+        for box in sorted(p for p in inbox_root.glob("*") if p.is_dir()):
+            pending = acked = other = 0
+            try:
+                for letter in box.glob("*.json"):
+                    try:
+                        m = json.loads(letter.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError):
+                        continue
+                    status = m.get("status") if isinstance(m, dict) else None
+                    if status == "pending":
+                        pending += 1
+                    elif status == "acked":
+                        acked += 1
+                    else:
+                        other += 1
+            except OSError as exc:
+                _check(
+                    "backlog", False, f"{box.name} 收件箱不可读: {exc}", "检查目录权限后重跑 doctor"
+                )
+                break
+            if pending or acked:
+                backlog_lines.append(f"{box.name}: pending={pending} acked={acked}")
+                pending_total += pending
+        else:
+            _check(
+                "backlog",
+                True,
+                (
+                    f"待处理 {pending_total} 封（" + "; ".join(backlog_lines[:10]) + "）"
+                    if backlog_lines
+                    else "全部身份 0 待处理"
+                ),
+                "pending 长期不降 = 唤醒链路断了，看 ②③⑥ 的判定" if backlog_lines else "",
+            )
+    else:
+        _check("backlog", True, "inbox 目录不存在（还没有信）")
+
+    # ⑥ 宿主认证态（扫 wake 日志尾部；存在才扫，不存在跳过不报错）
+    logs = [
+        root / "wake-zc.log",
+        root / "wake-daemon.log",
+        wb_wake_log or (Path.home() / ".workbuddy" / "wb-wake" / "wake.log"),
+    ]
+    scanned: list[str] = []
+    findings: list[dict[str, Any]] = []
+    for log_path in logs:
+        result = _doctor_scan_log(log_path)
+        if result is None:
+            continue  # 日志不存在：跳过，不报错
+        scanned.append(str(log_path))
+        findings.extend(result["hits"])
+    if findings:
+        parts = [
+            f"{h['label']}×{h['count']}（{'…' + h['line'][-80:] if h['line'] else ''}）"
+            for h in findings
+        ]
+        steps: list[str] = []
+        for h in findings:
+            if h["next_step"] and h["next_step"] not in steps:
+                steps.append(h["next_step"])
+        _check(
+            "host_auth",
+            False,
+            f"扫过 {'; '.join(scanned)}；" + "；".join(parts),
+            " → ".join(steps) if steps else "查看完整日志",
+        )
+    else:
+        _check(
+            "host_auth",
+            True,
+            f"扫过 {'; '.join(scanned)}，未发现未登录/命令缺失特征"
+            if scanned
+            else "无 wake 日志可扫（从未跑过唤醒）",
+        )
+
+    unhealthy = [c for c in checks if not c["ok"]]
+    return {
+        "root": str(root),
+        "checked_at_local": now_local(),
+        "healthy": not unhealthy,
+        "unhealthy_count": len(unhealthy),
+        "checks": checks,
+    }
+
+
+def _print_doctor(report: dict[str, Any]) -> None:
+    print(f"agent-mailbox doctor  （检查时间 {report['checked_at_local']}）")
+    print(f"邮件根: {report['root']}\n")
+    title_by_id = dict(DOCTOR_TITLES)
+    for check in report["checks"]:
+        mark = "✅" if check["ok"] else "❌"
+        print(f"{title_by_id.get(check['id'], check['id'])}  {mark}  {check['detail']}")
+        if check.get("next_step"):
+            print(f"   → 下一步: {check['next_step']}")
+    if report["healthy"]:
+        print("\n结论: 六检全过，唤醒链路健康。")
+    else:
+        print(
+            f"\n结论: {report['unhealthy_count']} 项待修——逐条按上方「下一步」处理后重跑 "
+            "agent-mailbox doctor 复核。"
+        )
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    root = _root_from(args)
+    report = doctor_report(
+        root,
+        wb_wake_log=Path(args.wb_wake_log).expanduser()
+        if getattr(args, "wb_wake_log", "")
+        else None,
+    )
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        _print_doctor(report)
+    return 0 if report["healthy"] else 1
+
+
 # ------------------------------------------------------------------ main
 
 
@@ -443,6 +881,20 @@ def cli_main(argv: list[str] | None = None) -> int:
     p.add_argument("--check", action="store_true", help="只查版本与提示，不执行升级")
     p.add_argument("--yes", action="store_true", help="跳过确认直接执行（仍会先打印完整命令）")
     p.set_defaults(func=_cmd_upgrade)
+
+    p = sub.add_parser(
+        "doctor",
+        parents=[common],
+        help="六检一条命令：哪段断了 + 怎么修（信箱根/唤醒器/最近唤醒/路由/积压/宿主认证态）",
+    )
+    p.add_argument("--json", action="store_true", help="输出结构化 JSON")
+    p.add_argument(
+        "--wb-wake-log",
+        dest="wb_wake_log",
+        default="",
+        help="workbuddy 唤醒日志路径重定向（默认 ~/.workbuddy/wb-wake/wake.log；测试/沙箱用）",
+    )
+    p.set_defaults(func=_cmd_doctor)
 
     args = parser.parse_args(argv)
     return int(args.func(args) or 0)

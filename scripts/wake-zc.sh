@@ -91,9 +91,11 @@ anchor_attempt() { # route attempt outcome error_class executor latency_ms
   { umask 077; printf '%s\n' "$line" >> "$ANCHOR"; } 2>>"$LOG" || true
 }
 
-# U2: alert the registered senders of stuck mail + the boss box. Static
-# subject/body keeps the semantic hash stable — the store's 24h dedup window
-# turns repeated calls into at most one live letter per recipient per day.
+# U2: alert the responsible party (HS) + the registered senders of stuck mail.
+# t-59（A-2）收件人收敛: boss 席一律不发——boss 仅存档语义，老板只看飞书，
+# 自动告警发 boss 席等于没送达还制造噪音（09-29 任务书 §0.2）。急事走飞书。
+# Static subject/body keeps the semantic hash stable — the store's 24h dedup
+# window turns repeated calls into at most one live letter per recipient per day.
 alert_wake_fail() { # reason
   "$MB_PY" - "$REAP_AGENT" "$MAIL_ROOT" "$1" <<'PYEOF' >> "$LOG" 2>&1
 import json
@@ -101,6 +103,8 @@ import sys
 from pathlib import Path
 
 from agent_mailbox.store import MailStore
+
+ALERT_RECIPIENT = "HS"  # t-59: 告警只发负责方；boss 席仅存档（老板只看飞书）
 
 agent, root, reason = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
 store = MailStore(str(root))
@@ -118,9 +122,9 @@ for p in (root / "inbox" / agent).glob("*.json"):
     if not isinstance(m, dict) or m.get("status") not in ("pending", "acked"):
         continue
     f = str(m.get("from", ""))
-    if f and f != agent and f != "boss" and f in registered:
+    if f and f != agent and f != "boss" and f != ALERT_RECIPIENT and f in registered:
         senders.add(f)
-recipients = sorted(senders) + ["boss"]
+recipients = [ALERT_RECIPIENT] + sorted(senders)
 subject = f"[wake-fail] {agent} 唤醒通道异常"
 body = (
     f"[wake-fail 自动告警] {agent} 的 drain 巡检无进展（{reason}）。\n"
@@ -167,8 +171,10 @@ while true; do
   # the drain turn processes; claim 0 封 ⇒ 不拉会话、直接收工. Letters claimed
   # in flight by another window are audited claim_denied inside the action.
   CLAIM_FILE="$MAIL_ROOT/wake-zc-claim.$$.json"
+  CLAIM_FAILED=0
   if ! "$MB_PY" -m agent_mailbox.wake claim --agent "$REAP_AGENT" \
       --root "$MAIL_ROOT" --label "belt:$$" --out "$CLAIM_FILE" >> "$LOG" 2>&1; then
+    CLAIM_FAILED=1
     echo "$(date '+%F %T') claim FAILED (fail-open, continuing) agent=$REAP_AGENT" >> "$LOG"
   fi
   CLAIMED=$("$MB_PY" -c 'import json,sys
@@ -178,6 +184,13 @@ except Exception:
     print(0)' "$CLAIM_FILE" 2>>"$LOG")
   if [ "$CLAIMED" = "0" ]; then
     rm -f "$CLAIM_FILE"
+    # t-59（A-2）失败必响: claim 基建失败（python/store 起不来）不是「没信
+    # 可领」——按 rc=0 伪装成功退出就是 09-29 WB 那种事故，必须非零退出。
+    if [ "$CLAIM_FAILED" = "1" ]; then
+      anchor_attempt belt 1 fail claim_failed belt-claim 0
+      echo "$(date '+%F %T') claim infrastructure FAILED — exit 1 (失败必响, 禁 rc=0 伪装)" >> "$LOG"
+      exit 1
+    fi
     break
   fi
   echo "$(date '+%F %T') wake: claimed $CLAIMED mail files (by belt:$$)" >> "$LOG"

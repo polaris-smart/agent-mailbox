@@ -37,7 +37,17 @@ from .store import (
 # Only an exact positional-token match routes here, so every legacy
 # invocation (--web / --http / plain stdio / `wake ...`) is untouched.
 # v0.7.6 t-53 adds "upgrade" (E 单元: 版本检查+点击更新, see version_check.py).
-CLI_SUBCOMMANDS = ("setup", "discover", "status", "test", "connect", "uninstall", "upgrade")
+# v0.7.6 t-59 adds "doctor" (A-2 单元: 失败必响+六检, see cli.py).
+CLI_SUBCOMMANDS = (
+    "setup",
+    "discover",
+    "status",
+    "test",
+    "connect",
+    "uninstall",
+    "upgrade",
+    "doctor",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -711,7 +721,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(
         prog="agent-mailbox",
-        epilog="子命令: setup | discover | status | test | connect | uninstall "
+        epilog="子命令: setup | discover | status | test | connect | uninstall | upgrade | doctor "
         "(运行 `agent-mailbox <子命令> --help` 查看)",
     )
     parser.add_argument(

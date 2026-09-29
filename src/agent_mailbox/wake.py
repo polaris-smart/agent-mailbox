@@ -73,10 +73,16 @@ DEFAULT_COMMAND_TIMEOUT = 300.0  # local-command adapter: hard-kill deadline
 # counts attempts from this file, not from process logs.
 WAKE_ATTEMPTS_FILE = "wake-attempts.jsonl"
 # U2 可见通道: when every delivery attempt for a letter has failed, the drain
-# drops an alert letter to the original sender + the boss box, so a broken
-# wake is readable from the mailbox face alone (no shell needed). Marked on
-# the letter via ``handled_log`` so one letter alerts at most once — retries
-# on later WatchPaths triggers stay silent (anti-flood), wake itself retries.
+# drops an alert letter so a broken wake is readable from the mailbox face
+# alone (no shell needed). Marked on the letter via ``handled_log`` so one
+# letter alerts at most once — retries on later WatchPaths triggers stay
+# silent (anti-flood), wake itself retries.
+#
+# t-59（A-2）告警收件人收敛: 只发负责方 HS。boss 席仅存档语义——老板只看
+# 飞书、不看信箱，自动告警发 boss 席等于没送达还制造噪音（09-29 任务书
+# §0.2：``wake-fail alert sent to ['HS','boss']`` 越界）。急事走飞书，不在
+# 本代码里恢复 boss 收件人。
+WAKE_ALERT_RECIPIENT = "HS"
 WAKE_ALERT_ACTION = "wake_alert"
 
 
@@ -228,6 +234,10 @@ class WakeConfig:
         self._extra = {k: v for k, v in data.items() if k not in _KNOWN_KEYS}
 
     # -------------------------------------------------- per-agent routing (t-58)
+
+    def agent_route_ids(self) -> list[str]:
+        """配置了身份段（``agents.<ID>``）的 id 清单——doctor ②④ 的检查范围。"""
+        return [k for k, v in self._agents.items() if isinstance(v, dict)]
 
     def agent_section(self, agent_id: str) -> dict[str, Any]:
         """``agents.<ID>`` 段（dict 值才认）；缺失/形状不对都回 {}（fail-open：
@@ -480,6 +490,12 @@ class LocalCommandAdapter(WakeAdapter):
     delivered; non-zero exit, timeout kill, or spawn failure all return False
     so the drain's retry path keeps the letter (信不丢).
 
+    t-59（A-2）失败必响·未登录态: exit 0 不再天然等于成功——命令输出命中
+    认证失败特征（``Authentication required`` / ``Please use /login`` /
+    未登录）时按 ``auth_required`` 判失败（WB 现场真故障：CLI 未登录但
+    exit 0，``[degraded] rc=0`` 伪装成功）。任一失败路径都把命令自己的输出
+    尾部落 stderr，真因可从日志直读。
+
     Injection posture (硬约束): the command is an argv *list* executed
     without a shell — never a concatenated string — and letter content rides
     only ``AGENT_MAIL_*`` environment variables, never command-line arguments.
@@ -487,9 +503,29 @@ class LocalCommandAdapter(WakeAdapter):
 
     name = "local-command"
 
+    # 宿主 CLI 未登录的已知输出特征（小写比较）；命中即判失败——「假装
+    # 成功的登录墙」比明摆着的失败危害大。
+    AUTH_SIGNATURES = (
+        "authentication required",
+        "please use /login",
+        "please run /login",
+        "not logged in",
+        "未登录",
+        "请先登录",
+    )
+
     def __init__(self, command: list[str], timeout: float = DEFAULT_COMMAND_TIMEOUT) -> None:
         self.command = [str(a) for a in (command or [])]
         self.timeout = max(1.0, float(timeout or DEFAULT_COMMAND_TIMEOUT))
+
+    @classmethod
+    def _auth_hit(cls, output: str) -> str:
+        """返回命中的认证特征行（无命中回 ``""``）。"""
+        for line in output.splitlines():
+            low = line.lower()
+            if any(sig in low for sig in cls.AUTH_SIGNATURES):
+                return line.strip()[:300]
+        return ""
 
     def deliver(self, msg: dict[str, Any]) -> bool:
         self.last_error_class = ""
@@ -533,7 +569,7 @@ class LocalCommandAdapter(WakeAdapter):
             )
             return False
         try:
-            proc.communicate(timeout=self.timeout)
+            out, err = proc.communicate(timeout=self.timeout)
         except subprocess.TimeoutExpired:
             _kill_group(proc)
             self.last_error_class = "timeout"
@@ -543,10 +579,24 @@ class LocalCommandAdapter(WakeAdapter):
                 flush=True,
             )
             return False
+        combined = (out or "") + "\n" + (err or "")
+        auth_line = self._auth_hit(combined)
+        if auth_line:
+            # t-59: 宿主 CLI 未登录——哪怕 exit 0 也不是真投递，必须非零语义
+            self.last_error_class = "auth_required"
+            print(
+                f"[agent-mailbox wake] local-command host not logged in "
+                f"(exit {proc.returncode}): {auth_line}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return False
         if proc.returncode != 0:
             self.last_error_class = "exit_nonzero"
+            tail = combined.strip()[-300:]
             print(
-                f"[agent-mailbox wake] local-command exit {proc.returncode}",
+                f"[agent-mailbox wake] local-command exit {proc.returncode}"
+                + (f"; output tail: {tail}" if tail else ""),
                 file=sys.stderr,
                 flush=True,
             )
@@ -781,7 +831,7 @@ def _registered_members(root: Path) -> set[str]:
     """Member ids from ``<root>/registry.json`` — U2 alerts only address
     registered boxes, so a failed wake never mints a dead inbox directory
     (死箱 hygiene). Any read problem yields an empty set (alert still goes
-    to the boss box, which is the canonical OWNER id)."""
+    to the responsible party, see WAKE_ALERT_RECIPIENT)."""
     try:
         reg = json.loads((Path(root) / "registry.json").read_text(encoding="utf-8"))
         agents = reg.get("agents", {}) if isinstance(reg, dict) else {}
@@ -795,19 +845,26 @@ def _registered_members(root: Path) -> set[str]:
 def send_wake_alert(store: MailStore, root: Path, agent_id: str, msg: dict[str, Any]) -> bool:
     """U2 可见通道: drop an alert letter when a letter's wake has failed.
 
-    Recipients: the original sender (when registered, not the woken agent
-    itself and not the boss — the boss gets a copy regardless) plus the boss
-    box. The alert is marked on the letter (``handled_log`` action
-    ``wake_alert``) so one letter alerts at most once no matter how many
-    later drain rounds retry it. Fail-open end to end: an alert problem is
-    logged and forgotten — the wake's own retry path is unaffected.
+    t-59（A-2）收件人 = 负责方 HS（WAKE_ALERT_RECIPIENT）+ 原发件人（已注册、
+    非被唤醒者本人时给一份，让发件方知道信卡住了）。boss 席一律不发——
+    boss 仅存档语义，老板只看飞书；自动告警发 boss 席等于没送达还制造噪音。
+    The alert is marked on the letter (``handled_log`` action ``wake_alert``)
+    so one letter alerts at most once no matter how many later drain rounds
+    retry it. Fail-open end to end: an alert problem is logged and forgotten —
+    the wake's own retry path is unaffected.
     """
     already = any(e.get("action") == WAKE_ALERT_ACTION for e in (msg.get("handled_log") or []))
     if already:
         return False
     sender = str(msg.get("from", ""))
-    recipients: list[str] = ["boss"]
-    if sender and sender != agent_id and sender != "boss" and sender in _registered_members(root):
+    recipients: list[str] = [WAKE_ALERT_RECIPIENT]
+    if (
+        sender
+        and sender != agent_id
+        and sender != WAKE_ALERT_RECIPIENT
+        and sender != "boss"  # boss 席仅存档，永不作为告警通道
+        and sender in _registered_members(root)
+    ):
         recipients.append(sender)
     subject = str(msg.get("subject", ""))[:80]
     body = (
@@ -869,6 +926,9 @@ def run_once(
         "jev_skipped": 0,
         "skipped_external": 0,
         "claim_denied": 0,
+        # t-59（A-2）失败必响: 整轮异常（fail-open 吞掉的那条）也要在统计里
+        # 留痕——run --once 据此非零退出，rc=0 伪装成功从此不可能。
+        "round_error": "",
     }
     try:
         store = store or MailStore(root)
@@ -999,6 +1059,7 @@ def run_once(
                     )
                 send_wake_alert(store, root, cfg.agent_id, claimed_msg)
     except Exception as exc:  # noqa: BLE001 — total fail-open: never raise out of drain
+        stats["round_error"] = str(exc)
         print(
             f"[agent-mailbox wake] drain round failed (fail-open): {exc}",
             file=sys.stderr,
@@ -1013,8 +1074,9 @@ def run(
     """Drain loop. WatchPaths/path-unit mode passes ``once=True`` (the OS
     re-launches us on every inbox change); manual mode loops forever.
 
-    Returns the last round's stats dict (t-58: callers can inspect it; the
-    A-2 failure-loud exit semantics build on this)."""
+    t-59（A-2）失败必响: 返回最后一轮 stats——``_cmd_run`` 在 once 模式据
+    ``failed``/``round_error`` 非零退出；loop 模式永不返回（每轮失败已有
+    U2 告警 + 锚A fail 行留痕）。"""
     while True:
         stats = run_once(root, cfg)
         if once:
@@ -1406,7 +1468,21 @@ def _cmd_run(args: argparse.Namespace) -> None:
     )
     if not cfg.agent_id:
         raise SystemExit("wake run: no agent_id in wake.json — pass --agent")
-    run(root, cfg, once=args.once)
+    stats = run(root, cfg, once=args.once) or {}
+    # t-59（A-2）失败必响: once 模式（WatchPaths/手跑）投递失败必须非零退出，
+    # 禁 rc=0 伪装成功；信不丢，下一个触发会重投。
+    failed = int(stats.get("failed") or 0)
+    round_error = str(stats.get("round_error") or "")
+    if args.once and (failed or round_error):
+        detail = f"{failed} delivery attempt(s) failed"
+        if round_error:
+            detail += f"; round_error={round_error}"
+        print(
+            f"[agent-mailbox wake] 失败必响: {detail} — exit 1 (信不丢, 下个触发重投)",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise SystemExit(1)
 
 
 def wake_main(argv: list[str] | None = None) -> None:

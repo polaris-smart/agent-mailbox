@@ -3,7 +3,9 @@
 - 锚A: every wake attempt (belt/daemon, success or failure) lands one
   8-field JSON line in ``<root>/wake-attempts.jsonl`` (0600, append-only).
 - U2: when all delivery attempts for a letter fail, an alert letter goes to
-  the registered sender + the boss box — once per letter (handled_log marker).
+  the responsible party HS + the registered sender — once per letter
+  (handled_log marker). t-59（A-2）收件人收敛: boss 席一律不发（仅存档语义，
+  老板只看飞书）。
 """
 
 from __future__ import annotations
@@ -102,11 +104,13 @@ def test_failed_wake_writes_fail_rows_and_alerts_once(tmp_path):
     assert [r["attempt"] for r in rows] == [1, 2]
     assert all(r["route"] == "daemon" for r in rows)
     assert rows[0]["error_class"] == "exit_nonzero" and rows[0]["executor"] == "local-command"
-    # U2: alert lands in boss + sender boxes, letter marked wake_alert
+    # U2: alert lands in the responsible party HS + sender boxes (t-59: boss
+    # 席一律不发), letter marked wake_alert
     boss_inbox = list((tmp_path / "inbox" / "boss").glob("*.json"))
     hs_inbox = list((tmp_path / "inbox" / "HS").glob("*.json"))
-    assert len(boss_inbox) == 1 and len(hs_inbox) == 1
-    alert = json.loads(boss_inbox[0].read_text(encoding="utf-8"))
+    assert not boss_inbox, "t-59: 告警不得发 boss 席（仅存档语义，老板只看飞书）"
+    assert len(hs_inbox) == 1
+    alert = json.loads(hs_inbox[0].read_text(encoding="utf-8"))
     assert "[wake-fail]" in alert["subject"] and alert["from"] == "ZC"
     zc_letter = json.loads(
         next((tmp_path / "inbox" / "ZC").glob("*.json")).read_text(encoding="utf-8")
@@ -114,7 +118,7 @@ def test_failed_wake_writes_fail_rows_and_alerts_once(tmp_path):
     assert "wake_alert" in [e["action"] for e in zc_letter["handled_log"]]
     # second round re-runs the failed wake but must NOT re-alert
     run_once(tmp_path, _fail_cfg(tmp_path), adapter=LocalCommandAdapter(FALSE_CMD), store=store)
-    assert len(list((tmp_path / "inbox" / "boss").glob("*.json"))) == 1
+    assert len(list((tmp_path / "inbox" / "HS").glob("*.json"))) == 1
 
 
 def test_successful_wake_writes_ok_row_no_alert(tmp_path):
@@ -131,7 +135,9 @@ def test_successful_wake_writes_ok_row_no_alert(tmp_path):
     assert not list((tmp_path / "inbox" / "boss").glob("*.json"))
 
 
-def test_unregistered_sender_alerts_boss_only(tmp_path):
+def test_unregistered_sender_alerts_hs_only(tmp_path):
+    """t-59 改名重定义：未注册/外部发件人的失败告警只落负责方 HS——
+    boss 席永不收告警，也绝不 mint 死箱（死箱 hygiene）。"""
     store = _mkstore(tmp_path)
     store.send("OUTSIDE", "ZC", "stranger", "body", origin="external")
     # open the external gate so the letter is due at all
@@ -139,5 +145,7 @@ def test_unregistered_sender_alerts_boss_only(tmp_path):
         json.dumps({"visibility": {"external_auto_execute": True}}), encoding="utf-8"
     )
     run_once(tmp_path, _fail_cfg(tmp_path), adapter=LocalCommandAdapter(FALSE_CMD), store=store)
-    assert len(list((tmp_path / "inbox" / "boss").glob("*.json"))) == 1
+    hs_inbox = list((tmp_path / "inbox" / "HS").glob("*.json"))
+    assert len(hs_inbox) == 1, "告警只发负责方 HS"
+    assert not list((tmp_path / "inbox" / "boss").glob("*.json")), "boss 席不收告警"
     assert not (tmp_path / "inbox" / "OUTSIDE").exists()  # 死箱 hygiene: no dead dir
