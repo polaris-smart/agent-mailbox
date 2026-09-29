@@ -291,6 +291,7 @@ def mailbox_send(
     origin: str = "local",
     attention: str = "decision",
     pairing_token: str = "",
+    links: list[dict] | None = None,
 ) -> dict:
     """Send a message to one agent, a list of agents, or \"all\" for broadcast.
 
@@ -308,6 +309,13 @@ def mailbox_send(
     webhook) until an owner confirms it. ``attention`` is the 打扰三档
     (decision=需你拍板 / report=报备 / archive=存档). A ``guest`` sender
     must present a valid ``pairing_token``.
+
+    v0.7.6 (PR2): ``links`` optionally carries structured pointers
+    ``[{\"title\", \"uri\", \"kind\"?, \"sha256\"?, \"note\"?}]``. Schemes
+    file/http/https/git only — anything else (ftp://, etc.) is a structured
+    reject before the letter lands. Read paths annotate each link with a
+    fresh ``state`` (ok/stale/denied) + ``reason``; ``file://`` links are
+    gated by the mail root's ``allowed_roots`` config (fail-closed).
     """
     frm = from_id or os.environ.get("AGENT_MAIL_ID", "")
     if not frm:
@@ -325,6 +333,7 @@ def mailbox_send(
         origin=origin,
         attention=attention,
         pairing_token=pairing_token,
+        links=links,
     )
     delivered = sum(1 for e in sent if not e.get("deduped"))
     return {"delivered": sent, "count": delivered}

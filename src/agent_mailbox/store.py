@@ -35,6 +35,7 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from .webhook import notify_new_messages
 
@@ -353,13 +354,223 @@ def redact_sealed(m: dict[str, Any], *, reader: str = "") -> dict[str, Any]:
     ``body`` removed and ``redacted: "sealed"`` set, so "主人全可见" can
     never double as a credential leak channel. Unsealed letters pass through
     untouched (legacy letters never carried ``sealed``).
+
+    v0.7.6 (PR2 判据④ sealed 同权): ``links`` is stripped alongside ``body``
+    — the link table names exactly *where* the payload lives, so stripping
+    the body while keeping its pointer table would leave the leak channel
+    open. The recipient's own tools still see both.
     """
     if not m.get("sealed"):
         return m
     if reader and reader == m.get("to"):
         return m  # the recipient agent's own tools: full content
-    out = {k: v for k, v in m.items() if k != "body"}
+    out = {k: v for k, v in m.items() if k not in ("body", "links")}
     out["redacted"] = "sealed"
+    return out
+
+
+# ----------------------------------------------------- v0.7.6 PR2: 信件链接
+# A letter may carry ``links`` — structured pointers to artifacts outside the
+# letter body (files, URLs, git refs)::
+#
+#     "links": [{"title": str, "uri": str, "kind": str?, "sha256": 64-hex?,
+#                "note": str?}, ...]
+#
+# Two-phase model: SEND time validates *structure only* (schema + scheme
+# whitelist; unknown scheme = structured reject, 判据⑤) — a letter never
+# lands with a link its readers cannot interpret. READ time computes each
+# link's *state* fresh (``ok`` / ``stale`` / ``denied`` + a machine reason,
+# 判据②③): states describe the world as it is NOW and are never persisted.
+#
+# ``file://`` links are gated by the allowed_roots security model (HS 裁定):
+# ``config.json`` ``allowed_roots`` lists the only path prefixes a file link
+# may resolve to. **Fail-closed** — block absent, empty, or unreadable ⇒
+# every file:// link reads ``denied``. ``$HOME`` is never implicitly allowed.
+# Targets are realpath/symlink-normalized before an exact-prefix match, so
+# ``..`` traversal and symlink escapes cannot win; wildcards are not
+# supported (a wildcard in the config raises loudly — a half-written
+# security boundary must never silently degrade, same doctrine as
+# load_identity_binding).
+#
+# ``http``/``https``/``git`` links: v1 enforces the send-time scheme policy
+# only and **never issues a network request on a read path** — reads stay
+# fast and the mailbox never becomes an intranet probing oracle. Host
+# allow/deny lists are future scope; until then these links read ``ok``.
+LINK_SCHEMES = ("file", "http", "https", "git")
+LINK_KEYS = frozenset({"title", "uri", "kind", "sha256", "note"})
+_WILDCARD_CHARS = ("*", "?", "[")
+
+
+def validate_links(links: Any) -> list[dict[str, Any]]:
+    """Structural validation + normalization of the send-time ``links`` param.
+
+    ``links`` is ``None``/absent, or a list of ``{title, uri, kind?, sha256?,
+    note?}`` objects. Returns a schema-checked shallow copy safe to persist.
+    Any structural problem raises ``MailboxError(code="invalid_field")`` —
+    the A7 structured-error family — including an unknown ``uri`` scheme
+    (判据⑤): send-time rejection happens before any disk write, sent.log
+    line, or webhook, so a bad link leaves zero trace.
+    """
+    if links is None:
+        return []
+    if not isinstance(links, list):
+        raise MailboxError(
+            "links must be a list of {title, uri, kind?, sha256?, note?} objects",
+            code="invalid_field",
+        )
+    out: list[dict[str, Any]] = []
+    for i, link in enumerate(links):
+        if not isinstance(link, dict):
+            raise MailboxError(f"links[{i}] must be an object", code="invalid_field")
+        unknown = sorted(k for k in link if k not in LINK_KEYS)
+        if unknown:
+            raise MailboxError(
+                f"links[{i}] has unknown key(s) {unknown} — allowed: {sorted(LINK_KEYS)}",
+                code="invalid_field",
+            )
+        for req in ("title", "uri"):
+            val = link.get(req)
+            if not isinstance(val, str) or not val.strip():
+                raise MailboxError(
+                    f"links[{i}].{req} must be a non-empty string", code="invalid_field"
+                )
+        for opt in ("kind", "note"):
+            if opt in link and not isinstance(link[opt], str):
+                raise MailboxError(f"links[{i}].{opt} must be a string", code="invalid_field")
+        sha = link.get("sha256")
+        if sha is not None and (not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha)):
+            raise MailboxError(
+                f"links[{i}].sha256 must be a lowercase 64-hex sha256 digest",
+                code="invalid_field",
+            )
+        scheme = urlsplit(link["uri"]).scheme.lower()
+        if scheme not in LINK_SCHEMES:
+            raise MailboxError(
+                f"links[{i}].uri: unsupported scheme {scheme or '(none)'!r} "
+                f"(uri {link['uri']!r}) — must be one of {LINK_SCHEMES}",
+                code="invalid_field",
+            )
+        out.append(dict(link))
+    return out
+
+
+def load_allowed_roots(root: Path) -> list[str]:
+    """Read the optional ``allowed_roots`` block from ``<root>/config.json``.
+
+    Schema::
+
+        {"allowed_roots": ["/abs/dir", "~/another/dir", ...]}
+
+    Returns the list verbatim (``~`` is expanded at compare time); ``[]``
+    when the block is absent — and then **every** ``file://`` link reads
+    ``denied`` (fail-closed: the gate is shut unless the operator opens a
+    specific door; ``$HOME`` is never implicitly allowed). A malformed block
+    (non-list, non-string/blank entry, or an entry containing wildcard
+    characters) raises ``MailboxError`` loudly — same doctrine as
+    ``load_identity_binding``: a half-written security boundary must never
+    silently degrade.
+    """
+    try:
+        cfg = json.loads((Path(root) / "config.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except (OSError, json.JSONDecodeError) as e:
+        raise MailboxError(f"corrupt config.json: {e}") from e
+    if not isinstance(cfg, dict):
+        raise MailboxError("corrupt config.json: must be an object")
+    raw = cfg.get("allowed_roots")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise MailboxError("config.json: allowed_roots must be a list of directory paths")
+    out: list[str] = []
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, str) or not entry.strip():
+            raise MailboxError(f"config.json: allowed_roots[{i}] must be a non-empty path string")
+        if any(c in entry for c in _WILDCARD_CHARS):
+            raise MailboxError(
+                f"config.json: allowed_roots[{i}] {entry!r} contains wildcard characters — "
+                "allowed_roots is an exact-prefix allowlist; wildcards are not supported"
+            )
+        out.append(entry)
+    return out
+
+
+def _file_link_check(link: dict[str, Any], roots: list[str]) -> dict[str, Any]:
+    """``ok``/``stale``/``denied`` for one ``file://`` link, computed NOW.
+
+    Check order: policy gate first (fail-closed — no configured roots ⇒
+    ``denied/no_allowed_roots``), then realpath/symlink-normalized exact-
+    prefix match (``..`` traversal and symlink escapes cannot win ⇒
+    ``denied/outside_allowed_roots``), then existence on disk (⇒
+    ``denied/missing``), then the optional ``sha256`` comparison carried in
+    the letter (mismatch ⇒ ``stale/sha256_mismatch``). Without a ``sha256``
+    the existence check is the strongest claim a reader can make and the
+    link reads ``ok`` (判据⑭ semantics: no hash → no comparison).
+    """
+    parts = urlsplit(link.get("uri", ""))
+    if parts.netloc not in ("", "localhost"):
+        return {"state": "denied", "reason": "non_local_file_uri"}
+    target = Path(unquote(parts.path)).resolve()  # realpath + symlink normalization
+    if not roots:
+        return {"state": "denied", "reason": "no_allowed_roots"}
+    for entry in roots:
+        base = Path(os.path.expanduser(entry)).resolve()
+        if target == base or base in target.parents:
+            if not target.is_file():
+                return {"state": "denied", "reason": "missing"}
+            want = link.get("sha256")
+            if want:
+                try:
+                    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+                except OSError:
+                    return {"state": "denied", "reason": "unreadable"}
+                if digest != want:
+                    return {"state": "stale", "reason": "sha256_mismatch"}
+            return {"state": "ok", "reason": None}
+    return {"state": "denied", "reason": "outside_allowed_roots"}
+
+
+def _link_check(link: dict[str, Any], roots: list[str]) -> dict[str, Any]:
+    """One link's check state, computed at read time and never persisted.
+
+    ``file://`` → :func:`_file_link_check` (allowed_roots gate + existence +
+    optional sha256). ``http``/``https``/``git`` → v1 enforces the send-time
+    scheme policy only and **never issues a network request**: a read path
+    must stay fast and must never become an intranet probing oracle. Host
+    allow/deny lists are future scope; until then these links read ``ok``.
+    """
+    scheme = urlsplit(link.get("uri", "")).scheme.lower()
+    if scheme == "file":
+        return _file_link_check(link, roots)
+    return {"state": "ok", "reason": None}
+
+
+def annotate_link_states(m: dict[str, Any], roots: list[str]) -> dict[str, Any]:
+    """Attach per-link check state to a letter's ``links`` (read-time only).
+
+    Each link gains ``state`` (``ok`` / ``stale`` / ``denied``) and
+    ``reason`` (machine-readable, ``None`` when ``ok``). The annotation is
+    computed on a copy and **never persisted** — the letter on disk keeps
+    only what its sender wrote, so every read re-derives the truth. Letters
+    without ``links`` (all legacy letters) pass through untouched. A corrupt
+    on-disk ``links`` row degrades to ``denied/malformed_link`` instead of
+    crashing a read.
+    """
+    links = m.get("links")
+    if not isinstance(links, list) or not links:
+        return m
+    out = dict(m)
+    annotated: list[dict[str, Any]] = []
+    for link in links:
+        if not (isinstance(link, dict) and isinstance(link.get("uri"), str)):
+            bad = dict(link) if isinstance(link, dict) else {"value": link}
+            bad["state"] = "denied"
+            bad["reason"] = "malformed_link"
+            annotated.append(bad)
+            continue
+        annotated.append({**link, **_link_check(link, roots)})
+    out["links"] = annotated
     return out
 
 
@@ -682,6 +893,7 @@ class MailStore:
         origin: str = "local",
         attention: str = ATTENTION_DEFAULT,
         pairing_token: str = "",
+        links: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         """Deliver a message to one agent, many agents, or ``"all"``.
 
@@ -711,6 +923,14 @@ class MailStore:
         confirms it; ``attention`` carries the 打扰三档 marker (需拍板/报备/
         存档, default first tier); a ``guest`` sender must present a valid
         ``pairing_token`` or the send is rejected.
+
+        v0.7.6 (PR2): ``links`` optionally carries structured pointers
+        ``[{"title", "uri", "kind"?, "sha256"?, "note"?}]`` persisted verbatim
+        in the letter JSON. Validated structurally here (scheme whitelist
+        file/http/https/git); an unknown scheme or malformed entry is a
+        structured reject (``code="invalid_field"``) BEFORE any write. The
+        reader-side check states (``ok``/``stale``/``denied``) are computed
+        fresh by :func:`annotate_link_states` at read time — never persisted.
         """
         if status not in MSG_STATUSES:
             raise MailboxError(f"status must be one of {MSG_STATUSES}", code="invalid_field")
@@ -721,6 +941,10 @@ class MailStore:
                 f"attention must be one of {ATTENTION_TIERS} (需你拍板/报备/存档)",
                 code="invalid_field",
             )
+        # PR2 (判据⑤): structural + scheme validation of links BEFORE any
+        # disk write / sent.log line / webhook — an invalid link leaves zero
+        # trace, same doctrine as the body cap below.
+        norm_links = validate_links(links)
         # v0.7.6 (A7, HS 裁定①): body cap BEFORE any disk write / sent.log /
         # webhook — an oversized body leaves zero trace. Default 1 MiB
         # (UTF-8 bytes), overridable via config.json `max_body_bytes`.
@@ -800,6 +1024,8 @@ class MailStore:
                 }
                 if sealed:
                     msg["sealed"] = True
+                if norm_links:
+                    msg["links"] = [dict(link) for link in norm_links]
                 if pre_existing is not None:
                     # t-38②：调用侧 dedupe=False 豁免落箱的信，若箱内已有同
                     # hash 非终态信，则为重复件——照常落箱留痕，但不重发 wake
@@ -873,10 +1099,9 @@ class MailStore:
         # custom-root store can never read the production gateway config.
         # unread_count (v0.6.2): per-recipient pending tally at notification
         # time, freshly landed letters included; best-effort like the POST.
-        unread = {
-            rid: len(self.list_messages(rid, status="pending"))
-            for rid in {str(m["to"]) for m in notify_msgs}
-        }
+        # PR2: the tally wants a *count*, not annotated letters — a broken
+        # allowed_roots config must never blow up a send that already landed.
+        unread = {rid: self._count_pending(rid) for rid in {str(m["to"]) for m in notify_msgs}}
         if notify_msgs:  # t-38②：唤醒面全空 → 零通知（连 webhook 都不发）
             notify_new_messages(notify_msgs, config_root=self.root, unread_counts=unread)
         # v0.7 落箱钩子（sampling 唤醒的进料口）：只投递真正落盘的信；
@@ -1046,7 +1271,8 @@ class MailStore:
             return (m.get("created_at", ""), mtime, m.get("id", ""))
 
         matched.sort(key=_order)
-        messages = [m for _, m in matched]
+        # PR2 (判据②③): link states computed fresh on the way out.
+        messages = self._with_link_states([m for _, m in matched])
         if resolved and not skey:
             matched_by = "thread_id"
         elif resolved:
@@ -1177,6 +1403,38 @@ class MailStore:
             seen.append(orig)  # 原始显示形式投递/落盘——归一只用于成员比对
         return seen, warns
 
+    def _count_pending(self, agent_id: str) -> int:
+        """Number of pending letters in one inbox — no annotation, no gate.
+
+        Internal best-effort tally for the webhook payload (send-time unread
+        count). Deliberately bypasses :meth:`_with_link_states`: a broken
+        ``allowed_roots`` config must never turn an already-landed send into
+        an exception, and a count needs no link states.
+        """
+        inbox = self._inbox_dir(agent_id)
+        n = 0
+        with self._locked():
+            for p in sorted(inbox.glob("*.json")):
+                try:
+                    if self._read_msg(p).get("status") == "pending":
+                        n += 1
+                except MailboxError:
+                    continue  # corrupt letter: it still counts as not-pending
+        return n
+
+    def _with_link_states(self, msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Read-path link-state annotation (PR2 判据②③).
+
+        Computed fresh on every call — never persisted — with the
+        ``allowed_roots`` config loaded once per batch. Letters without
+        ``links`` (all legacy letters) pass through untouched, so the
+        annotation costs one membership scan for legacy inboxes.
+        """
+        if not any(isinstance(m.get("links"), list) and m.get("links") for m in msgs):
+            return msgs
+        roots = load_allowed_roots(self.root)
+        return [annotate_link_states(m, roots) for m in msgs]
+
     def check(self, agent_id: str, *, mark: bool = True) -> list[dict[str, Any]]:
         """Fetch pending messages; by default they become ``acked``.
 
@@ -1204,7 +1462,9 @@ class MailStore:
                 m["id"],
             )
         )
-        return msgs
+        # PR2 (判据②③): link states are computed fresh after the write-back
+        # above, on copies — the annotated copies are returned, never saved.
+        return self._with_link_states(msgs)
 
     def claim(self, agent_id: str) -> list[dict[str, Any]]:
         """Atomically claim all pending mail: return it flipped to ``acked``
@@ -1428,7 +1688,7 @@ class MailStore:
                 if thread is not None and not self._thread_match(m, thread):
                     continue
                 out.append(m)
-        return out
+        return self._with_link_states(out)
 
     @staticmethod
     def _thread_match(m: dict[str, Any], thread: str) -> bool:
@@ -1450,7 +1710,9 @@ class MailStore:
                 m = self._read_msg(p)
                 if status is None or m.get("status") == status:
                     out.append(m)
-        return out
+        # PR2: archived letters carry live link states too — mailbox_list
+        # spans inbox + archive via list_all_messages.
+        return self._with_link_states(out)
 
     def list_all_messages(
         self,
