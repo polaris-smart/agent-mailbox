@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from . import connect as connect_mod
+from . import installer
 from . import version_check as version_mod
 from . import wake as wake_mod
 from .discover import (
@@ -154,29 +155,130 @@ def _print_status(report: dict[str, Any], wake_info: dict[str, Any]) -> None:
         print("通道体检：未发现断链。")
 
 
-def _setup_hints(report: dict[str, Any]) -> None:
+def _setup_hints(
+    report: dict[str, Any],
+    installed_names: tuple[str, ...] = (),
+    skipped: list[tuple[str, str]] | None = None,
+) -> None:
     print("下一步（按需执行）：")
     print("  · 起看板:      agent-mailbox --web 8642")
+    skipped = skipped or []
     for m in report["members"]:
+        if m["member"] in installed_names:
+            print(
+                f"  · {m['member']}: 唤醒已装好（WatchPaths 信到即醒）；"
+                f"实测: agent-mailbox test {m['member']}"
+            )
+            continue
+        reason = next((why for n, why in skipped if n == m["member"]), "")
         print(
-            f"  · 唤醒 {m['member']}:  python -m agent_mailbox.wake install --agent {m['member']}"
+            f"  · 唤醒 {m['member']}:  agent-mailbox setup --agent {m['member']} "
+            f"--adapter <hermes|generic-webhook|local-command|claude-code>"
+            + (f"  （跳过原因: {reason}）" if reason else "")
         )
         if m.get("connected") is False:
             print(f"  · 接入 {m['member']}:  agent-mailbox connect {m['member']} --yes（先备份）")
     print("  · 实测通道:    agent-mailbox test <member>")
+    print("  · 体检:        agent-mailbox doctor")
+
+
+def _print_install_result(out: dict[str, Any], *, belt_generated: bool = False) -> None:
+    mark = "✅"
+    print(f"{mark} {out.get('agent', '?')}: 注册 + agents 段（{out.get('adapter')}）+ OS 集成完成")
+    for f in out.get("files", []):
+        print(f"   · 生成 {f}")
+    if out.get("wrapper"):
+        print(f"   · 唤醒命令模板（provider env 注入内置）: {out['wrapper']}")
+    if out.get("belt"):
+        print(f"   · belt 脚本（部署副本=本产物）: {out['belt']}")
+    cmd = out.get("wake_command") or []
+    if cmd:
+        print(f"   · 唤醒命令: {json.dumps(cmd, ensure_ascii=False)}")
+    for n in out.get("notes", []):
+        print(f"   · {n}")
+    if not out.get("activated", False):
+        print("   · 未 load（--no-activate）；手动: " + str(out.get("activate_cmd", "")))
 
 
 # ----------------------------------------------------------- subcommands
+
+
+def _setup_install_one(args: argparse.Namespace, root: Path) -> dict[str, Any]:
+    """--agent 显式安装一个身份（判据1/6 的 CLI 打通面）。
+
+    --adapter 缺省时按 discovery 零分类题自动选通道：该成员有 CLI on PATH
+    ⇒ local-command + 绝对路径；给了 --webhook-url ⇒ generic-webhook；都不
+    行则给出明确修法退出（不猜）。"""
+    adapter = str(getattr(args, "adapter", "") or "")
+    command_raw = str(getattr(args, "command", "") or "")
+    webhook_url = str(getattr(args, "webhook_url", "") or "")
+    if not adapter:
+        if webhook_url:
+            adapter = "generic-webhook"
+        else:
+            ctx = default_context(root)
+            report = build_report(ctx, save=False)
+            member = next((m for m in report["members"] if m.get("member") == args.agent), None)
+            cli_paths = [
+                str(ev.get("detail", ""))
+                for ev in (member or {}).get("evidence", [])
+                if ev.get("layer") == "L1" and ev.get("type") == "cli" and ev.get("detail")
+            ]
+            if cli_paths:
+                adapter = "local-command"
+                command_raw = json.dumps([cli_paths[0]])
+                print(f"· 未指定 --adapter：发现 {args.agent} CLI on PATH → local-command 自动接线")
+            else:
+                raise SystemExit(
+                    f"setup: --agent {args.agent} 需要通道参数——"
+                    "--adapter local-command --command '[\"<命令>\"]'，"
+                    "或 --adapter generic-webhook --webhook-url <url>"
+                )
+    command = wake_mod._parse_command_arg(command_raw, "setup") if command_raw else None
+    return installer.install_agent(
+        root,
+        args.agent,
+        adapter=adapter,
+        command=command,
+        webhook_url=webhook_url,
+        webhook_secret=str(getattr(args, "webhook_secret", "") or ""),
+        belt=bool(getattr(args, "belt", False)),
+        activate=not getattr(args, "no_activate", False),
+        launch_agents_dir=getattr(args, "launch_agents_dir", None),
+        systemd_dir=getattr(args, "systemd_dir", None),
+    )
 
 
 def _cmd_setup(args: argparse.Namespace) -> int:
     if not args.yes:
         print("交互式向导（浏览器 UI）将在后续版本提供；本次按无头默认执行（不启浏览器）。\n")
     root = _root_from(args)
-    ctx = default_context(root)
-    report = build_report(ctx, save=True)
+    installed_names: tuple[str, ...] = ()
+    skipped: list[tuple[str, str]] = []
+    if getattr(args, "agent", ""):
+        # 显式单身份：一条命令装完（t-61 判据1/6）
+        out = _setup_install_one(args, root)
+        _print_install_result(out)
+        installed_names = (str(out.get("agent", "")),)
+        report = build_report(default_context(root), save=True)
+    else:
+        # 零输入：自动发现 + CLI 形态成员全自动装好（不让用户做分类题）
+        report = build_report(default_context(root), save=True)
+        installed, skipped = installer.auto_install(
+            root,
+            report,
+            belt=bool(getattr(args, "belt", False)),
+            activate=not getattr(args, "no_activate", False),
+            launch_agents_dir=getattr(args, "launch_agents_dir", None),
+            systemd_dir=getattr(args, "systemd_dir", None),
+        )
+        for out in installed:
+            _print_install_result(out)
+        for name, why in skipped:
+            print(f"· {name}: 跳过自动安装（{why}）")
+        installed_names = tuple(str(o.get("agent", "")) for o in installed)
     _print_report(report, header="agent-mailbox 初始化完成")
-    _setup_hints(report)
+    _setup_hints(report, installed_names=installed_names, skipped=skipped)
     return 0
 
 
@@ -828,8 +930,46 @@ def cli_main(argv: list[str] | None = None) -> int:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("setup", parents=[common], help="初始化（--yes 无头默认，不启浏览器）")
+    p = sub.add_parser(
+        "setup",
+        parents=[common],
+        help="初始化 + 一条命令装完（t-61 判据1/6：零输入自动发现接线；--agent X 显式装一个）",
+    )
     p.add_argument("--yes", action="store_true", help="无头模式：全默认、纯命令行")
+    p.add_argument(
+        "--agent",
+        default="",
+        help="显式装这一个身份（配合 --adapter/--command/--webhook-url）；缺省=零输入自动发现接线",
+    )
+    p.add_argument(
+        "--adapter",
+        default="",
+        help="hermes | generic-webhook | local-command | claude-code（缺省时按 discovery 自动选）",
+    )
+    p.add_argument(
+        "--command",
+        default="",
+        help='local-command argv JSON（如 \'["codex","--pull"]\'）——首段自动解析绝对路径，'
+        "zcode 类命令自动生成带 provider env 注入的唤醒命令模板",
+    )
+    p.add_argument("--webhook-url", default="", help="webhook 通道 url（写 agents.<ID> 段）")
+    p.add_argument("--webhook-secret", default="", help="webhook 签名密钥（写 agents.<ID> 段）")
+    p.add_argument(
+        "--belt",
+        action="store_true",
+        help="同时生成 per-身份 belt 脚本（包内模板渲染、绝对路径自动填；部署副本=生成产物）",
+    )
+    p.add_argument(
+        "--no-activate",
+        action="store_true",
+        help="只生成文件，不 launchctl load / systemctl enable",
+    )
+    p.add_argument(
+        "--launch-agents-dir", default=None, help="override ~/Library/LaunchAgents（测试/tmp 用）"
+    )
+    p.add_argument(
+        "--systemd-dir", default=None, help="override ~/.config/systemd/user（测试/tmp 用）"
+    )
     p.set_defaults(func=_cmd_setup)
 
     p = sub.add_parser("discover", parents=[common], help="四层自动发现（L1–L3 只读）")
