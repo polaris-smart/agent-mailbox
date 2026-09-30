@@ -129,4 +129,5 @@ export const api = Object.freeze({
   mapRemoteProject: (body) => request("/fleet/map", "POST", body),
   addRemoteEmployee: (body) => request("/fleet/employee", "POST", body),
   revokeDevice: (deviceId) => request("/fleet/revoke", "POST", { device_id: deviceId }),
+  quitApplication: () => request("/application/quit", "POST", {}),
 });

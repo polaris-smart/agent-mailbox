@@ -26,6 +26,8 @@ Employee lifecycle is separate from tool connection readiness. Paused and retire
 
 The schema 3-to-4 upgrade retains existing employee identities while adding lifecycle and management history. The UI reads the service's migrated state; it does not implement or advertise an automatic application updater.
 
+Application quit is an explicit global footer action with a readable confirmation. The confirmation explains stopping owned execution and preserving task history and unreviewed work. A successful response stops the UI's change subscription and displays how to reopen the application; closing a browser page alone is never presented as quitting.
+
 ## Motion
 
 150–200ms feedback for controls and drawer/dialog transitions. Skeletons indicate loading; no orchestrated entrance sequence. Reduced-motion removes animations and smooth scrolling.

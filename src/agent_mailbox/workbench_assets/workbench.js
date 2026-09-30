@@ -18,6 +18,7 @@ const state = {
   runtimeInstalling: false, error: null, toastTimer: null,
   changesPending: false, changeTimer: null, streamError: false,
   governance: null, governanceError: null, governanceLoading: false, governanceQueued: false,
+  applicationStopping: false, applicationStopped: false,
 };
 try { state.projectId = sessionStorage.getItem("agent-mailbox.workbench.project") || ""; } catch { /* optional */ }
 
@@ -372,6 +373,7 @@ function renderGovernancePanel() {
       events.length ? el("ol", { class: "governance-list" }, events.map((event) => el("li", { class: "governance-row" }, el("div", {}, el("p", { class: "governance-title" }, governanceLabels[event.type] || t("管理操作", "Management action"), event.employee_id ? " · " + employeeName(event.employee_id) : ""), event.reason ? el("p", { class: "governance-reason" }, event.reason) : null, el("p", { class: "governance-actor" }, governanceActor(event.actor))), el("time", { datetime: event.created_at || "" }, formatDate(event.created_at, true))))) : el("p", { class: "inline-empty" }, t("这个项目还没有管理记录。", "No management history for this project yet.")));
 }
 async function loadGovernance() {
+  if (state.applicationStopping || state.applicationStopped) return;
   if (!state.projectId || state.view !== "employees") return;
   if (state.governanceLoading) { state.governanceQueued = true; return; }
   state.governanceLoading = true;
@@ -465,18 +467,25 @@ function renderDisconnected() {
 }
 function render() {
   renderSidebar();
+  if (state.applicationStopped) {
+    root.replaceChildren(heading(t("应用已退出", "Application closed"), t("任务、成果和项目记录仍然保留。", "Tasks, deliverables, and project records are retained.")), empty(t("双击 Agent Mailbox 重新打开", "Double-click Agent Mailbox to reopen"), t("可以关闭这个浏览器页面。重新打开应用后，请使用它提供的新入口。", "You can close this browser page. Reopen the application and use the new link it provides."), null, null, "monitor"));
+    root.setAttribute("aria-busy", "false");
+    return;
+  }
   const renders = { overview: renderOverview, tasks: renderTasks, employees: renderEmployees, resources: renderResources, devices: renderDevices };
   const content = state.data ? renders[state.view]() : renderDisconnected();
   root.replaceChildren(...content.flat(Infinity).filter((item) => item !== null && item !== undefined && item !== false));
   root.setAttribute("aria-busy", "false");
 }
 async function refresh({ silent = false } = {}) {
+  if (state.applicationStopping || state.applicationStopped) return;
   if (state.refreshing) return;
   state.refreshing = true;
   const control = document.getElementById("refresh-button");
   control.disabled = true;
   try {
     const result = await api.snapshot();
+    if (state.applicationStopping || state.applicationStopped) return;
     for (const key of ["projects", "employees", "tasks", "resources", "memories", "devices"]) {
       if (!Array.isArray(result[key])) throw new ApiError("invalid_response");
     }
@@ -492,12 +501,13 @@ async function refresh({ silent = false } = {}) {
     if (!silent || !root.contains(activeElement) || !["INPUT", "TEXTAREA", "SELECT"].includes(activeElement?.tagName)) render();
     if (state.view === "employees") loadGovernance();
   } catch (error) {
+    if (state.applicationStopping || state.applicationStopped) return;
     state.error = error;
     updateConnection(false);
     setNotice(state.data ? `${t("更新失败，当前显示上次读取的记录。", "Update failed. The previous records are still displayed.")} ${errorText(error)}` : errorText(error), true);
     if (!state.data) render();
     if (!silent && state.data) showToast(errorText(error), true);
-  } finally { state.refreshing = false; control.disabled = false; }
+  } finally { state.refreshing = false; control.disabled = state.applicationStopped; }
 }
 
 function openForm(title, description) {
@@ -568,6 +578,40 @@ function openLifecycleForm(employee, lifecycle) {
     }).finally(() => { if (retiring && formDialog.open && form.isConnected) end.submit.disabled = !confirmation.checked || !reason.value.trim(); });
   });
   body.append(form); reason.focus();
+}
+function openQuitForm() {
+  const body = openForm(t("退出应用", "Quit application"), t("关闭浏览器页面不会停止应用。确认退出这台设备上的 Agent Mailbox。", "Closing the browser does not stop the application. Confirm quitting Agent Mailbox on this device."));
+  if (!body) return;
+  const running = state.data.tasks.filter((task) => ["starting", "running", "waiting_approval"].includes(task.status)).length;
+  const box = errorBox();
+  const end = footer(t("确认退出应用", "Confirm quit"));
+  body.append(el("div", { class: "quit-explanation" }, el("p", { class: "quit-description" }, t("正在执行的任务会请求停止，任务记录和尚未验收的成果保留。只停止本应用启动的执行器。", "Running tasks will be asked to stop. Task history and work awaiting review are retained. Only executors started by this application are stopped.")),
+    running ? el("p", { class: "quit-running-note" }, t(`当前记录中有 ${running} 个任务正在启动、执行或等待授权。`, `${running} recorded tasks are starting, running, or awaiting permission.`)) : null,
+    el("p", { class: "field-hint" }, t("退出后，双击 Agent Mailbox 可以重新打开。这个页面不会关闭其他 AI 会话或浏览器标签页。", "Double-click Agent Mailbox to reopen. Other AI sessions and browser tabs remain open."))));
+  const form = el("form", {}, box, end.node);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    state.applicationStopping = true;
+    submitAction(end.submit, box, () => api.quitApplication(), (result) => {
+      if (result.stopping !== true) throw new ApiError("invalid_response");
+      state.applicationStopped = true;
+      state.applicationStopping = false;
+      stopChanges();
+      window.clearTimeout(state.changeTimer);
+      window.clearTimeout(state.toastTimer);
+      document.getElementById("toast-region").replaceChildren();
+      state.data = null;
+      setNotice(null);
+      formDialog.close(); detailDialog.close();
+      render();
+      document.getElementById("service-dot").className = "status-dot";
+      document.getElementById("service-label").textContent = t("应用已退出", "Application closed");
+      document.getElementById("connection-label").replaceChildren(el("span", {}, t("已退出", "Closed")));
+      for (const control of document.querySelectorAll("[data-view], [data-action], #refresh-button")) control.disabled = true;
+      document.getElementById("main").focus({ preventScroll: true });
+    }).finally(() => { if (!state.applicationStopped) state.applicationStopping = false; });
+  });
+  body.append(form);
 }
 function openFleetStartForm() {
   const body = openForm(t("启用设备接入", "Enable device connections"), t("把这台设备作为主控。输入它的局域网 IPv4 地址，其他设备需要能访问这个地址。", "Use this device as coordinator. Enter its local network IPv4 address, reachable from the other devices."));
@@ -1056,10 +1100,12 @@ const actions = {
   "fleet-start": openFleetStartForm, "fleet-invite": openFleetInviteForm,
   "fleet-join": openFleetJoinForm, "fleet-stop": () => confirmFleetAction("stop"),
   "fleet-leave": () => confirmFleetAction("leave"),
+  "quit-application": openQuitForm,
 };
 document.addEventListener("click", (event) => {
   const target = event.target.closest("button, a");
   if (!target) return;
+  if (state.applicationStopped) { event.preventDefault(); return; }
   if (target.matches(".brand")) { event.preventDefault(); selectView("overview"); }
   else if (target.dataset.project) selectProject(target.dataset.project);
   else if (target.dataset.view) selectView(target.dataset.view);
@@ -1091,6 +1137,7 @@ for (const control of document.querySelectorAll("[data-view]")) {
 }
 document.querySelector(".brand small").textContent = t("团队工作台", "Team workbench");
 document.querySelector(".sidebar-heading > span").textContent = t("项目", "Projects");
+document.querySelector("#quit-application-button > span").textContent = t("退出应用", "Quit application");
 document.querySelector(".skip-link").textContent = t("跳到工作区", "Skip to workspace");
 document.querySelector('[data-action="new-project"]').setAttribute("aria-label", t("新建项目", "New project"));
 document.getElementById("refresh-button").setAttribute("aria-label", t("刷新工作台", "Refresh workbench"));
@@ -1099,6 +1146,7 @@ try { theme = localStorage.getItem("agent-mailbox.workbench.theme") || (matchMed
 applyTheme(theme);
 refresh();
 async function applyChanges() {
+  if (state.applicationStopping || state.applicationStopped) return;
   if (document.visibilityState !== "visible" || formDialog.open) { state.changesPending = true; return; }
   if (state.refreshing) { queueChanges(); return; }
   state.changesPending = false;
@@ -1107,11 +1155,13 @@ async function applyChanges() {
   if (state.detailTaskId && detailDialog.open) await loadTaskDetail({ silent: true });
 }
 function queueChanges() {
+  if (state.applicationStopping || state.applicationStopped) return;
   state.changesPending = true;
   window.clearTimeout(state.changeTimer);
   state.changeTimer = window.setTimeout(applyChanges, 250);
 }
 function connectChanges() { return api.subscribeChanges(queueChanges, (error) => {
+  if (state.applicationStopping || state.applicationStopped) return;
   if (!state.streamError && state.data) showToast(t("实时更新暂时中断，正在重新连接；也可点击刷新。", "Live updates were interrupted. Reconnecting; you can also refresh manually."), true);
   state.streamError = true;
   if (state.data) setNotice(`${t("实时更新正在重新连接。", "Live updates are reconnecting.")} ${errorText(error)}`, true);
@@ -1129,4 +1179,4 @@ formDialog.addEventListener("close", () => {
 });
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") queueChanges(); });
 window.addEventListener("pagehide", () => stopChanges());
-window.addEventListener("pageshow", (event) => { if (event.persisted) { stopChanges = connectChanges(); queueChanges(); } });
+window.addEventListener("pageshow", (event) => { if (event.persisted && !state.applicationStopped) { stopChanges = connectChanges(); queueChanges(); } });
