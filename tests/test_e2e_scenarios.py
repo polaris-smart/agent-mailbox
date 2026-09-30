@@ -36,6 +36,11 @@ AUTH_LINE = "Authentication required. Please use /login to continue"
 FAKE_AGENT_BODY = """
 import os
 from agent_mailbox.store import MailStore
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="场景钉 darwin 形态（launchd plist/WatchPaths）；linux systemd / win32 的等价场景测归平台批（0.7.6 发布 CI 实测定谳）",
+)
 root = os.environ["AGENT_MAIL_HOME"]
 me = os.environ.get("AGENT_MAIL_AGENT_ID", "")
 mid = os.environ.get("AGENT_MAIL_MSG_ID", "")

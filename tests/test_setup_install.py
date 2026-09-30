@@ -34,6 +34,11 @@ from agent_mailbox.installer import (
 from agent_mailbox.store import MailStore
 from agent_mailbox.wake import WAKE_LABEL
 
+pytestmark = pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="场景钉 darwin 形态（launchd plist/WatchPaths）；linux systemd / win32 的等价场景测归平台批（0.7.6 发布 CI 实测定谳）",
+)
+
 
 @pytest.fixture()
 def fake_home(tmp_path, monkeypatch):
