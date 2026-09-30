@@ -57,7 +57,9 @@ def build_server(store, employee_id, project_id, token, endpoint=""):
             raise WorkbenchError(
                 "WAKE_UNAVAILABLE", "Open the project workbench before sending team work."
             )
-        task = store.create_task(project_id, title, message, recipient_id, "read-only")
+        task = store.create_task(
+            project_id, title, message, recipient_id, "read-only", actor=f"employee:{employee_id}"
+        )
         store.add_event(
             task["id"], "team_message", "A colleague requested this work.", {"from_id": employee_id}
         )

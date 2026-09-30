@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from .workbench_runtime import BridgeExecution, context_prompt, workspace_server_command
-from .workbench_store import WorkbenchError, WorkbenchStore
+from .workbench_store import WorkbenchStore
 
 
 class WorkbenchEngine:
@@ -21,6 +21,7 @@ class WorkbenchEngine:
         self.execution = BridgeExecution(Path(store.root), bridge_command)
         self.task_timeout = task_timeout
         self.changed = threading.Event()
+        self.permission_changed = threading.Condition()
         self.stopping = threading.Event()
         self.thread: threading.Thread | None = None
         self.workers: set[threading.Thread] = set()
@@ -35,12 +36,14 @@ class WorkbenchEngine:
 
     def notify(self):
         self.changed.set()
+        with self.permission_changed:
+            self.permission_changed.notify_all()
         if self.on_change:
             self.on_change()
 
     def close(self):
         self.stopping.set()
-        self.changed.set()
+        self.notify()
         if self.thread:
             self.thread.join(timeout=8)
         with self.lock:
@@ -127,15 +130,20 @@ class WorkbenchEngine:
                 if self.on_change:
                     self.on_change()
                 deadline = time.monotonic() + 120
-                while time.monotonic() < deadline and not cancelled():
-                    value = self.store.get_permission(task["id"], record["request_id"])
-                    if value["status"] == "resolved":
-                        return value["decision"]
-                    self.stopping.wait(timeout=0.2)
-                try:
-                    self.store.resolve_permission(task["id"], record["request_id"], "deny")
-                except WorkbenchError:
-                    pass
+                # Hold the condition across the DB read so a human decision cannot
+                # be lost between observing pending and registering the waiter.
+                with self.permission_changed:
+                    while not cancelled():
+                        value = self.store.permission_decision(
+                            task["id"], record["request_id"], task["run_id"]
+                        )
+                        if value["status"] != "pending":
+                            return value.get("decision") or "deny"
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        self.permission_changed.wait(timeout=remaining)
+                self.store.expire_permission(task["id"], record["request_id"], task["run_id"])
                 return "deny"
 
             result = self.execution.run(

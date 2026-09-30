@@ -14,7 +14,7 @@ import socket
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -30,7 +30,9 @@ class WorkbenchError(Exception):
 ACTIVE = frozenset({"starting", "running", "waiting_approval"})
 FINISH = frozenset({"review", "failed", "cancelled", "interrupted"})
 MAX_TEXT = 1024 * 1024
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+PERMISSION_TIMEOUT = 120
+LIFECYCLES = frozenset({"active", "paused", "retired"})
 EMPLOYEE_STATUSES = frozenset({"installed", "auth_required", "available", "unavailable", "unknown"})
 SECRET_KEYS = frozenset(
     {"token", "secret_token", "password", "authorization", "api_key", "access_token"}
@@ -86,7 +88,9 @@ CREATE TABLE IF NOT EXISTS employees (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL,
     project_id TEXT NOT NULL REFERENCES projects(id),
     node_id TEXT NOT NULL REFERENCES devices(id), status TEXT NOT NULL,
-    detail TEXT NOT NULL, secret_token TEXT NOT NULL, created_at TEXT NOT NULL
+    detail TEXT NOT NULL, secret_token TEXT NOT NULL, created_at TEXT NOT NULL,
+    lifecycle TEXT NOT NULL DEFAULT 'active', lifecycle_reason TEXT NOT NULL DEFAULT '',
+    lifecycle_changed_at TEXT
 );
 CREATE TABLE IF NOT EXISTS memberships (
     employee_id TEXT NOT NULL REFERENCES employees(id),
@@ -115,7 +119,7 @@ CREATE TABLE IF NOT EXISTS permissions (
     task_id TEXT NOT NULL REFERENCES tasks(id), request_id TEXT NOT NULL,
     run_id TEXT NOT NULL, options TEXT NOT NULL, tool_call TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending', decision TEXT,
-    created_at TEXT NOT NULL, resolved_at TEXT,
+    created_at TEXT NOT NULL, resolved_at TEXT, expires_at TEXT,
     PRIMARY KEY(task_id, request_id)
 );
 CREATE TABLE IF NOT EXISTS memories (
@@ -126,6 +130,13 @@ CREATE TABLE IF NOT EXISTS resources (
     id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
     name TEXT NOT NULL, kind TEXT NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS governance_events (
+    id TEXT PRIMARY KEY, employee_id TEXT REFERENCES employees(id),
+    project_id TEXT REFERENCES projects(id), task_id TEXT REFERENCES tasks(id),
+    type TEXT NOT NULL, actor TEXT NOT NULL, reason TEXT NOT NULL,
+    payload TEXT, created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS governance_project ON governance_events(project_id,created_at);
 """
 
 
@@ -167,6 +178,28 @@ class WorkbenchStore:
                     columns = {row[1] for row in db.execute("PRAGMA table_info(tasks)")}
                     if "model" not in columns:
                         db.execute("ALTER TABLE tasks ADD COLUMN model TEXT")
+                    columns = {row[1] for row in db.execute("PRAGMA table_info(employees)")}
+                    if "lifecycle" not in columns:
+                        db.execute(
+                            "ALTER TABLE employees ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'active'"
+                        )
+                        db.execute(
+                            "ALTER TABLE employees ADD COLUMN lifecycle_reason TEXT NOT NULL DEFAULT ''"
+                        )
+                        db.execute("ALTER TABLE employees ADD COLUMN lifecycle_changed_at TEXT")
+                    columns = {row[1] for row in db.execute("PRAGMA table_info(permissions)")}
+                    if "expires_at" not in columns:
+                        db.execute("ALTER TABLE permissions ADD COLUMN expires_at TEXT")
+                    for row in db.execute(
+                        "SELECT task_id,request_id,created_at FROM permissions WHERE expires_at IS NULL"
+                    ).fetchall():
+                        deadline = datetime.fromisoformat(row["created_at"]) + timedelta(
+                            seconds=PERMISSION_TIMEOUT
+                        )
+                        db.execute(
+                            "UPDATE permissions SET expires_at=? WHERE task_id=? AND request_id=?",
+                            (deadline.isoformat(), row["task_id"], row["request_id"]),
+                        )
                     db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                     db.commit()
                 except BaseException:
@@ -338,13 +371,17 @@ class WorkbenchStore:
                 node_id = db.execute("SELECT id FROM devices WHERE is_local=1").fetchone()[0]
             self._required(db, "devices", node_id)
             existing = db.execute(
-                "SELECT id FROM employees WHERE name=? AND kind=? AND node_id=?",
+                "SELECT id,lifecycle FROM employees WHERE name=? AND kind=? AND node_id=?",
                 (name, kind, node_id),
             ).fetchone()
             employee_id = existing[0] if existing else _id("employee")
+            if existing and existing["lifecycle"] == "retired":
+                raise WorkbenchError(
+                    "employee_retired", "这位员工已退役。请使用新名称建立新的员工身份。"
+                )
             if not existing:
                 db.execute(
-                    "INSERT INTO employees VALUES(?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO employees(id,name,kind,project_id,node_id,status,detail,secret_token,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
                     (
                         employee_id,
                         name,
@@ -357,11 +394,121 @@ class WorkbenchStore:
                         _now(),
                     ),
                 )
-            db.execute(
+            added = db.execute(
                 "INSERT OR IGNORE INTO memberships VALUES(?,?,?)",
                 (employee_id, project_id, secrets.token_urlsafe(32)),
             )
+            if added.rowcount:
+                self._governance(
+                    db,
+                    "employee_joined",
+                    employee_id=employee_id,
+                    project_id=project_id,
+                    actor="human" if node_id == self.local_node_id(db) else f"device:{node_id}",
+                    reason="员工已加入项目。",
+                )
             return self._employee(db, self._required(db, "employees", employee_id))
+
+    @staticmethod
+    def local_node_id(db: sqlite3.Connection) -> str:
+        return db.execute("SELECT id FROM devices WHERE is_local=1").fetchone()[0]
+
+    def _governance(
+        self,
+        db,
+        event_type,
+        *,
+        employee_id=None,
+        project_id=None,
+        task_id=None,
+        actor="human",
+        reason="",
+        payload=None,
+    ):
+        clean = self._scrub(db, payload)
+        reason = self._scrub(db, reason)
+        event_id = _id("governance")
+        db.execute(
+            "INSERT INTO governance_events VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                event_id,
+                employee_id,
+                project_id,
+                task_id,
+                event_type,
+                actor,
+                reason,
+                _json(clean),
+                _now(),
+            ),
+        )
+        return self._entity(self._required(db, "governance_events", event_id))
+
+    def governance_events(self, project_id: str | None = None) -> list[dict]:
+        with self._connection() as db:
+            clause, params = "", []
+            if project_id is not None:
+                self._required(db, "projects", project_id)
+                clause, params = " WHERE project_id=? OR project_id IS NULL", [project_id]
+            rows = db.execute(
+                "SELECT * FROM governance_events"
+                + clause
+                + " ORDER BY created_at DESC,rowid DESC LIMIT 200",
+                params,
+            )
+            return self._scrub(db, [self._entity(row) for row in rows])
+
+    def set_employee_lifecycle(self, employee_id: str, status: str, reason: str = "") -> dict:
+        _choice(status, LIFECYCLES, "请选择正常、暂停或退役。")
+        reason = _text(reason, "变更原因", 4096, empty=status != "retired").strip()
+        with self._transaction() as db:
+            employee = self._required(db, "employees", employee_id)
+            reason = self._scrub(db, reason)
+            previous = employee["lifecycle"]
+            if previous == "retired" and status != "retired":
+                raise WorkbenchError("employee_retired", "退役身份不能恢复，请建立新的员工身份。")
+            if previous == status:
+                return {"employee": self._employee(db, employee), "tasks": []}
+            timestamp = _now()
+            db.execute(
+                "UPDATE employees SET lifecycle=?,lifecycle_reason=?,lifecycle_changed_at=? WHERE id=?",
+                (status, reason, timestamp, employee_id),
+            )
+            tasks = []
+            if status == "retired":
+                # Validation revokes every project capability in this transaction.
+                # Retain old secrets privately so historical redaction still works.
+                for task in db.execute(
+                    "SELECT * FROM tasks WHERE assignee_id=? AND status IN ('queued','starting','running','waiting_approval')",
+                    (employee_id,),
+                ).fetchall():
+                    db.execute(
+                        "UPDATE tasks SET status=?,cancel_requested=1,updated_at=? WHERE id=?",
+                        (
+                            "cancelled" if task["status"] == "queued" else task["status"],
+                            timestamp,
+                            task["id"],
+                        ),
+                    )
+                    self._expire_permissions(db, task["id"])
+                    self._event(
+                        db,
+                        task["id"],
+                        "employee_retired",
+                        "员工退役，排队任务已取消；执行中的任务已请求停止。",
+                    )
+                    tasks.append(self._entity(self._required(db, "tasks", task["id"])))
+            self._governance(
+                db,
+                "employee_lifecycle",
+                employee_id=employee_id,
+                reason=reason,
+                payload={"previous": previous, "status": status},
+            )
+            return {
+                "employee": self._employee(db, self._required(db, "employees", employee_id)),
+                "tasks": tasks,
+            }
 
     def update_employee(self, employee_id: str, status: str, detail: str = "") -> dict:
         _choice(status, EMPLOYEE_STATUSES, "请选择有效的员工连接状态。")
@@ -381,6 +528,7 @@ class WorkbenchStore:
         assignee_id: str,
         permission_mode: str = "read-only",
         model: str | None = None,
+        actor: str = "human",
     ) -> dict:
         if model is not None:
             model = _text(model, "模型", 200).strip()
@@ -394,6 +542,10 @@ class WorkbenchStore:
         with self._transaction() as db:
             self._required(db, "projects", project_id)
             employee = self._required(db, "employees", assignee_id)
+            if employee["lifecycle"] != "active":
+                raise WorkbenchError(
+                    "employee_inactive", "这位员工已暂停或退役，请选择正常工作的员工。"
+                )
             if not self._membership(db, assignee_id, project_id):
                 raise WorkbenchError("permission_denied", "这位员工未加入该项目。")
             task_id, timestamp = _id("task"), _now()
@@ -417,6 +569,15 @@ class WorkbenchStore:
                 ),
             )
             self._event(db, task_id, "queued", "任务已进入队列。")
+            self._governance(
+                db,
+                "task_dispatched",
+                employee_id=assignee_id,
+                project_id=project_id,
+                task_id=task_id,
+                actor=actor,
+                payload={"permission_mode": permission_mode},
+            )
             return self._entity(self._required(db, "tasks", task_id))
 
     def claim_task(self, node_id: str, project_ids: list[str] | None = None) -> dict | None:
@@ -439,6 +600,7 @@ class WorkbenchStore:
             row = db.execute(
                 "SELECT t.* FROM tasks t WHERE t.node_id=? AND t.status='queued' "
                 + scope_clause
+                + "AND EXISTS (SELECT 1 FROM employees e WHERE e.id=t.assignee_id AND e.lifecycle='active') "
                 + "AND NOT EXISTS (SELECT 1 FROM tasks a WHERE a.assignee_id=t.assignee_id "
                 "AND a.status IN ('starting','running','waiting_approval')) "
                 "ORDER BY t.created_at,t.rowid LIMIT 1",
@@ -552,7 +714,7 @@ class WorkbenchStore:
             task = self._required(db, "tasks", task_id)
             if task["status"] not in ACTIVE:
                 raise WorkbenchError("invalid_state", "这次执行已结束或尚未开始。")
-            if task["cancel_requested"] and status == "review":
+            if task["cancel_requested"] and status in {"review", "failed"}:
                 status = "cancelled"
             db.execute(
                 "UPDATE tasks SET status=?,result=?,error=?,updated_at=? WHERE id=?",
@@ -586,6 +748,15 @@ class WorkbenchStore:
                 (status, error, _now(), task_id),
             )
             self._event(db, task_id, "reviewed", note or "验收决定已保存。", {"decision": decision})
+            self._governance(
+                db,
+                "task_reviewed",
+                employee_id=task["assignee_id"],
+                project_id=task["project_id"],
+                task_id=task_id,
+                reason=note,
+                payload={"decision": decision, "run_id": task["run_id"]},
+            )
             return self._entity(self._required(db, "tasks", task_id))
 
     def cancel_task(self, task_id: str) -> dict:
@@ -659,16 +830,21 @@ class WorkbenchStore:
                 ):
                     raise WorkbenchError("invalid_state", "权限请求内容已改变，请发起新的请求。")
                 return self._entity(existing)
+            timestamp = _now()
+            deadline = (
+                datetime.fromisoformat(timestamp) + timedelta(seconds=PERMISSION_TIMEOUT)
+            ).isoformat()
             db.execute(
                 "INSERT INTO permissions(task_id,request_id,run_id,options,tool_call,"
-                "created_at) VALUES(?,?,?,?,?,?)",
+                "created_at,expires_at) VALUES(?,?,?,?,?,?,?)",
                 (
                     task_id,
                     request_id,
                     task["run_id"],
                     _json(clean["options"]),
                     _json(clean["tool_call"]),
-                    _now(),
+                    timestamp,
+                    deadline,
                 ),
             )
             db.execute(
@@ -698,8 +874,81 @@ class WorkbenchStore:
             self._required(db, "tasks", task_id)
             return self._permission(db, task_id, request_id)
 
+    def _permission_live(self, db, task, permission) -> bool:
+        return (
+            task["status"] in {"running", "waiting_approval"}
+            and not task["cancel_requested"]
+            and permission["run_id"] == task["run_id"]
+            and self._required(db, "employees", task["assignee_id"])["lifecycle"] != "retired"
+            and permission["expires_at"] is not None
+            and datetime.fromisoformat(permission["expires_at"]) > datetime.now(timezone.utc)
+        )
+
+    def _expire_one_permission(self, db, task, request_id, *, invalidate_resolved=False):
+        allowed = "('pending','resolved')" if invalidate_resolved else "('pending')"
+        changed = db.execute(
+            "UPDATE permissions SET status='expired',decision='deny',resolved_at=? "
+            f"WHERE task_id=? AND request_id=? AND status IN {allowed}",
+            (_now(), task["id"], request_id),
+        )
+        if not changed.rowcount:
+            return
+        if (
+            task["status"] == "waiting_approval"
+            and not task["cancel_requested"]
+            and not db.execute(
+                "SELECT 1 FROM permissions WHERE task_id=? AND status='pending'", (task["id"],)
+            ).fetchone()
+        ):
+            db.execute(
+                "UPDATE tasks SET status='running',updated_at=? WHERE id=?", (_now(), task["id"])
+            )
+        self._event(
+            db,
+            task["id"],
+            "permission_expired",
+            "权限请求已过期，默认拒绝。",
+            {"request_id": request_id},
+        )
+        self._governance(
+            db,
+            "permission_expired",
+            employee_id=task["assignee_id"],
+            project_id=task["project_id"],
+            task_id=task["id"],
+            actor="runtime",
+            payload={"request_id": request_id, "run_id": task["run_id"]},
+        )
+
+    def permission_decision(self, task_id: str, request_id: str, run_id: str) -> dict:
+        with self._transaction() as db:
+            task = self._required(db, "tasks", task_id)
+            permission = self._permission(db, task_id, request_id)
+            if run_id != task["run_id"] or run_id != permission["run_id"]:
+                raise WorkbenchError("permission_denied", "这次执行与权限请求不匹配。")
+            if not self._permission_live(db, task, permission):
+                if permission["status"] == "pending":
+                    self._expire_one_permission(db, task, request_id)
+                return {
+                    **self._permission(db, task_id, request_id),
+                    "decision": "deny",
+                    "status": "expired",
+                }
+            return permission
+
+    def expire_permission(self, task_id: str, request_id: str, run_id: str) -> dict:
+        with self._transaction() as db:
+            task = self._required(db, "tasks", task_id)
+            permission = self._permission(db, task_id, request_id)
+            if run_id != task["run_id"] or run_id != permission["run_id"]:
+                raise WorkbenchError("permission_denied", "这次执行与权限请求不匹配。")
+            if permission["status"] in {"pending", "resolved"}:
+                self._expire_one_permission(db, task, request_id, invalidate_resolved=True)
+            return self._permission(db, task_id, request_id)
+
     def resolve_permission(self, task_id: str, request_id: str, decision: str) -> dict:
         _choice(decision, {"allow_once", "deny"}, "请选择仅本次允许或拒绝。")
+        expired = False
         with self._transaction() as db:
             task = self._required(db, "tasks", task_id)
             permission = self._permission(db, task_id, request_id)
@@ -710,33 +959,58 @@ class WorkbenchStore:
                 or permission["status"] != "pending"
             ):
                 raise WorkbenchError("invalid_state", "这次权限请求已处理或执行已过期。")
-            cursor = db.execute(
-                "UPDATE permissions SET status='resolved',decision=?,resolved_at=? "
-                "WHERE task_id=? AND request_id=? AND status='pending'",
-                (
-                    decision,
-                    _now(),
-                    task_id,
-                    request_id,
-                ),
+            if not self._permission_live(db, task, permission):
+                self._expire_one_permission(db, task, request_id)
+                expired = True
+            else:
+                return self._resolve_permission(db, task, request_id, decision)
+        if expired:
+            raise WorkbenchError(
+                "permission_expired", "权限请求已过期并默认拒绝，请让员工重新请求。"
             )
-            if cursor.rowcount != 1:
-                raise WorkbenchError("invalid_state", "这次权限请求已被其他操作处理。")
-            pending = db.execute(
-                "SELECT 1 FROM permissions WHERE task_id=? AND status='pending'", (task_id,)
-            ).fetchone()
-            if not pending:
-                db.execute(
-                    "UPDATE tasks SET status='running',updated_at=? WHERE id=?", (_now(), task_id)
-                )
-            self._event(
-                db,
+
+    def _resolve_permission(self, db, task, request_id, decision):
+        task_id = task["id"]
+        if decision == "allow_once" and not any(
+            isinstance(option, dict) and option.get("kind") == "allow_once"
+            for option in self._permission(db, task_id, request_id)["options"]
+        ):
+            raise WorkbenchError("invalid_field", "员工没有提供仅本次允许的选项，请拒绝这次操作。")
+        cursor = db.execute(
+            "UPDATE permissions SET status='resolved',decision=?,resolved_at=? "
+            "WHERE task_id=? AND request_id=? AND status='pending'",
+            (
+                decision,
+                _now(),
                 task_id,
-                "permission_resolved",
-                "权限决定已保存。",
-                {"request_id": request_id, "decision": decision},
+                request_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise WorkbenchError("invalid_state", "这次权限请求已被其他操作处理。")
+        pending = db.execute(
+            "SELECT 1 FROM permissions WHERE task_id=? AND status='pending'", (task_id,)
+        ).fetchone()
+        if not pending:
+            db.execute(
+                "UPDATE tasks SET status='running',updated_at=? WHERE id=?", (_now(), task_id)
             )
-            return self._permission(db, task_id, request_id)
+        self._event(
+            db,
+            task_id,
+            "permission_resolved",
+            "权限决定已保存。",
+            {"request_id": request_id, "decision": decision},
+        )
+        self._governance(
+            db,
+            "permission_decided",
+            employee_id=task["assignee_id"],
+            project_id=task["project_id"],
+            task_id=task_id,
+            payload={"request_id": request_id, "run_id": task["run_id"], "decision": decision},
+        )
+        return self._permission(db, task_id, request_id)
 
     def add_memory(self, project_id: str, title: str, body: str, source: str = "human") -> dict:
         title = _text(title, "记忆标题", 300).strip()
@@ -851,7 +1125,8 @@ class WorkbenchStore:
             result: dict[str, Any] = {
                 "project": project,
                 "employees": [
-                    {k: row[k] for k in ("id", "name", "kind", "node_id", "status")} for row in team
+                    {k: row[k] for k in ("id", "name", "kind", "node_id", "status", "lifecycle")}
+                    for row in team
                 ],
             }
             for table in ("tasks", "resources", "memories"):
@@ -886,11 +1161,13 @@ class WorkbenchStore:
 
     def employee_credentials(self, employee_id: str, project_id: str) -> dict:
         with self._connection() as db:
-            self._required(db, "employees", employee_id)
+            employee = self._required(db, "employees", employee_id)
+            if employee["lifecycle"] == "retired":
+                raise WorkbenchError("employee_retired", "这位员工已退役，项目授权已撤销。")
             if not self._membership(db, employee_id, project_id):
                 raise WorkbenchError("permission_denied", "这位员工没有该项目的访问权限。")
             token = db.execute(
-                "SELECT secret_token FROM memberships WHERE employee_id=? AND project_id=?",
+                "SELECT m.secret_token FROM memberships m JOIN employees e ON e.id=m.employee_id WHERE m.employee_id=? AND m.project_id=? AND e.lifecycle!='retired'",
                 (employee_id, project_id),
             ).fetchone()[0]
             return {"token": token, "employee_id": employee_id, "project_id": project_id}
@@ -903,7 +1180,7 @@ class WorkbenchStore:
             return False
         with self._connection() as db:
             employee = db.execute(
-                "SELECT secret_token FROM memberships WHERE employee_id=? AND project_id=?",
+                "SELECT m.secret_token FROM memberships m JOIN employees e ON e.id=m.employee_id WHERE m.employee_id=? AND m.project_id=? AND e.lifecycle!='retired'",
                 (employee_id, project_id),
             ).fetchone()
             expected = employee[0] if employee else "0" * 43

@@ -255,3 +255,40 @@ def test_cancelled_before_launch_does_not_start_a_process(tmp_path):
     result = execution.run({}, {}, [], lambda e: None, lambda e: "deny", lambda: True)
     assert result["status"] == "cancelled"
     assert not flag.exists()
+
+
+def test_owner_lifecycle_api_revokes_access_and_stops_owned_child(bench):
+    server, project, employee = bench
+    creds = server.store.employee_credentials(employee["id"], project["id"])
+    path = "employees/" + employee["id"] + "/lifecycle"
+    assert request(server, path, {"status": "paused"}, token=creds["token"])[0] == 401
+    assert request(server, path, {"status": "paused", "reason": "休息"})[0] == 200
+    denied, _ = request(
+        server,
+        "tasks",
+        {
+            "project_id": project["id"],
+            "title": "Test",
+            "prompt": "simple",
+            "assignee_id": employee["id"],
+        },
+    )
+    assert denied == 400
+    request(server, path, {"status": "active"})
+    task = dispatch(bench, "wait")
+    await_state(server, task["id"], "running")
+    assert request(server, path, {"status": "retired", "reason": "项目结束"})[0] == 200
+    await_state(server, task["id"], "cancelled")
+    assert (
+        request(
+            server,
+            "notify",
+            {"employee_id": employee["id"], "project_id": project["id"]},
+            token=creds["token"],
+        )[0]
+        == 401
+    )
+    code, ledger = request(server, "governance?project_id=" + project["id"])
+    assert code == 200
+    assert any(event["type"] == "employee_lifecycle" for event in ledger["events"])
+    assert creds["token"] not in json.dumps(ledger)

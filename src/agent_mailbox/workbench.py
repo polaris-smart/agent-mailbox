@@ -393,6 +393,17 @@ class Handler(BaseHTTPRequestHandler):
                 data.get("model"),
             )
             self.server.notify()
+        elif (
+            method == "POST"
+            and len(route) == 3
+            and route[0] == "employees"
+            and route[2] == "lifecycle"
+        ):
+            result = store.set_employee_lifecycle(route[1], data["status"], data.get("reason", ""))
+            self.server.notify()
+        elif method == "GET" and route == ["governance"]:
+            query = parse_qs(url.query)
+            result = {"events": store.governance_events(query.get("project_id", [None])[0])}
         elif method == "GET" and len(route) == 2 and route[0] == "tasks":
             result = store.task_detail(route[1])
         elif method == "POST" and len(route) == 3 and route[0] == "tasks":
