@@ -331,8 +331,12 @@ class Handler(BaseHTTPRequestHandler):
         token = bearer[7:] if bearer.startswith("Bearer ") else ""
         data = self.body() if self.command in {"POST", "DELETE"} else {}
         if path == PREFIX + "/notify" and self.command == "POST":
-            if not self.server.store.validate_employee(
-                token, data.get("employee_id", ""), data.get("project_id", "")
+            if not self.server.store.validate_execution(
+                token,
+                data.get("employee_id", ""),
+                data.get("project_id", ""),
+                data.get("task_id", ""),
+                data.get("run_id", ""),
             ):
                 raise WorkbenchError("UNAUTHORIZED", "This employee cannot notify this project.")
             self.server.notify()
@@ -378,6 +382,34 @@ class Handler(BaseHTTPRequestHandler):
             }
         elif method == "POST" and route == ["projects"]:
             result = store.create_project(data["name"], data["path"])
+        elif len(route) >= 3 and route[0] == "projects" and route[2] == "members":
+            if method == "POST" and len(route) == 3:
+                result = store.add_project_member(route[1], data["employee_id"])
+            elif method == "DELETE" and len(route) == 4:
+                result = store.remove_project_member(route[1], route[3])
+            else:
+                raise WorkbenchError("NOT_FOUND", "Unknown membership action.")
+        elif len(route) == 3 and route[0] == "projects" and route[2] == "messages":
+            if method == "GET":
+                result = {"messages": store.list_messages(route[1])}
+            elif method == "POST":
+                if "sender_id" in data or "source_task_id" in data:
+                    raise WorkbenchError(
+                        "IDENTITY_FORBIDDEN", "Human messages cannot impersonate an employee."
+                    )
+                result = store.send_message(
+                    route[1],
+                    data["title"],
+                    data["body"],
+                    recipient_id=data.get("recipient_id"),
+                    reply_to=data.get("reply_to"),
+                    request_work=data.get("request_work", False),
+                    request_id=data.get("request_id"),
+                )
+                if result.get("task_id"):
+                    self.server.notify()
+            else:
+                raise WorkbenchError("NOT_FOUND", "Unknown message action.")
         elif method == "POST" and route == ["pick-project"]:
             result = pick_project()
         elif method == "GET" and route == ["models"]:
@@ -387,11 +419,23 @@ class Handler(BaseHTTPRequestHandler):
             result = {"employees": discover_employees()}
         elif method == "POST" and route == ["employees"]:
             kind = data["kind"]
-            if kind not in {"codex", "claude"}:
+            connection_type = data.get("connection_type", "cli")
+            entrypoint = data.get("entrypoint")
+            discovered = next(
+                (
+                    e
+                    for e in discover_employees()
+                    if e["kind"] == kind
+                    and e.get("connection_type", "cli") == connection_type
+                    and (entrypoint is None or e.get("entrypoint", e.get("binary")) == entrypoint)
+                ),
+                None,
+            )
+            if discovered is None:
                 raise WorkbenchError(
-                    "AGENT_UNSUPPORTED", "Choose an agent with a supported execution adapter."
+                    "AGENT_NOT_DISCOVERED",
+                    "Discover this agent entry point again before registering it.",
                 )
-            discovered = next(e for e in discover_employees() if e["kind"] == kind)
             if data.get("node_id") not in {None, store.local_node()["id"]}:
                 raise WorkbenchError(
                     "REMOTE_REGISTRATION", "Connect the remote node before adding its employees."
@@ -399,9 +443,12 @@ class Handler(BaseHTTPRequestHandler):
             result = store.create_employee(
                 data["name"],
                 kind,
-                data["project_id"],
+                data.get("project_id"),
                 status=discovered["status"],
                 detail=discovered["detail"],
+                connection_type=connection_type,
+                entrypoint=discovered.get("entrypoint", discovered.get("binary")) or "",
+                auth_status=discovered.get("auth_status", "unknown"),
             )
         elif method == "POST" and route == ["tasks"]:
             result = store.create_task(
@@ -413,6 +460,37 @@ class Handler(BaseHTTPRequestHandler):
                 data.get("model"),
             )
             self.server.notify()
+        elif (
+            method == "POST" and len(route) == 3 and route[0] == "employees" and route[2] == "check"
+        ):
+            employee = next((e for e in store.snapshot()["employees"] if e["id"] == route[1]), None)
+            if employee is None:
+                raise WorkbenchError("NOT_FOUND", "Employee not found.")
+            if employee["node_id"] != store.local_node()["id"]:
+                raise WorkbenchError(
+                    "REMOTE_CHECK_UNAVAILABLE", "Check agent authentication on its own device."
+                )
+            candidate = next(
+                (
+                    e
+                    for e in discover_employees()
+                    if e["kind"] == employee["kind"]
+                    and e.get("connection_type", "cli") == employee["connection_type"]
+                    and (
+                        not employee["entrypoint"]
+                        or e.get("entrypoint", e.get("binary")) == employee["entrypoint"]
+                    )
+                ),
+                None,
+            )
+            result = store.update_employee(
+                employee["id"],
+                candidate["status"] if candidate else "unavailable",
+                candidate["detail"]
+                if candidate
+                else "This registered entry point was not found. Execution is not verified by discovery.",
+                auth_status=candidate.get("auth_status", "unknown") if candidate else "unknown",
+            )
         elif (
             method == "POST"
             and len(route) == 3

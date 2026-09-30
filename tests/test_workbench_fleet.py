@@ -663,7 +663,7 @@ def test_blocking_control_wakes_on_owner_cancel_and_returns_terminal(fleet, tmp_
 
 def test_remote_project_tools_context_notes_resources_and_team_dispatch(fleet, tmp_path):
     owner, project, _, coordinator = fleet
-    client = paired(fleet, tmp_path)
+    client = mapped(fleet, tmp_path)
     employee = client.register_employee(project["id"], "Remote", "codex")
     colleague = owner.create_employee("Local reviewer", "claude", project["id"])
     changes = threading.Event()
@@ -671,11 +671,15 @@ def test_remote_project_tools_context_notes_resources_and_team_dispatch(fleet, t
     context = client.project_tool(project["id"], employee["id"], "context", {})
     assert {row["id"] for row in context["employees"]} == {employee["id"], colleague["id"]}
     assert "path" not in context["project"]
+    source_task = owner.create_task(project["id"], "Source", "Request review", employee["id"])
+    client.claim(project["id"], wait=0)
     note = client.project_tool(
         project["id"],
         employee["id"],
         "note",
         {"title": "Observation", "body": "Prefer clear tests"},
+        task_id=source_task["id"],
+        run_id=source_task["run_id"],
     )
     assert note["source"] == "employee:" + employee["id"]
     search = client.project_tool(project["id"], employee["id"], "memory_search", {"query": "tests"})
@@ -699,6 +703,8 @@ def test_remote_project_tools_context_notes_resources_and_team_dispatch(fleet, t
             "message": "Please review",
             "permission_mode": "all-access",
         },
+        task_id=source_task["id"],
+        run_id=source_task["run_id"],
     )
     assert receipt["status"] == "queued"
     assert changes.is_set()

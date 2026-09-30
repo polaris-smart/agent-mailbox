@@ -80,7 +80,7 @@ class WorkbenchEngine:
             task = {**task, "kind": employee["kind"]}
             if self.execution.command is None:
                 task["prompt"] = context_prompt(task, self.store.project_context(project["id"]))
-            creds = self.store.employee_credentials(employee["id"], project["id"])
+            creds = self.store.execution_credentials(task["id"])
             command, args = workspace_server_command()
             mcp_servers = [
                 {
@@ -93,6 +93,8 @@ class WorkbenchEngine:
                         {"name": "AGENT_MAIL_PROJECT", "value": project["id"]},
                         {"name": "AGENT_MAIL_WORKBENCH_URL", "value": self.endpoint},
                         {"name": "AGENT_MAIL_PROJECT_TOKEN", "value": creds["token"]},
+                        {"name": "AGENT_MAIL_TASK", "value": task["id"]},
+                        {"name": "AGENT_MAIL_RUN", "value": task["run_id"]},
                     ],
                 }
             ]
@@ -138,7 +140,10 @@ class WorkbenchEngine:
                 ):
                     self.store.expire_permission(task["id"], record["request_id"], task["run_id"])
                     return "deny"
-                deadline = min(run_deadline, time.monotonic() + min(120, timeout_ms / 1000))
+                duration = min(120, timeout_ms / 1000)
+                # Return the default denial before the native request expires,
+                # leaving a small transport allowance without extending consent.
+                deadline = min(run_deadline, time.monotonic() + duration - min(0.2, duration / 10))
                 # Hold the condition across the DB read so a human decision cannot
                 # be lost between observing pending and registering the waiter.
                 with self.permission_changed:
@@ -166,9 +171,15 @@ class WorkbenchEngine:
             )
             self.store.update_employee(
                 employee["id"],
-                "available" if status == "review" else "unknown",
+                "available"
+                if status == "review"
+                else "auth_required"
+                if (result.get("error") or {}).get("code") == "AUTH_REQUIRED"
+                else "unknown",
                 "Execution verified."
                 if status == "review"
+                else "The managed execution adapter requires authentication; native sign-in alone is not execution verification."
+                if (result.get("error") or {}).get("code") == "AUTH_REQUIRED"
                 else "Inspect the task for execution details.",
             )
         except Exception as exc:  # noqa: BLE001 - execution must leave a terminal state

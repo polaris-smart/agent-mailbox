@@ -105,9 +105,14 @@ function terminal(run, result) {
   runs.delete(run.id);
   for (const pending of run.permissions.values()) pending.finish({ outcome: "cancel" });
 }
-function controlError(message, input = {}) {
-  emit({ id: input.run_id, sessionId: input.session_id }, "control_error", {
-    error: { code: "INVALID_REQUEST", message: safeMessage(message) },
+function controlError(message, input = {}, code = "INVALID_REQUEST") {
+  const active = runs.get(input.run_id);
+  // Old controls may omit a session, but an explicitly foreign session must
+  // never be rewritten into a trusted event belonging to the active employee.
+  const owner = active && (input.session_id === undefined || input.session_id === active.sessionId)
+    ? active : { id: input.run_id, sessionId: input.session_id };
+  emit(owner, "control_error", {
+    error: { code, message: safeMessage(message) },
   });
 }
 async function writeJson(filename, value) {
@@ -432,10 +437,16 @@ function command(input) {
   } else if (input.op === "cancel") {
     const run = runs.get(input.run_id);
     if (!run) return controlError("No active run with this run_id", input);
+    if (input.session_id !== undefined && input.session_id !== run.sessionId) {
+      return controlError("Control session does not match the active run", input, "SESSION_CONTEXT_MISMATCH");
+    }
     run.controller.abort();
     if (run.turn) void run.turn.cancel({ reason: "Human cancelled run" }).catch(() => {});
   } else if (input.op === "permission") {
     const run = runs.get(input.run_id);
+    if (run && input.session_id !== undefined && input.session_id !== run.sessionId) {
+      return controlError("Control session does not match the active run", input, "SESSION_CONTEXT_MISMATCH");
+    }
     const pending = run?.permissions.get(input.request_id);
     if (!pending || run.controller.signal.aborted || !["allow_once", "deny"].includes(input.decision)) {
       return controlError("Permission request is invalid, expired or cancelled", input);

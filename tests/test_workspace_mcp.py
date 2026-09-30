@@ -32,7 +32,9 @@ def test_project_mcp_context_message_wakes_colleague(tmp_path):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     engine.start()
-    creds = store.employee_credentials(alice["id"], project["id"])
+    source = store.create_task(project["id"], "Source", "Ask a colleague", alice["id"])
+    source = store.claim_task(store.local_node()["id"])
+    creds = store.execution_credentials(source["id"])
     env = {
         **os.environ,
         "AGENT_MAIL_HOME": str(store.root),
@@ -40,6 +42,8 @@ def test_project_mcp_context_message_wakes_colleague(tmp_path):
         "AGENT_MAIL_PROJECT": project["id"],
         "AGENT_MAIL_PROJECT_TOKEN": creds["token"],
         "AGENT_MAIL_WORKBENCH_URL": server.endpoint,
+        "AGENT_MAIL_TASK": source["id"],
+        "AGENT_MAIL_RUN": source["run_id"],
     }
 
     async def client():
@@ -59,6 +63,8 @@ def test_project_mcp_context_message_wakes_colleague(tmp_path):
                 "project_resource_read",
                 "project_note",
                 "team_message",
+                "project_message",
+                "project_messages",
             }
             context = await session.call_tool("project_context", {})
             assert not context.is_error
@@ -71,15 +77,40 @@ def test_project_mcp_context_message_wakes_colleague(tmp_path):
                 "project_note", {"title": "Proposed", "body": "Agent observation"}
             )
             assert not note.is_error
+            ordinary = await session.call_tool(
+                "project_message",
+                {
+                    "title": "Progress",
+                    "body": "Reading shared material",
+                    "request_id": "ordinary-1",
+                },
+            )
+            assert not ordinary.is_error
+            assert len(store.snapshot()["tasks"]) == 1
             result = await session.call_tool(
                 "team_message",
                 {
                     "recipient_id": bob["id"],
                     "title": "Help",
                     "message": "Review shared project",
+                    "request_id": "help-1",
                 },
             )
             assert not result.is_error
+            replay = await session.call_tool(
+                "team_message",
+                {
+                    "recipient_id": bob["id"],
+                    "title": "Help",
+                    "message": "Review shared project",
+                    "request_id": "help-1",
+                },
+            )
+            assert not replay.is_error
+            assert len(store.snapshot()["tasks"]) == 2
+            messages = await session.call_tool("project_messages", {})
+            assert not messages.is_error
+            assert "employee_session" in json.dumps(messages.model_dump())
             # Cross-project recipient membership is validated by the domain store.
             outsider = store.create_employee("Outside", "codex", other["id"])
             refused = await session.call_tool(
@@ -92,7 +123,7 @@ def test_project_mcp_context_message_wakes_colleague(tmp_path):
         asyncio.run(client())
         end = time.monotonic() + 5
         while time.monotonic() < end:
-            tasks = store.snapshot()["tasks"]
+            tasks = [t for t in store.snapshot()["tasks"] if t["assignee_id"] == bob["id"]]
             if tasks and tasks[0]["status"] == "review":
                 break
             time.sleep(0.03)
@@ -102,6 +133,10 @@ def test_project_mcp_context_message_wakes_colleague(tmp_path):
             m["source"].startswith("employee:") for m in store.snapshot()["memories"]
         )
     finally:
+        store.finish_task(source["id"], "cancelled")
+        assert not store.validate_execution(
+            creds["token"], alice["id"], project["id"], source["id"], source["run_id"]
+        )
         server.shutdown()
         server.close()
         thread.join(timeout=2)

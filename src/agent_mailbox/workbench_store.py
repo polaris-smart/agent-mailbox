@@ -31,12 +31,38 @@ class WorkbenchError(Exception):
 ACTIVE = frozenset({"starting", "running", "waiting_approval"})
 FINISH = frozenset({"review", "failed", "cancelled", "interrupted"})
 MAX_TEXT = 1024 * 1024
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
+EMPLOYEE_KINDS = frozenset(
+    {
+        "codex",
+        "claude",
+        "gemini",
+        "opencode",
+        "zcode",
+        "hermes",
+        "workbuddy",
+        "deepseek",
+        "qwen",
+        "doubao",
+        "coze",
+        "ima",
+        "cursor",
+        "windsurf",
+        "trae",
+        "aider",
+        "qoder",
+        "kiro",
+        "ollama",
+    }
+)
+CONNECTION_TYPES = frozenset({"cli", "app", "endpoint"})
+AUTH_STATUSES = frozenset({"authenticated", "auth_required", "unknown", "not_checked"})
+MAX_REQUEST_CHAIN = 4
 PERMISSION_TIMEOUT = 120
 LIFECYCLES = frozenset({"active", "paused", "retired"})
 EMPLOYEE_STATUSES = frozenset({"installed", "auth_required", "available", "unavailable", "unknown"})
 SECRET_KEYS = frozenset(
-    {"token", "secret_token", "password", "authorization", "api_key", "access_token"}
+    {"token", "secret_token", "tool_token", "password", "authorization", "api_key", "access_token"}
 )
 
 
@@ -87,11 +113,13 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 CREATE TABLE IF NOT EXISTS employees (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL,
-    project_id TEXT NOT NULL REFERENCES projects(id),
+    project_id TEXT REFERENCES projects(id),
     node_id TEXT NOT NULL REFERENCES devices(id), status TEXT NOT NULL,
     detail TEXT NOT NULL, secret_token TEXT NOT NULL, created_at TEXT NOT NULL,
     lifecycle TEXT NOT NULL DEFAULT 'active', lifecycle_reason TEXT NOT NULL DEFAULT '',
-    lifecycle_changed_at TEXT
+    lifecycle_changed_at TEXT, connection_type TEXT NOT NULL DEFAULT 'cli',
+    entrypoint TEXT NOT NULL DEFAULT '', execution_verified INTEGER NOT NULL DEFAULT 0,
+    auth_status TEXT NOT NULL DEFAULT 'unknown'
 );
 CREATE TABLE IF NOT EXISTS memberships (
     employee_id TEXT NOT NULL REFERENCES employees(id),
@@ -107,7 +135,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     run_id TEXT NOT NULL UNIQUE, session_id TEXT NOT NULL UNIQUE,
     status TEXT NOT NULL DEFAULT 'queued', cancel_requested INTEGER NOT NULL DEFAULT 0,
     result TEXT NOT NULL DEFAULT '', error TEXT, model TEXT,
-    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    request_message_id TEXT REFERENCES messages(id), source_task_id TEXT REFERENCES tasks(id),
+    tool_token TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS tasks_queue ON tasks(node_id, status, created_at);
 CREATE TABLE IF NOT EXISTS events (
@@ -142,6 +172,18 @@ CREATE TABLE IF NOT EXISTS remote_receipts (
     task_id TEXT NOT NULL REFERENCES tasks(id), run_id TEXT NOT NULL,
     digest TEXT NOT NULL, PRIMARY KEY(task_id, run_id)
 );
+CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+    title TEXT NOT NULL, body TEXT NOT NULL,
+    sender_id TEXT REFERENCES employees(id), recipient_id TEXT REFERENCES employees(id),
+    reply_to TEXT REFERENCES messages(id), thread_id TEXT NOT NULL,
+    request_work INTEGER NOT NULL DEFAULT 0, task_id TEXT REFERENCES tasks(id),
+    source_task_id TEXT REFERENCES tasks(id), request_id TEXT, request_digest TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS messages_project ON messages(project_id,created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS messages_request ON messages(project_id,COALESCE(sender_id,''),request_id)
+    WHERE request_id IS NOT NULL;
 """
 
 
@@ -156,15 +198,36 @@ class WorkbenchStore:
         fd = os.open(self.db_path, os.O_CREAT | os.O_RDWR, 0o600)
         os.close(fd)
         self.db_path.chmod(0o600)
+        self.migration_backup_path = None
         with self._connection() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
             if version > SCHEMA_VERSION:
                 raise WorkbenchError("incompatible_version", "数据来自更新的版本，请升级程序。")
             if version < SCHEMA_VERSION:
-                # Apply schema creation separately so version-1 databases can
-                # receive the additive migration within the same write lock.
-                db.executescript("BEGIN IMMEDIATE;\n" + SCHEMA)
+                # Rebuilding the legacy NOT NULL employee origin must not
+                # rewrite child foreign keys or discard project credentials.
+                db.execute("PRAGMA foreign_keys=OFF")
+                db.execute("BEGIN IMMEDIATE")
                 try:
+                    version = db.execute("PRAGMA user_version").fetchone()[0]
+                    if version and version < SCHEMA_VERSION:
+                        destination = (
+                            self.directory
+                            / f"state-v{version}-before-v{SCHEMA_VERSION}-{uuid4().hex}.sqlite"
+                        )
+                        fd = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+                        os.close(fd)
+                        source = sqlite3.connect(self.db_path)
+                        target = sqlite3.connect(destination)
+                        try:
+                            source.backup(target)
+                        finally:
+                            source.close()
+                            target.close()
+                        self.migration_backup_path = destination
+                    for statement in SCHEMA.split(";"):
+                        if statement.strip():
+                            db.execute(statement)
                     columns = {row[1] for row in db.execute("PRAGMA table_info(devices)")}
                     if "last_seen" not in columns:
                         db.execute("ALTER TABLE devices ADD COLUMN last_seen TEXT")
@@ -183,6 +246,20 @@ class WorkbenchStore:
                     columns = {row[1] for row in db.execute("PRAGMA table_info(tasks)")}
                     if "model" not in columns:
                         db.execute("ALTER TABLE tasks ADD COLUMN model TEXT")
+                    for column, definition in (
+                        ("request_message_id", "TEXT REFERENCES messages(id)"),
+                        ("source_task_id", "TEXT REFERENCES tasks(id)"),
+                        ("tool_token", "TEXT"),
+                    ):
+                        if column not in columns:
+                            db.execute(f"ALTER TABLE tasks ADD COLUMN {column} {definition}")
+                    for row in db.execute(
+                        "SELECT id FROM tasks WHERE tool_token IS NULL"
+                    ).fetchall():
+                        db.execute(
+                            "UPDATE tasks SET tool_token=? WHERE id=?",
+                            (secrets.token_urlsafe(32), row[0]),
+                        )
                     columns = {row[1] for row in db.execute("PRAGMA table_info(employees)")}
                     if "lifecycle" not in columns:
                         db.execute(
@@ -192,6 +269,30 @@ class WorkbenchStore:
                             "ALTER TABLE employees ADD COLUMN lifecycle_reason TEXT NOT NULL DEFAULT ''"
                         )
                         db.execute("ALTER TABLE employees ADD COLUMN lifecycle_changed_at TEXT")
+                    for column, definition in (
+                        ("connection_type", "TEXT NOT NULL DEFAULT 'cli'"),
+                        ("entrypoint", "TEXT NOT NULL DEFAULT ''"),
+                        ("execution_verified", "INTEGER NOT NULL DEFAULT 0"),
+                        ("auth_status", "TEXT NOT NULL DEFAULT 'unknown'"),
+                    ):
+                        if column not in columns:
+                            db.execute(f"ALTER TABLE employees ADD COLUMN {column} {definition}")
+                    employee_columns = db.execute("PRAGMA table_info(employees)").fetchall()
+                    if next(row for row in employee_columns if row[1] == "project_id")[3]:
+                        employee_schema = next(
+                            statement
+                            for statement in SCHEMA.split(";")
+                            if "CREATE TABLE IF NOT EXISTS employees (" in statement
+                        )
+                        db.execute(
+                            employee_schema.replace("IF NOT EXISTS employees", "employees_v6")
+                        )
+                        names = ",".join(row[1] for row in employee_columns)
+                        db.execute(
+                            f"INSERT INTO employees_v6({names}) SELECT {names} FROM employees"
+                        )
+                        db.execute("DROP TABLE employees")
+                        db.execute("ALTER TABLE employees_v6 RENAME TO employees")
                     columns = {row[1] for row in db.execute("PRAGMA table_info(permissions)")}
                     if "expires_at" not in columns:
                         db.execute("ALTER TABLE permissions ADD COLUMN expires_at TEXT")
@@ -205,11 +306,18 @@ class WorkbenchStore:
                             "UPDATE permissions SET expires_at=? WHERE task_id=? AND request_id=?",
                             (deadline.isoformat(), row["task_id"], row["request_id"]),
                         )
+                    if db.execute("PRAGMA foreign_key_check").fetchone():
+                        raise WorkbenchError(
+                            "migration_failed",
+                            "数据关联检查失败，原数据库已保留，请恢复迁移前备份。",
+                        )
                     db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                     db.commit()
                 except BaseException:
                     db.rollback()
                     raise
+                finally:
+                    db.execute("PRAGMA foreign_keys=ON")
         with self._transaction() as db:
             if not db.execute("SELECT id FROM devices WHERE is_local=1").fetchone():
                 db.execute(
@@ -264,7 +372,9 @@ class WorkbenchStore:
     def _entity(row: sqlite3.Row) -> dict:
         result = dict(row)
         result.pop("secret_token", None)
-        for key in ("cancel_requested", "is_local"):
+        result.pop("tool_token", None)
+        result.pop("request_digest", None)
+        for key in ("cancel_requested", "is_local", "execution_verified", "request_work"):
             if key in result:
                 result[key] = bool(result[key])
         for key in ("payload", "options", "tool_call", "error"):
@@ -277,7 +387,7 @@ class WorkbenchStore:
         tokens = [
             row[0]
             for row in db.execute(
-                "SELECT secret_token FROM employees UNION SELECT secret_token FROM memberships"
+                "SELECT secret_token FROM employees UNION SELECT secret_token FROM memberships UNION SELECT tool_token FROM tasks"
             )
             if row[0]
         ]
@@ -321,6 +431,12 @@ class WorkbenchStore:
 
     def _employee(self, db: sqlite3.Connection, row: sqlite3.Row) -> dict:
         employee = self._entity(row)
+        employee["execution_supported"] = (
+            row["kind"] in {"codex", "claude"} and row["connection_type"] == "cli"
+        )
+        employee["execution_verified"] = bool(
+            row["execution_verified"] and employee["execution_supported"]
+        )
         employee["project_ids"] = [
             member[0]
             for member in db.execute(
@@ -328,16 +444,28 @@ class WorkbenchStore:
                 (row["id"],),
             )
         ]
-        return employee
+        return self._scrub(db, employee)
 
     def snapshot(self) -> dict:
         with self._connection() as db:
             db.execute("BEGIN")
             result = {}
-            for table in ("projects", "employees", "tasks", "resources", "memories", "devices"):
+            for table in (
+                "projects",
+                "employees",
+                "tasks",
+                "resources",
+                "memories",
+                "devices",
+                "messages",
+            ):
                 rows = db.execute(f"SELECT * FROM {table} ORDER BY created_at,rowid")
                 result[table] = [
-                    self._employee(db, row) if table == "employees" else self._entity(row)
+                    self._employee(db, row)
+                    if table == "employees"
+                    else self._message(db, row)
+                    if table == "messages"
+                    else self._entity(row)
                     for row in rows
                 ]
             return self._scrub(db, result)
@@ -361,22 +489,29 @@ class WorkbenchStore:
         self,
         name: str,
         kind: str,
-        project_id: str,
+        project_id: str | None = None,
         node_id: str | None = None,
         status: str = "unknown",
         detail: str = "",
+        connection_type: str = "cli",
+        entrypoint: str = "",
+        auth_status: str = "unknown",
     ) -> dict:
         name = _text(name, "员工名称", 200).strip()
-        _choice(kind, {"codex", "claude"}, "目前支持 Codex 和 Claude 员工。")
+        _choice(kind, EMPLOYEE_KINDS, "请选择已支持登记的 AI 工具类型。")
+        _choice(connection_type, CONNECTION_TYPES, "请选择命令行、应用或服务连接。")
+        _choice(auth_status, AUTH_STATUSES, "请选择有效的登录确认状态。")
+        entrypoint = _text(entrypoint, "连接入口", 4096, empty=True).strip()
         _choice(status, EMPLOYEE_STATUSES, "请选择有效的员工连接状态。")
         detail = _text(detail, "状态说明", 4096, empty=True)
         with self._transaction() as db:
-            self._required(db, "projects", project_id)
+            if project_id is not None:
+                self._required(db, "projects", project_id)
             if node_id is None:
                 node_id = db.execute("SELECT id FROM devices WHERE is_local=1").fetchone()[0]
             self._required(db, "devices", node_id)
             existing = db.execute(
-                "SELECT id,lifecycle FROM employees WHERE name=? AND kind=? AND node_id=?",
+                "SELECT id,lifecycle,connection_type,entrypoint FROM employees WHERE name=? AND kind=? AND node_id=?",
                 (name, kind, node_id),
             ).fetchone()
             employee_id = existing[0] if existing else _id("employee")
@@ -384,9 +519,17 @@ class WorkbenchStore:
                 raise WorkbenchError(
                     "employee_retired", "这位员工已退役。请使用新名称建立新的员工身份。"
                 )
+            if existing and (
+                existing["connection_type"] != connection_type
+                or (existing["entrypoint"] and entrypoint and existing["entrypoint"] != entrypoint)
+            ):
+                raise WorkbenchError(
+                    "IDENTITY_CONNECTION_CONFLICT",
+                    "该身份已经使用另一连接入口，请为不同连接建立新员工身份。",
+                )
             if not existing:
                 db.execute(
-                    "INSERT INTO employees(id,name,kind,project_id,node_id,status,detail,secret_token,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO employees(id,name,kind,project_id,node_id,status,detail,secret_token,created_at,connection_type,entrypoint,auth_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         employee_id,
                         name,
@@ -397,21 +540,94 @@ class WorkbenchStore:
                         detail,
                         secrets.token_urlsafe(32),
                         _now(),
+                        connection_type,
+                        entrypoint,
+                        auth_status,
                     ),
                 )
-            added = db.execute(
-                "INSERT OR IGNORE INTO memberships VALUES(?,?,?)",
-                (employee_id, project_id, secrets.token_urlsafe(32)),
-            )
-            if added.rowcount:
                 self._governance(
                     db,
-                    "employee_joined",
+                    "employee_registered",
                     employee_id=employee_id,
-                    project_id=project_id,
                     actor="human" if node_id == self.local_node_id(db) else f"device:{node_id}",
-                    reason="员工已加入项目。",
+                    reason="员工身份已登记。",
                 )
+            else:
+                db.execute(
+                    "UPDATE employees SET auth_status=? WHERE id=?", (auth_status, employee_id)
+                )
+                if entrypoint and not existing["entrypoint"]:
+                    db.execute(
+                        "UPDATE employees SET entrypoint=? WHERE id=?", (entrypoint, employee_id)
+                    )
+            if project_id is not None:
+                self._add_project_member(db, project_id, employee_id)
+            return self._employee(db, self._required(db, "employees", employee_id))
+
+    def _add_project_member(self, db, project_id, employee_id):
+        self._required(db, "projects", project_id)
+        employee = self._required(db, "employees", employee_id)
+        if employee["lifecycle"] == "retired":
+            raise WorkbenchError("employee_retired", "退役员工不能加入项目，请建立新身份。")
+        added = db.execute(
+            "INSERT OR IGNORE INTO memberships VALUES(?,?,?)",
+            (employee_id, project_id, secrets.token_urlsafe(32)),
+        )
+        if added.rowcount:
+            self._governance(
+                db,
+                "employee_joined",
+                employee_id=employee_id,
+                project_id=project_id,
+                actor="human"
+                if employee["node_id"] == self.local_node_id(db)
+                else f"device:{employee['node_id']}",
+                reason="员工已加入项目。",
+            )
+        return self._employee(db, employee)
+
+    def add_project_member(self, project_id: str, employee_id: str) -> dict:
+        with self._transaction() as db:
+            return self._add_project_member(db, project_id, employee_id)
+
+    def remove_project_member(self, project_id: str, employee_id: str) -> dict:
+        with self._transaction() as db:
+            self._required(db, "projects", project_id)
+            employee = self._required(db, "employees", employee_id)
+            if db.execute(
+                "SELECT 1 FROM tasks WHERE project_id=? AND assignee_id=? AND status IN ('starting','running','waiting_approval')",
+                (project_id, employee_id),
+            ).fetchone():
+                raise WorkbenchError(
+                    "MEMBER_HAS_ACTIVE_TASK",
+                    "这名员工在项目中仍有执行中的任务，请先停止工作再移除。",
+                )
+            if not self._membership(db, employee_id, project_id):
+                return self._employee(db, employee)
+            for task in db.execute(
+                "SELECT id FROM tasks WHERE project_id=? AND assignee_id=? AND status='queued'",
+                (project_id, employee_id),
+            ).fetchall():
+                db.execute(
+                    "UPDATE tasks SET status='cancelled',cancel_requested=1,updated_at=? WHERE id=?",
+                    (_now(), task[0]),
+                )
+                self._event(db, task[0], "member_removed", "员工已移出项目，排队任务已取消。")
+            db.execute(
+                "DELETE FROM memberships WHERE project_id=? AND employee_id=?",
+                (project_id, employee_id),
+            )
+            db.execute(
+                "UPDATE employees SET project_id=NULL WHERE id=? AND project_id=?",
+                (employee_id, project_id),
+            )
+            self._governance(
+                db,
+                "employee_left",
+                employee_id=employee_id,
+                project_id=project_id,
+                reason="员工已移出项目，项目授权已撤销。",
+            )
             return self._employee(db, self._required(db, "employees", employee_id))
 
     @staticmethod
@@ -515,14 +731,22 @@ class WorkbenchStore:
                 "tasks": tasks,
             }
 
-    def update_employee(self, employee_id: str, status: str, detail: str = "") -> dict:
+    def update_employee(
+        self, employee_id: str, status: str, detail: str = "", auth_status: str | None = None
+    ) -> dict:
         _choice(status, EMPLOYEE_STATUSES, "请选择有效的员工连接状态。")
         detail = _text(detail, "状态说明", 4096, empty=True)
+        if auth_status is not None:
+            _choice(auth_status, AUTH_STATUSES, "请选择有效的登录确认状态。")
         with self._transaction() as db:
             self._required(db, "employees", employee_id)
             db.execute(
                 "UPDATE employees SET status=?,detail=? WHERE id=?", (status, detail, employee_id)
             )
+            if auth_status is not None:
+                db.execute(
+                    "UPDATE employees SET auth_status=? WHERE id=?", (auth_status, employee_id)
+                )
             return self._employee(db, self._required(db, "employees", employee_id))
 
     def create_task(
@@ -545,45 +769,265 @@ class WorkbenchStore:
             "请选择只读或允许修改项目目录的执行权限。",
         )
         with self._transaction() as db:
+            return self._create_task(
+                db, project_id, title, prompt, assignee_id, permission_mode, model, actor
+            )
+
+    def _create_task(
+        self,
+        db,
+        project_id,
+        title,
+        prompt,
+        assignee_id,
+        permission_mode="read-only",
+        model=None,
+        actor="human",
+        request_message_id=None,
+        source_task_id=None,
+    ):
+        self._required(db, "projects", project_id)
+        employee = self._required(db, "employees", assignee_id)
+        if employee["lifecycle"] != "active":
+            raise WorkbenchError(
+                "employee_inactive", "这位员工已暂停或退役，请选择正常工作的员工。"
+            )
+        if not self._membership(db, assignee_id, project_id):
+            raise WorkbenchError("permission_denied", "这位员工未加入该项目。")
+        if employee["kind"] not in {"codex", "claude"} or employee["connection_type"] != "cli":
+            raise WorkbenchError(
+                "ADAPTER_UNSUPPORTED", "已登记此员工连接，但当前还没有可执行任务的适配器。"
+            )
+        title, prompt = self._scrub(db, title), self._scrub(db, prompt)
+        task_id, timestamp = _id("task"), _now()
+        db.execute(
+            "INSERT INTO tasks(id,project_id,title,prompt,assignee_id,node_id,"
+            "permission_mode,run_id,session_id,created_at,updated_at,model,request_message_id,source_task_id,tool_token) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                task_id,
+                project_id,
+                title,
+                prompt,
+                assignee_id,
+                employee["node_id"],
+                permission_mode,
+                _id("run"),
+                _id("session"),
+                timestamp,
+                timestamp,
+                model,
+                request_message_id,
+                source_task_id,
+                secrets.token_urlsafe(32),
+            ),
+        )
+        self._event(db, task_id, "queued", "任务已进入队列。")
+        self._governance(
+            db,
+            "task_dispatched",
+            employee_id=assignee_id,
+            project_id=project_id,
+            task_id=task_id,
+            actor=actor,
+            payload={"permission_mode": permission_mode},
+        )
+        return self._entity(self._required(db, "tasks", task_id))
+
+    def _message(self, db: sqlite3.Connection, row: sqlite3.Row) -> dict:
+        message = self._entity(row)
+        for field in ("sender", "recipient"):
+            employee_id = row[f"{field}_id"]
+            if employee_id:
+                employee = self._employee(db, self._required(db, "employees", employee_id))
+                message[field] = {
+                    key: employee[key]
+                    for key in (
+                        "id",
+                        "name",
+                        "kind",
+                        "node_id",
+                        "connection_type",
+                        "execution_supported",
+                        "lifecycle",
+                    )
+                }
+            else:
+                message[field] = None
+        message["attribution"] = {
+            "scope": "employee_session" if row["sender_id"] else "human",
+            "internal_actor_verified": False,
+        }
+        message["attribution_scope"] = message["attribution"]["scope"]
+        message["internal_actor_verified"] = False
+        message["sender_session_id"] = None
+        message["source_run_id"] = None
+        if row["source_task_id"]:
+            source = self._required(db, "tasks", row["source_task_id"])
+            message["sender_session_id"] = source["session_id"]
+            message["source_run_id"] = source["run_id"]
+        return self._scrub(db, message)
+
+    def list_messages(self, project_id: str) -> list[dict]:
+        with self._connection() as db:
             self._required(db, "projects", project_id)
-            employee = self._required(db, "employees", assignee_id)
-            if employee["lifecycle"] != "active":
-                raise WorkbenchError(
-                    "employee_inactive", "这位员工已暂停或退役，请选择正常工作的员工。"
+            return [
+                self._message(db, row)
+                for row in db.execute(
+                    "SELECT * FROM messages WHERE project_id=? ORDER BY created_at,rowid",
+                    (project_id,),
                 )
-            if not self._membership(db, assignee_id, project_id):
-                raise WorkbenchError("permission_denied", "这位员工未加入该项目。")
-            task_id, timestamp = _id("task"), _now()
+            ]
+
+    def _message_member(self, db, project_id, employee_id):
+        employee = self._required(db, "employees", employee_id)
+        if not self._membership(db, employee_id, project_id):
+            raise WorkbenchError("permission_denied", "消息中的员工必须属于当前项目。")
+        if employee["lifecycle"] != "active":
+            raise WorkbenchError("employee_inactive", "暂停或退役员工不能发送或接收新的项目消息。")
+        return employee
+
+    def _check_request_chain(self, db, source_task_id, recipient_id):
+        depth, seen_tasks, employees = 1, set(), set()
+        current_id = source_task_id
+        while current_id:
+            if current_id in seen_tasks:
+                raise WorkbenchError("MESSAGE_REQUEST_CYCLE", "工作请求出现循环，已停止继续触发。")
+            seen_tasks.add(current_id)
+            task = self._required(db, "tasks", current_id)
+            employees.add(task["assignee_id"])
+            if task["request_message_id"]:
+                origin = self._required(db, "messages", task["request_message_id"])
+                if origin["sender_id"]:
+                    depth += 1
+                    employees.add(origin["sender_id"])
+            if depth > MAX_REQUEST_CHAIN:
+                raise WorkbenchError(
+                    "MESSAGE_REQUEST_LIMIT", "员工连续请求工作最多四次，请由 human 确认后重新安排。"
+                )
+            current_id = task["source_task_id"]
+        if recipient_id in employees:
+            raise WorkbenchError(
+                "MESSAGE_REQUEST_CYCLE", "不能请求上游员工再次执行，以免形成循环唤醒。"
+            )
+
+    def send_message(
+        self,
+        project_id: str,
+        title: str,
+        body: str,
+        recipient_id: str | None = None,
+        sender_id: str | None = None,
+        reply_to: str | None = None,
+        request_work: bool = False,
+        source_task_id: str | None = None,
+        request_id: str | None = None,
+    ) -> dict:
+        title = _text(title, "消息标题", 300).strip()
+        body = _text(body, "消息内容")
+        if type(request_work) is not bool:
+            raise WorkbenchError("invalid_field", "请明确是否请求员工执行工作。")
+        if request_id is not None:
+            request_id = _text(request_id, "请求编号", 200)
+        digest = hashlib.sha256(
+            _json([title, body, recipient_id, reply_to, request_work, source_task_id]).encode()
+        ).hexdigest()
+        with self._transaction() as db:
+            self._required(db, "projects", project_id)
+            if sender_id is not None:
+                self._message_member(db, project_id, sender_id)
+                if source_task_id is None:
+                    raise WorkbenchError(
+                        "MESSAGE_SOURCE_REQUIRED", "员工消息需要绑定当前受管执行。"
+                    )
+                source = self._required(db, "tasks", source_task_id)
+                if (
+                    source["project_id"] != project_id
+                    or source["assignee_id"] != sender_id
+                    or source["status"] not in ACTIVE
+                    or source["cancel_requested"]
+                ):
+                    raise WorkbenchError(
+                        "permission_denied", "消息来源必须是该员工在当前项目的有效执行。"
+                    )
+            elif source_task_id is not None:
+                raise WorkbenchError("permission_denied", "人工消息不能冒用员工执行来源。")
+            if recipient_id is not None:
+                self._message_member(db, project_id, recipient_id)
+            if request_work and (recipient_id is None or recipient_id == sender_id):
+                raise WorkbenchError("invalid_field", "请求工作需要明确选择另一名项目员工。")
+            parent = self._required(db, "messages", reply_to) if reply_to is not None else None
+            if parent and parent["project_id"] != project_id:
+                raise WorkbenchError("permission_denied", "回复必须留在同一个项目和消息线程。")
+            if request_id is not None:
+                previous = db.execute(
+                    "SELECT * FROM messages WHERE project_id=? AND sender_id IS ? AND request_id=?",
+                    (project_id, sender_id, request_id),
+                ).fetchone()
+                if previous:
+                    if not hmac.compare_digest(previous["request_digest"], digest):
+                        raise WorkbenchError(
+                            "MESSAGE_REQUEST_CONFLICT", "同一个请求编号不能用于不同的消息。"
+                        )
+                    return self._message(db, previous)
+            if request_work and source_task_id:
+                self._check_request_chain(db, source_task_id, recipient_id)
+            message_id, timestamp = _id("message"), _now()
             db.execute(
-                "INSERT INTO tasks(id,project_id,title,prompt,assignee_id,node_id,"
-                "permission_mode,run_id,session_id,created_at,updated_at,model) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO messages(id,project_id,title,body,sender_id,recipient_id,reply_to,thread_id,request_work,source_task_id,request_id,request_digest,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    task_id,
+                    message_id,
                     project_id,
-                    title,
-                    prompt,
-                    assignee_id,
-                    employee["node_id"],
-                    permission_mode,
-                    _id("run"),
-                    _id("session"),
+                    self._scrub(db, title),
+                    self._scrub(db, body),
+                    sender_id,
+                    recipient_id,
+                    reply_to,
+                    parent["thread_id"] if parent else message_id,
+                    int(request_work),
+                    source_task_id,
+                    request_id,
+                    digest,
                     timestamp,
-                    timestamp,
-                    model,
                 ),
             )
-            self._event(db, task_id, "queued", "任务已进入队列。")
+            if request_work:
+                task = self._create_task(
+                    db,
+                    project_id,
+                    title,
+                    body,
+                    recipient_id,
+                    actor=f"employee:{sender_id}" if sender_id else "human",
+                    request_message_id=message_id,
+                    source_task_id=source_task_id,
+                )
+                db.execute("UPDATE messages SET task_id=? WHERE id=?", (task["id"], message_id))
+                self._event(
+                    db,
+                    task["id"],
+                    "team_message",
+                    "收到项目同事的工作请求。" if sender_id else "收到人工工作请求。",
+                    {
+                        "from_id": sender_id,
+                        "message_id": message_id,
+                        "source_task_id": source_task_id,
+                    },
+                )
             self._governance(
                 db,
-                "task_dispatched",
-                employee_id=assignee_id,
+                "message_sent",
+                employee_id=sender_id,
                 project_id=project_id,
-                task_id=task_id,
-                actor=actor,
-                payload={"permission_mode": permission_mode},
+                actor=f"employee:{sender_id}" if sender_id else "human",
+                payload={
+                    "message_id": message_id,
+                    "recipient_id": recipient_id,
+                    "request_work": request_work,
+                    "source_task_id": source_task_id,
+                },
             )
-            return self._entity(self._required(db, "tasks", task_id))
+            return self._message(db, self._required(db, "messages", message_id))
 
     def claim_task(self, node_id: str, project_ids: list[str] | None = None) -> dict | None:
         if project_ids is not None and (
@@ -605,7 +1049,8 @@ class WorkbenchStore:
             row = db.execute(
                 "SELECT t.* FROM tasks t WHERE t.node_id=? AND t.status='queued' "
                 + scope_clause
-                + "AND EXISTS (SELECT 1 FROM employees e WHERE e.id=t.assignee_id AND e.lifecycle='active') "
+                + "AND EXISTS (SELECT 1 FROM employees e WHERE e.id=t.assignee_id AND e.lifecycle='active' AND e.kind IN ('codex','claude') AND e.connection_type='cli') "
+                + "AND EXISTS (SELECT 1 FROM memberships m WHERE m.employee_id=t.assignee_id AND m.project_id=t.project_id) "
                 + "AND NOT EXISTS (SELECT 1 FROM tasks a WHERE a.assignee_id=t.assignee_id "
                 "AND a.status IN ('starting','running','waiting_approval')) "
                 "ORDER BY t.created_at,t.rowid LIMIT 1",
@@ -621,7 +1066,7 @@ class WorkbenchStore:
 
     def get_task(self, task_id: str) -> dict:
         with self._connection() as db:
-            return self._entity(self._required(db, "tasks", task_id))
+            return self._scrub(db, self._entity(self._required(db, "tasks", task_id)))
 
     def task_detail(self, task_id: str) -> dict:
         with self._connection() as db:
@@ -717,6 +1162,11 @@ class WorkbenchStore:
             raise WorkbenchError("invalid_state", "这次执行已结束或尚未开始。")
         if task["cancel_requested"] and status in {"review", "failed"}:
             status = "cancelled"
+        if status == "review" and task["status"] == "running" and error is None:
+            db.execute(
+                "UPDATE employees SET execution_verified=1 WHERE id=?", (task["assignee_id"],)
+            )
+        result, error = self._scrub(db, result), self._scrub(db, error)
         db.execute(
             "UPDATE tasks SET status=?,result=?,error=?,updated_at=? WHERE id=?",
             (status, result, None if error is None else _json(error), _now(), task_id),
@@ -1169,8 +1619,23 @@ class WorkbenchStore:
             result: dict[str, Any] = {
                 "project": project,
                 "employees": [
-                    {k: row[k] for k in ("id", "name", "kind", "node_id", "status", "lifecycle")}
-                    for row in team
+                    {
+                        k: employee[k]
+                        for k in (
+                            "id",
+                            "name",
+                            "kind",
+                            "node_id",
+                            "status",
+                            "lifecycle",
+                            "connection_type",
+                            "entrypoint",
+                            "execution_supported",
+                            "execution_verified",
+                            "auth_status",
+                        )
+                    }
+                    for employee in (self._employee(db, row) for row in team)
                 ],
             }
             for table in ("tasks", "resources", "memories"):
@@ -1182,7 +1647,18 @@ class WorkbenchStore:
                 items = [self._entity(row) for row in rows]
                 if table == "tasks":
                     items = [
-                        {k: row[k] for k in ("id", "title", "status", "assignee_id", "result")}
+                        {
+                            k: row[k]
+                            for k in (
+                                "id",
+                                "title",
+                                "status",
+                                "assignee_id",
+                                "result",
+                                "request_message_id",
+                                "source_task_id",
+                            )
+                        }
                         for row in items
                     ]
                     for row in items:
@@ -1191,6 +1667,13 @@ class WorkbenchStore:
                     for row in items:
                         row["body"] = row["body"][:8000]
                 result[table] = items
+            messages = db.execute(
+                "SELECT * FROM messages WHERE project_id=? ORDER BY created_at DESC,rowid DESC LIMIT 20",
+                (project_id,),
+            ).fetchall()
+            result["messages"] = [self._message(db, row) for row in messages]
+            for message in result["messages"]:
+                message["body"] = message["body"][:4000]
             return self._scrub(db, result)
 
     @staticmethod
@@ -1215,6 +1698,52 @@ class WorkbenchStore:
                 (employee_id, project_id),
             ).fetchone()[0]
             return {"token": token, "employee_id": employee_id, "project_id": project_id}
+
+    def execution_credentials(self, task_id: str) -> dict:
+        """Private capability for one owned execution, never a UI response."""
+        with self._connection() as db:
+            task = self._required(db, "tasks", task_id)
+            employee = self._required(db, "employees", task["assignee_id"])
+            if (
+                task["status"] not in ACTIVE
+                or task["cancel_requested"]
+                or employee["lifecycle"] == "retired"
+                or not self._membership(db, employee["id"], task["project_id"])
+            ):
+                raise WorkbenchError("permission_denied", "这次执行当前没有项目工具授权。")
+            return {
+                "token": task["tool_token"],
+                "employee_id": task["assignee_id"],
+                "project_id": task["project_id"],
+                "task_id": task["id"],
+                "run_id": task["run_id"],
+            }
+
+    def validate_execution(
+        self, token: str, employee_id: str, project_id: str, task_id: str, run_id: str
+    ) -> bool:
+        if not all(
+            isinstance(value, str) and 0 < len(value) <= 200
+            for value in (token, employee_id, project_id, task_id, run_id)
+        ):
+            return False
+        with self._connection() as db:
+            task = db.execute(
+                "SELECT t.* FROM tasks t JOIN employees e ON e.id=t.assignee_id WHERE t.id=? AND t.assignee_id=? AND t.project_id=? AND t.run_id=? AND e.lifecycle!='retired'",
+                (task_id, employee_id, project_id, run_id),
+            ).fetchone()
+            expected = task["tool_token"] if task else "0" * 43
+            try:
+                matched = hmac.compare_digest(expected.encode("utf-8"), token.encode("utf-8"))
+            except UnicodeEncodeError:
+                return False
+            return bool(
+                task
+                and matched
+                and task["status"] in ACTIVE
+                and not task["cancel_requested"]
+                and self._membership(db, employee_id, project_id)
+            )
 
     def validate_employee(self, token: str, employee_id: str, project_id: str) -> bool:
         if not all(

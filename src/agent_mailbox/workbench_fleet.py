@@ -508,7 +508,19 @@ class FleetCoordinator:
         for resource in result["resources"]:
             resource.pop("path", None)
         result["employees"] = [
-            {key: row[key] for key in ("id", "name", "kind", "node_id", "status")}
+            {
+                key: row[key]
+                for key in (
+                    "id",
+                    "name",
+                    "kind",
+                    "node_id",
+                    "status",
+                    "connection_type",
+                    "execution_supported",
+                    "execution_verified",
+                )
+            }
             for row in self.store.snapshot()["employees"]
             if project_id in row["project_ids"]
         ]
@@ -546,26 +558,39 @@ class FleetCoordinator:
             result["resource"].pop("path", None)
             result["source"] = f"resource:{result['resource']['id']}:{result['resource']['name']}"
             return result
+        if tool == "messages":
+            return {"messages": self.store.list_messages(project_id)}
+        if tool in {"note", "message", "team_message"}:
+            if not body.get("task_id") or not body.get("run_id"):
+                raise WorkbenchError("permission_denied", "写入工具需要当前执行会话。")
+            source_task_id = _identifier(body.get("task_id"), "来源任务编号")
+            source = self._task_scope(device, source_task_id, body.get("run_id"))
+            if (
+                source["assignee_id"] != employee_id
+                or source["project_id"] != project_id
+                or source["status"] not in ACTIVE
+            ):
+                raise WorkbenchError(
+                    "permission_denied", "工具写入必须属于当前员工的有效执行会话。"
+                )
         if tool == "note":
             return self.store.add_memory(
                 project_id, args.get("title"), args.get("body"), source=f"employee:{employee_id}"
             )
-        if tool == "team_message":
-            if args.get("recipient_id") == employee_id:
-                raise WorkbenchError("permission_denied", "请选择另一位项目员工。")
-            task = self.store.create_task(
+        if tool in {"message", "team_message"}:
+            saved = self.store.send_message(
                 project_id,
                 args.get("title"),
-                args.get("message"),
-                args.get("recipient_id"),
-                "read-only",
-                actor=f"employee:{employee_id}",
-            )
-            self.store.add_event(
-                task["id"], "team_message", "项目同事请求了这项工作。", {"from_id": employee_id}
+                args.get("message") if tool == "team_message" else args.get("body"),
+                recipient_id=args.get("recipient_id"),
+                sender_id=employee_id,
+                reply_to=args.get("reply_to"),
+                request_work=tool == "team_message",
+                request_id=args.get("request_id"),
+                source_task_id=source_task_id,
             )
             self.notify()
-            return {"task_id": task["id"], "status": "queued"}
+            return {**saved, "status": "queued" if saved.get("task_id") else "delivered"}
         raise WorkbenchError("permission_denied", "远端员工不能调用这个工具。")
 
     def _route(self, method, path, headers, body):
@@ -927,12 +952,18 @@ class FleetClient:
     def active_runs(self):
         return self._request("GET", "/v1/tasks/active")["tasks"]
 
-    def project_tool(self, project_id, employee_id, tool, args):
+    def project_tool(self, project_id, employee_id, tool, args, *, task_id="", run_id=""):
         project_id = _identifier(project_id, "项目编号")
         return self._request(
             "POST",
             f"/v1/projects/{project_id}/tools",
-            {"employee_id": employee_id, "tool": tool, "args": args},
+            {
+                "employee_id": employee_id,
+                "tool": tool,
+                "args": args,
+                "task_id": task_id,
+                "run_id": run_id,
+            },
         )
 
     def context(self, project_id):

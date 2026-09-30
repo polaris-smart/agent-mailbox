@@ -243,6 +243,8 @@ class RemoteWorker:
                         {"name": "AGENT_MAIL_EMPLOYEE", "value": task["assignee_id"]},
                         {"name": "AGENT_MAIL_PROJECT", "value": task["project_id"]},
                         {"name": "AGENT_MAIL_FLEET", "value": "1"},
+                        {"name": "AGENT_MAIL_TASK", "value": task["id"]},
+                        {"name": "AGENT_MAIL_RUN", "value": task["run_id"]},
                     ],
                 }
             ]
@@ -284,8 +286,9 @@ class RemoteWorker:
                         tool_call,
                     )
                     expires = datetime.fromisoformat(requested["expires_at"].replace("Z", "+00:00"))
+                    duration = min(120, timeout_ms / 1000)
                     deadline = min(
-                        permission_started + min(120, timeout_ms / 1000),
+                        permission_started + duration - min(0.2, duration / 10),
                         run_deadline,
                         time.monotonic() + (expires - datetime.now(timezone.utc)).total_seconds(),
                     )

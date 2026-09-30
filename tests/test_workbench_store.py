@@ -602,5 +602,5 @@ def test_version_four_to_five_adds_receipt_proofs_without_replacing_identity(
     assert restored.employee_credentials(employee["id"], project["id"]) == credential
     assert restored.get_task(task["id"])["status"] == "queued"
     with sqlite3.connect(store.db_path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert db.execute("SELECT count(*) FROM remote_receipts").fetchone()[0] == 0

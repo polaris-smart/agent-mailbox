@@ -17,9 +17,10 @@ from pathlib import Path
 import pytest
 
 from agent_mailbox.runtime_bridge import bridge_path
+from agent_mailbox.workbench_runtime import BridgeExecution
 
 FAKE_ACP = r"""
-import json, sys, uuid
+import json, sys, uuid, time
 from pathlib import Path
 
 store, trace, flavor = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
@@ -163,7 +164,16 @@ for line in sys.stdin:
         prior = permissions.pop(request["id"])
         outcome = request.get("result", {}).get("outcome", {})
         if pending.pop(prior["params"]["sessionId"], None):
-            finish(prior, "allowed" if outcome.get("optionId") == "allow" else "denied")
+            if flavor == "permission_expiry_failure":
+                # A native denial acknowledgment makes expiry deterministic;
+                # keep the turn open until Python observes the late receipt.
+                (trace.parent / "native-permission-denied").write_text("denied")
+                end = time.monotonic() + 5
+                while not (trace.parent / "release-native-failure").exists() and time.monotonic() < end:
+                    time.sleep(.01)
+                error(prior, -32603, "Permission denied after its deadline expired")
+            else:
+                finish(prior, "allowed" if outcome.get("optionId") == "allow" else "denied")
     elif "id" in request:
         error(request, -32601, "Method not found")
 """
@@ -708,3 +718,113 @@ def test_mcp_permission_does_not_join_a_different_tool_id(launch):
     assert "title" not in request["tool_call"] and "rawInput" not in request["tool_call"]
     bridge.send(op="permission", run_id="r1", request_id=request["request_id"], decision="deny")
     assert bridge.result()["output_text"] == "denied"
+
+
+def test_python_consumer_preserves_native_denial_after_real_permission_expiry(
+    tmp_path, runtime_dir
+):
+    fake = tmp_path / "fake_agent.py"
+    trace = tmp_path / "trace.jsonl"
+    fake.write_text(FAKE_ACP)
+    command = [
+        shutil.which("node"),
+        str(bridge_path()),
+        "--state-dir",
+        str(tmp_path / "sessions"),
+        "--project-root",
+        str(tmp_path),
+        "--runtime-dir",
+        str(runtime_dir),
+        "--test-mode",
+        "1",
+        "--test-agent-command-json",
+        json.dumps(
+            [
+                sys.executable,
+                "-u",
+                str(fake),
+                str(tmp_path / "fake_store.json"),
+                str(trace),
+                "permission_expiry_failure",
+            ]
+        ),
+    ]
+    task = {
+        "kind": "codex",
+        "run_id": "r1",
+        "session_id": "s1",
+        "prompt": "permission",
+        "permission_mode": "read-only",
+    }
+    events = []
+
+    def permission(record):
+        assert record["timeout_ms"] == 100
+        end = time.monotonic() + 3
+        while not (tmp_path / "native-permission-denied").exists() and time.monotonic() < end:
+            time.sleep(0.01)
+        assert (tmp_path / "native-permission-denied").exists()
+        return "deny"  # Intentionally arrives after the real bridge timer expired.
+
+    def event(record):
+        events.append(record)
+        if record["type"] == "control_error":
+            (tmp_path / "release-native-failure").write_text("release")
+
+    result = BridgeExecution(tmp_path, command).run(
+        task,
+        {"path": str(tmp_path)},
+        [],
+        event,
+        permission,
+        lambda: False,
+        timeout=8,
+        permission_timeout_ms=100,
+    )
+    receipts = [e for e in events if e["type"] == "control_error"]
+    assert (
+        len(receipts) == 1 and receipts[0]["run_id"] == "r1" and receipts[0]["session_id"] == "s1"
+    )
+    assert result["status"] == "failed"
+    assert result["error"]["code"] != "RUNTIME_PROTOCOL_ERROR"
+    assert "Permission denied" in result["error"]["message"]
+    requests = [json.loads(line) for line in trace.read_text().splitlines()]
+    assert any(r.get("result", {}).get("outcome", {}).get("optionId") == "deny" for r in requests)
+
+
+@pytest.mark.parametrize("operation", ["cancel", "permission"])
+def test_bridge_foreign_session_control_does_not_mutate_the_active_run(launch, operation):
+    bridge = launch()
+    bridge.run(prompt="hang" if operation == "cancel" else "permission")
+    request = bridge.until(
+        lambda m: m["type"] == ("started" if operation == "cancel" else "permission_required")
+    )
+    control = {"op": operation, "run_id": "r1", "session_id": "foreign"}
+    if operation == "permission":
+        control.update(request_id=request["request_id"], decision="allow_once")
+    bridge.send(**control)
+    rejected = bridge.until(lambda m: m["type"] == "control_error")
+    assert rejected["session_id"] == "foreign"
+    assert rejected["error"]["code"] == "SESSION_CONTEXT_MISMATCH"
+    assert not any(m["type"] == "result" for m in bridge.seen)
+    control["session_id"] = "s1"
+    if operation == "permission":
+        control["decision"] = "deny"
+    bridge.send(**control)
+    result = bridge.result()
+    assert (
+        result["status"] == "cancelled"
+        if operation == "cancel"
+        else result["output_text"] == "denied"
+    )
+
+
+def test_control_error_without_explicit_session_binds_only_to_known_active_run(launch):
+    bridge = launch()
+    bridge.run(prompt="hang")
+    bridge.until(lambda m: m["type"] == "started")
+    bridge.send(op="permission", run_id="r1", request_id="not-a-real-request", decision="deny")
+    error = bridge.until(lambda m: m["type"] == "control_error")
+    assert error["run_id"] == "r1" and error["session_id"] == "s1"
+    bridge.send(op="cancel", run_id="r1", session_id="s1")
+    assert bridge.result()["status"] == "cancelled"

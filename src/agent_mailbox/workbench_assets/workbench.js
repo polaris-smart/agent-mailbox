@@ -12,7 +12,7 @@ const detailDialog = document.getElementById("detail-dialog");
 const formContent = document.getElementById("form-dialog-content");
 const detailContent = document.getElementById("detail-dialog-content");
 const state = {
-  data: null, view: "overview", projectId: "", refreshing: false,
+  data: null, view: "employees", projectId: "", refreshing: false,
   taskFilter: "all", search: "", discovered: null,
   detailTaskId: null, detailRequest: 0, detailFingerprint: "", detailError: "",
   runtimeInstalling: false, error: null, toastTimer: null,
@@ -20,12 +20,13 @@ const state = {
   governance: null, governanceError: null, governanceLoading: false, governanceQueued: false,
   applicationStopping: false, applicationStopped: false,
   taskFormUpdate: null,
+  messageDrafts: {}, messages: {}, messagesLoading: false, messagesError: null, dragEmployeeId: null,
 };
 try { state.projectId = sessionStorage.getItem("agent-mailbox.workbench.project") || ""; } catch { /* optional */ }
 
 const navLabels = {
   overview: t("项目概览", "Overview"), tasks: t("任务", "Tasks"),
-  employees: t("员工", "Employees"), resources: t("资料与记忆", "Resources & memory"),
+  employees: t("所有员工", "All employees"), members: t("项目成员", "Project members"), messages: t("项目消息", "Messages"), resources: t("资料与记忆", "Resources & memory"),
   devices: t("设备", "Devices"),
 };
 const statusLabels = {
@@ -43,6 +44,7 @@ const statusLabels = {
   not_installed: t("未安装", "Not installed"), missing: t("未安装", "Not installed"),
   unavailable: t("未就绪", "Unavailable"), unsupported: t("暂不支持", "Unsupported"),
   pending: t("等待确认", "Pending"), allowed: t("已允许", "Allowed"), denied: t("已拒绝", "Denied"),
+  authenticated: t("已登录", "Signed in"), signed_in: t("已登录", "Signed in"), not_required: t("无需登录", "Sign-in not required"),
   active: t("在岗", "Active"), paused: t("已暂停", "Paused"), retired: t("已退役", "Retired"), expired: t("已过期", "Expired"),
 };
 const liveStatuses = new Set(["queued", "starting", "running", "waiting_approval"]);
@@ -116,7 +118,7 @@ function project() { return state.data?.projects.find((item) => item.id === stat
 function projectEmployees() {
   return (state.data?.employees || []).filter((employee) => employee.project_id === state.projectId || employee.project_ids?.includes(state.projectId));
 }
-function assignableEmployees() { return projectEmployees().filter((employee) => !employee.lifecycle || employee.lifecycle === "active"); }
+function assignableEmployees() { return projectEmployees().filter((employee) => employee.execution_supported === true && (!employee.lifecycle || employee.lifecycle === "active")); }
 function projectTasks() { return (state.data?.tasks || []).filter((task) => task.project_id === state.projectId); }
 function employeeName(id) { return state.data?.employees.find((employee) => employee.id === id)?.name || t("未分配员工", "Unassigned"); }
 function deviceName(id) { return state.data?.devices.find((device) => device.id === id)?.name || (state.data?.node?.id === id ? state.data.node.name : t("设备未确认", "Device unconfirmed")); }
@@ -189,7 +191,9 @@ function setSidebar(open) {
   else if (returnFocus) document.getElementById("sidebar-toggle").focus();
 }
 function selectProject(id) {
+  if (!state.data?.projects.some((item) => item.id === id)) return;
   state.projectId = id;
+  state.view = "overview";
   state.search = "";
   state.taskFilter = "all";
   state.discovered = null;
@@ -198,7 +202,7 @@ function selectProject(id) {
   try { sessionStorage.setItem("agent-mailbox.workbench.project", id); } catch { /* optional */ }
   render();
   setSidebar(false);
-  if (state.view === "employees") loadGovernance();
+  if (state.view === "members") loadGovernance();
 }
 function selectView(view) {
   if (!Object.hasOwn(navLabels, view)) return;
@@ -207,7 +211,8 @@ function selectView(view) {
   render();
   setSidebar(false);
   document.getElementById("main").focus({ preventScroll: true });
-  if (view === "employees") loadGovernance();
+  if (view === "members") loadGovernance();
+  if (view === "messages") loadMessages();
 }
 
 function renderSidebar() {
@@ -224,8 +229,30 @@ function renderSidebar() {
     if (active) control.setAttribute("aria-current", "page");
     else control.removeAttribute("aria-current");
   }
+  for (const control of list.querySelectorAll("[data-project]")) {
+    const eligible = () => state.data?.employees.find((employee) => employee.id === state.dragEmployeeId && employee.lifecycle !== "retired");
+    control.addEventListener("dragover", (event) => {
+      if (!eligible()) return;
+      event.preventDefault(); event.dataTransfer.dropEffect = "copy"; control.classList.add("drag-target");
+    });
+    control.addEventListener("dragleave", () => control.classList.remove("drag-target"));
+    control.addEventListener("drop", async (event) => {
+      event.preventDefault(); control.classList.remove("drag-target");
+      const employeeId = event.dataTransfer?.getData("text/plain");
+      const employee = eligible();
+      if (!employee || employee.id !== employeeId || !state.data.projects.some((item) => item.id === control.dataset.project)) {
+        showToast(t("无法加入：请从在册员工拖动，退役身份不能再次加入。", "Unable to add: drag a registered employee. Retired identities cannot rejoin."), true); return;
+      }
+      const projectId = control.dataset.project;
+      if (employee.project_id === projectId || employee.project_ids?.includes(projectId)) { showToast(t("这名员工已在项目中。", "This employee is already a project member.")); return; }
+      control.disabled = true;
+      try { await api.addProjectMember(projectId, employeeId); await refresh(); showToast(t(`${employee.name} 已加入项目。`, `${employee.name} joined the project.`)); }
+      catch (error) { showToast(errorText(error), true); control.disabled = false; }
+      finally { state.dragEmployeeId = null; }
+    });
+  }
   const current = project();
-  document.getElementById("breadcrumb-project").textContent = current?.name || t("工作台", "Workbench");
+  document.getElementById("breadcrumb-project").textContent = state.view === "employees" ? t("工作台", "Workbench") : current?.name || t("工作台", "Workbench");
   document.getElementById("breadcrumb-page").textContent = navLabels[state.view];
   document.getElementById("task-nav-count").textContent = current ? String(projectTasks().filter((task) => task.status !== "done" && task.status !== "cancelled").length) : "";
 }
@@ -294,7 +321,7 @@ function renderOverview() {
   return [heading(current.name, t("把目标、进度和成果放在同一个项目里。", "Keep goals, progress, and outcomes in one project."), [button(t("新任务", "New task"), "new-task", { class: "primary", icon: "plus", disabled: !state.data })]), runtimeNotice(),
     firstRun ? el("div", { class: "overview-layout" }, el("div", {}, el("section", { class: "onboarding-panel" },
       el("div", { class: "onboarding-step" }, el("span", { class: "step-number complete", "aria-hidden": "true" }, icon("check")), el("div", { class: "step-body" }, el("h2", {}, t("项目已准备好", "Your project is ready")), el("p", {}, el("code", {}, current.path)))),
-      el("div", { class: "onboarding-step" }, el("span", { class: `step-number ${people.length ? "complete" : "active"}`, "aria-hidden": "true" }, people.length ? icon("check") : "2"), el("div", { class: "step-body" }, el("h2", {}, people.length ? t("在岗员工已加入项目", "Active employees are connected") : t("准备项目员工", "Prepare project employees")), el("p", {}, people.length ? t(`${people.length} 位在岗员工已加入，可以分配第一件工作。`, `${people.length} active employees are connected. Assign their first task.`) : projectEmployees().length ? t("当前员工已暂停或退役。恢复已暂停员工，或为新员工建立身份。", "Current employees are paused or retired. Resume a paused employee or create a new identity.") : t("无需逐个配置通信工具，先发现这台设备上的员工。", "Discover employees on this computer without configuring communication tools one by one.")), !people.length ? button(projectEmployees().length ? t("管理员工", "Manage employees") : t("发现员工", "Discover employees"), projectEmployees().length ? "new-task" : "discover", { class: "primary", icon: "users" }) : null)),
+      el("div", { class: "onboarding-step" }, el("span", { class: `step-number ${people.length ? "complete" : "active"}`, "aria-hidden": "true" }, people.length ? icon("check") : "2"), el("div", { class: "step-body" }, el("h2", {}, people.length ? t("在岗员工已加入项目", "Active employees are connected") : t("准备项目员工", "Prepare project employees")), el("p", {}, people.length ? t(`${people.length} 位在岗员工已加入，可以分配第一件工作。`, `${people.length} active employees are connected. Assign their first task.`) : projectEmployees().length ? t("当前成员没有可自动执行的在岗员工。可加入支持任务执行的 CLI，或恢复已暂停员工。", "No active members support automatic execution. Add a supported CLI employee or resume assignments.") : t("从全局登记的员工中选择本项目成员。", "Choose project members from your global employee registry.")), !people.length ? button(projectEmployees().length ? t("管理员工", "Manage employees") : t("选择已有员工", "Choose existing employees"), projectEmployees().length ? "new-task" : "add-member", { class: "primary", icon: "users" }) : null)),
       el("div", { class: "onboarding-step" }, el("span", { class: `step-number${people.length ? " active" : ""}`, "aria-hidden": "true" }, "3"), el("div", { class: "step-body" }, el("h2", {}, t("交代第一件事", "Assign the first task")), el("p", {}, t("写清目标与验收标准，员工的执行记录会出现在任务里。", "Describe the goal and acceptance criteria. The task will record the employee's work.")), button(t("创建第一个任务", "Create your first task"), "new-task", { class: people.length ? "primary" : "", icon: "plus", disabled: !people.length })))),
       el("p", { class: "welcome-footnote" }, t("默认只读资料。需要修改项目文件时，你可以在创建任务时选择。", "Tasks start read-only. Choose project write access when a task needs to edit files."))), projectContext()) :
     el("div", { class: "overview-layout" }, el("div", {},
@@ -331,26 +358,178 @@ function renderTaskList() {
   else if (projectTasks().length) container.replaceChildren(empty(t("没有匹配的任务", "No matching tasks"), t("试试其他状态或关键词。", "Try another status or search term."), null, null, "search"));
   else container.replaceChildren(empty(t("交代第一件事", "Assign the first task"), assignableEmployees().length ? t("描述目标和验收标准，选择员工，接下来的进度会自动记录。", "Describe the goal and acceptance criteria, then choose an employee. Progress will be recorded.") : t("先加入在岗员工，或恢复已暂停员工，再分配工作。", "Connect an active employee or resume a paused employee before assigning work."), "new-task", assignableEmployees().length ? t("创建任务", "Create task") : t("准备项目员工", "Prepare employees"), "task"));
 }
+function employeeRow(employee, { membership = false } = {}) {
+  const lifecycle = employee.lifecycle || "active";
+  const controls = el("div", { class: "employee-actions" });
+  const check = button(t("检查连接", "Check connection"), null, { class: "small", icon: "refresh", attrs: { "aria-label": t(`检查 ${employee.name} 的连接`, `Check connection for ${employee.name}`) } });
+  check.addEventListener("click", async () => {
+    check.disabled = true;
+    try { await api.checkEmployee(employee.id); await refresh(); showToast(t("连接与登录状态已重新检查；执行验证保持原记录。", "Connection and sign-in were rechecked; execution verification keeps its existing record.")); }
+    catch (error) { showToast(errorText(error), true); check.disabled = false; }
+  });
+  controls.append(check);
+  if (lifecycle !== "retired") {
+    const change = button(lifecycle === "paused" ? t("恢复接任务", "Resume assignments") : t("暂停接任务", "Pause assignments"), null, { class: "small" });
+    change.addEventListener("click", () => openLifecycleForm(employee, lifecycle === "paused" ? "active" : "paused"));
+    const retire = button(t("退役员工", "Retire employee"), null, { class: "small employee-retire" });
+    retire.addEventListener("click", () => openLifecycleForm(employee, "retired"));
+    controls.append(change, retire);
+  }
+  if (membership) {
+    const remove = button(t("移出项目", "Remove from project"), null, { class: "small" });
+    remove.addEventListener("click", async () => {
+      const projectId = state.projectId;
+      remove.disabled = true;
+      try { await api.removeProjectMember(projectId, employee.id); await refresh(); showToast(t("已移出项目，员工身份与历史仍保留。", "Removed from this project. Identity and history are retained.")); }
+      catch (error) { showToast(errorText(error), true); remove.disabled = false; }
+    });
+    controls.append(remove);
+  }
+  const connection = employee.connection_type === "app" ? t("桌面应用", "Desktop app") : t("命令行 CLI", "CLI");
+  const verified = employee.execution_verified === true || employee.verified === true;
+  const facts = el("dl", { class: "employee-facts" },
+    el("div", {}, el("dt", {}, t("设备", "Device")), el("dd", {}, deviceName(employee.node_id))),
+    el("div", {}, el("dt", {}, t("触发方式", "Trigger")), el("dd", {}, employee.execution_supported ? t("受管任务会话", "Managed task session") : t("仅登记，自动执行暂不支持", "Registered; automatic execution unsupported"))),
+    el("div", {}, el("dt", {}, t("原生登录", "Native sign-in")), el("dd", {}, tag(employee.auth_status || "unknown"))),
+    el("div", {}, el("dt", {}, t("执行验证", "Execution check")), el("dd", {}, verified ? t("已验证", "Verified") : t("尚未验证", "Not verified"))));
+  const row = el("article", { class: "employee-row employee-registry-row", "data-employee-id": employee.id, draggable: String(!membership && lifecycle !== "retired") }, avatar(employee.name),
+    el("div", { class: "employee-profile" }, el("div", { class: "employee-title" }, el("h2", { class: "employee-name" }, employee.name), tag(lifecycle)),
+      el("div", { class: "employee-kind" }, `${employee.kind} · ${connection}`), employee.entrypoint ? el("p", { class: "employee-detail" }, el("code", {}, employee.entrypoint)) : null,
+      employee.detail ? el("p", { class: "employee-detail" }, humanDetail(employee.detail)) : null,
+      employee.lifecycle_reason ? el("p", { class: "employee-reason" }, t("调整原因", "Reason"), " · ", employee.lifecycle_reason) : null,
+      facts), controls);
+  if (!membership && lifecycle !== "retired") {
+    row.addEventListener("dragstart", (event) => {
+      if (!state.data.employees.some((item) => item.id === employee.id && item.lifecycle !== "retired")) { event.preventDefault(); return; }
+      state.dragEmployeeId = employee.id;
+      event.dataTransfer.clearData(); event.dataTransfer.setData("text/plain", employee.id); event.dataTransfer.effectAllowed = "copy";
+      row.classList.add("dragging");
+    });
+    row.addEventListener("dragend", () => {
+      state.dragEmployeeId = null; row.classList.remove("dragging");
+      document.querySelectorAll(".drag-target").forEach((control) => control.classList.remove("drag-target"));
+    });
+  }
+  return row;
+}
 function renderEmployees() {
-  if (!project()) return [heading(navLabels.employees, t("员工围绕项目工作，先选择一个项目。", "Employees work within a project. Select one first.")), empty(t("先准备项目", "Create a project first"), t("项目建立后，可以发现并加入这台设备上的已有员工。", "Once the project is ready, discover and connect existing employees on this computer."), "new-project", t("选择项目", "Choose project"), "users")];
+  const people = state.data.employees;
+  return [heading(navLabels.employees, t("先登记已有 AI 员工，再按项目组织协作。一个员工可以加入多个项目。", "Register existing AI employees, then organize them by project. An employee can join several projects."), [button(t("发现员工", "Discover employees"), "discover", { class: "primary", icon: "plus" })]),
+    people.length ? el("div", { class: "employee-table" }, people.map((employee) => employeeRow(employee))) : empty(t("从你已有的员工开始", "Start with your existing employees"), t("检查这台设备上的 CLI 和桌面应用。现在就能登记员工，无需先创建项目。", "Discover CLI tools and desktop apps on this device. Register employees before creating a project."), "discover", t("发现已有员工", "Discover existing employees"), "users"),
+    el("p", { class: "welcome-footnote" }, t("登录、自动执行支持与执行验证分别显示。Codex CLI 会启动受管任务会话，不会接管当前桌面对话。", "Sign-in, execution support, and verified execution are shown separately. Codex CLI starts a managed task session; it does not attach to this desktop conversation.")),
+    el("p", { class: "welcome-footnote" }, t("可将员工拖到左侧项目；也可在项目成员页通过按钮选择。加入项目不会启动执行。", "Drag employees onto a project in the sidebar, or choose them with buttons on Project members. Joining does not start execution.")),
+    button(t("创建项目并组织团队", "Create a project and organize your team"), "new-project", { icon: "folder" })];
+}
+function renderMembers() {
+  if (!project()) return [heading(navLabels.members), empty(t("为团队选择一个项目", "Choose a project for your team"), t("员工已在全局登记；创建项目后选择需要的成员。", "Employees are registered globally. Create a project and choose its members."), "new-project", t("创建项目", "Create project"), "users")];
   const people = projectEmployees();
-  return [heading(navLabels.employees, t("已有工具、清晰身份，加入项目后就能交代工作。", "Connect existing tools to a clear employee identity, then assign work."), [button(t("发现员工", "Discover employees"), "discover", { class: "primary", icon: "plus" })]),
-    people.length ? el("div", { class: "employee-table" }, people.map((employee) => {
-      const lifecycle = employee.lifecycle || "active";
-      const controls = el("div", { class: "employee-actions" });
-      if (lifecycle !== "retired") {
-        const change = button(lifecycle === "paused" ? t("恢复接任务", "Resume assignments") : t("暂停接任务", "Pause assignments"), null, { class: "small" });
-        change.addEventListener("click", () => openLifecycleForm(employee, lifecycle === "paused" ? "active" : "paused"));
-        const retire = button(t("退役员工", "Retire employee"), null, { class: "small employee-retire" });
-        retire.addEventListener("click", () => openLifecycleForm(employee, "retired"));
-        controls.append(change, retire);
-      } else controls.append(el("p", { class: "employee-history-note" }, t("此身份已退役，历史记录保留；再次加入需要建立新身份。", "This identity is retired. History is retained; rejoining requires a new identity.")));
-      return el("article", { class: "employee-row", "data-employee-id": employee.id }, avatar(employee.name),
-        el("div", {}, el("div", { class: "employee-title" }, el("h2", { class: "employee-name" }, employee.name), tag(lifecycle)), el("div", { class: "employee-kind" }, employee.kind), employee.detail ? el("p", { class: "employee-detail" }, humanDetail(employee.detail)) : null, employee.lifecycle_reason ? el("p", { class: "employee-reason" }, t("调整原因", "Reason"), " · ", employee.lifecycle_reason) : null),
-        el("div", { class: "device-name" }, deviceName(employee.node_id)), el("div", { class: "employee-connection" }, el("span", {}, t("连接状态", "Connection")), tag(employee.status)), controls);
-    })) : empty(t("让已有员工加入项目", "Connect your existing employees"), t("系统会检查这台设备上的 AI 工具。发现后点击加入，无需复制配置文件。", "The workbench checks AI tools on this computer. Add an employee without copying configuration files."), "discover", t("发现员工", "Discover employees"), "users"),
-    el("p", { class: "welcome-footnote" }, t("暂停只停止接新任务，已执行的工作继续。连接状态只说明工具是否就绪，与员工是否在岗分别显示。", "Pausing stops new assignments while work already running continues. Connection readiness is shown separately from employee lifecycle.")),
+  return [heading(navLabels.members, t("从已登记员工中选择成员。移出项目不会删除员工身份或历史。", "Choose from registered employees. Removing a member keeps their identity and history."), [button(t("选择已有员工", "Choose existing employees"), "add-member", { class: "primary", icon: "plus" }), button(t("发现更多员工", "Discover more employees"), "discover", { icon: "search" })]),
+    people.length ? el("div", { class: "employee-table" }, people.map((employee) => employeeRow(employee, { membership: true }))) : empty(t("把已有员工加入团队", "Add existing employees to your team"), t("选择登记过的员工加入此项目，然后通过消息沟通或派发工作任务。", "Choose registered employees for this project, then send messages or assign work."), "add-member", t("选择已有员工", "Choose existing employees"), "users"),
     renderGovernancePanel()];
+}
+function openMemberForm() {
+  if (!project()) { openProjectForm(); return; }
+  const projectId = state.projectId;
+  const members = new Set(projectEmployees().map((item) => item.id));
+  const people = state.data.employees.filter((item) => item.lifecycle !== "retired" && !members.has(item.id));
+  const body = openForm(t("选择已有员工", "Choose existing employees"), t("加入项目只建立成员关系，不会启动员工或执行任务。", "Joining creates project membership without starting employees or executing tasks."));
+  if (!body) return;
+  if (!people.length) { body.append(empty(t("暂无可加入的员工", "No employees available to add"), t("所有在册员工已在项目中，或尚未登记员工。可先发现更多员工。", "All eligible employees are already members, or none are registered. Discover more employees first."), "discover", t("发现员工", "Discover employees"), "users")); return; }
+  const box = errorBox();
+  const list = el("div", { class: "member-picker" });
+  people.forEach((employee) => {
+    const add = button(t("加入项目", "Add to project"), null, { class: "small primary" });
+    add.addEventListener("click", () => submitAction(add, box, () => api.addProjectMember(projectId, employee.id), async () => {
+      await refresh(); add.textContent = t("已加入", "Added"); add.disabled = true;
+      add.remove(); showToast(t(`${employee.name} 已加入项目。`, `${employee.name} joined the project.`));
+    }));
+    list.append(el("div", { class: "member-picker-row" }, avatar(employee.name), el("div", {}, el("strong", {}, employee.name), el("p", { class: "muted small-text" }, employee.kind, " · ", employee.connection_type === "app" ? t("桌面应用", "Desktop app") : "CLI", employee.execution_supported ? "" : t(" · 暂不支持自动执行", " · Automatic execution unsupported"))), add));
+  });
+  body.append(list, box);
+}
+async function loadMessages() {
+  if (!project() || state.view !== "messages" || state.messagesLoading) return;
+  const projectId = state.projectId;
+  state.messagesLoading = true; state.messagesError = null;
+  try {
+    const result = await api.projectMessages(projectId);
+    const messages = Array.isArray(result) ? result : result.messages;
+    if (!Array.isArray(messages)) throw new ApiError("invalid_response");
+    state.messages[projectId] = messages;
+  } catch (error) { if (state.projectId === projectId) state.messagesError = error; }
+  finally {
+    state.messagesLoading = false;
+    if (state.view === "messages" && state.projectId === projectId && !root.contains(document.activeElement)) render();
+  }
+}
+function renderMessages() {
+  if (!project()) return [heading(navLabels.messages), empty(t("选择消息所属的项目", "Choose a project for messages"), t("项目消息与成员、资料和工作记录一起保存。", "Project messages stay with members, resources, and work records."), "new-project", t("创建项目", "Create project"))];
+  const projectId = state.projectId;
+  const messages = state.messages[projectId] || (state.data.messages || []).filter((item) => item.project_id === projectId);
+  const draft = state.messageDrafts[projectId] ||= { title: "", body: "", recipientId: "", replyTo: null, requestWork: false, requestId: null };
+  const thread = el("section", { class: "message-list", "aria-label": t("项目消息记录", "Project message history") });
+  if (state.messagesError) thread.append(el("p", { class: "form-error", role: "alert" }, errorText(state.messagesError)));
+  if (!messages.length) thread.append(el("div", { class: "inline-empty" }, el("h2", {}, t("发出第一条项目消息", "Send the first project message")), el("p", {}, t("消息用于沟通和共享背景。需要员工动手时，明确选择“请求协作”。", "Use messages to share context. Choose Request collaboration when an employee should perform work."))));
+  messages.forEach((message) => {
+    const sender = message.sender?.name || (message.sender_id ? employeeName(message.sender_id) : t("你 · Human", "You · Human"));
+    const recipient = message.recipient?.name || (message.recipient_id ? employeeName(message.recipient_id) : t("项目全员", "Everyone in this project"));
+    const attribution = message.sender_id ? el("p", { class: "message-attribution" },
+      t("登记员工身份", "Registered employee identity"), " · ", message.sender_session_id || message.session_id ? `${t("会话", "Session")} ${message.sender_session_id || message.session_id}` : t("会话编号未提供", "Session ID not provided"),
+      message.internal_actor_verified === true ? "" : t(" · 内部子代理来源未独立核实", " · Internal subagent attribution is not independently verified")) : null;
+    const reply = button(t("回复", "Reply"), null, { class: "small" });
+    reply.addEventListener("click", () => {
+      draft.replyTo = message.id; draft.requestWork = false; draft.requestId = null;
+      draft.title = message.title ? `${t("回复", "Re")}：${message.title}`.slice(0, 240) : t("回复消息", "Reply to message");
+      draft.recipientId = message.sender_id && projectEmployees().some((item) => item.id === message.sender_id) ? message.sender_id : "";
+      render(); document.getElementById("message-body")?.focus();
+    });
+    const work = message.task_id ? button(t("查看关联任务", "Open linked task"), null, { class: "small", attrs: { "data-task": message.task_id } }) : null;
+    thread.append(el("article", { class: "message-row", "data-message-id": message.id },
+      el("div", { class: "message-meta" }, el("strong", {}, sender), el("span", {}, "→ ", recipient), el("time", {}, formatDate(message.created_at, true))),
+      el("h2", {}, message.title), message.reply_to ? el("p", { class: "message-attribution" }, t("回复消息", "Reply to message"), " · ", messages.find((item) => item.id === message.reply_to)?.title || t("较早的项目消息", "Earlier project message")) : null,
+      el("p", { class: "message-body" }, message.body), attribution,
+      el("div", { class: "message-actions" }, reply, work, message.request_work ? el("span", { class: "status-tag" }, t("已请求只读协作", "Read-only collaboration requested")) : null)));
+  });
+  const title = el("input", { id: "message-title", required: true, maxlength: 240, value: draft.title, placeholder: t("这条消息关于什么？", "What is this message about?") });
+  const body = el("textarea", { id: "message-body", required: true, maxlength: 20000, value: draft.body, placeholder: t("共享背景、提出问题或补充资料…", "Share context, ask a question, or add information…") });
+  const recipient = el("select", { id: "message-recipient" });
+  const requestWork = el("input", { id: "message-request-work", type: "checkbox", checked: draft.requestWork });
+  const populateRecipients = () => {
+    const people = requestWork.checked ? assignableEmployees() : projectEmployees();
+    recipient.replaceChildren(el("option", { value: "" }, requestWork.checked ? t("选择执行员工", "Choose an executing employee") : t("项目全员", "Everyone in this project")), ...people.map((employee) => el("option", { value: employee.id }, employee.name)));
+    recipient.value = people.some((item) => item.id === draft.recipientId) ? draft.recipientId : "";
+    recipient.required = requestWork.checked;
+  };
+  populateRecipients();
+  const error = errorBox();
+  const send = el("button", { type: "submit", class: "button primary" }, t("发送消息", "Send message"));
+  const explanation = el("p", { class: "field-hint" }, t("普通消息只保存沟通记录，不会启动员工。请求协作会创建关联的只读任务；执行与验收状态在任务中显示。", "Ordinary messages record communication without starting employees. Collaboration creates a linked read-only task; execution and review appear in that task."));
+  const capture = () => {
+    draft.title = title.value; draft.body = body.value; draft.recipientId = recipient.value; draft.requestWork = requestWork.checked; draft.requestId = null;
+    send.textContent = requestWork.checked ? t("发送并请求协作", "Send and request collaboration") : t("发送消息", "Send message");
+  };
+  title.addEventListener("input", capture); body.addEventListener("input", capture); recipient.addEventListener("change", capture);
+  requestWork.addEventListener("change", () => { populateRecipients(); capture(); });
+  const form = el("form", { class: "message-composer" }, el("h2", {}, draft.replyTo ? t("回复项目消息", "Reply to a project message") : t("写一条消息", "Write a message")),
+    formField(t("标题", "Title"), title), formField(t("收件人", "Recipient"), recipient), formField(t("内容", "Message"), body),
+    el("label", { class: "checkbox-choice" }, requestWork, el("span", {}, t("请求协作（创建只读工作任务）", "Request collaboration (creates a read-only task)"))), explanation, error,
+    el("div", { class: "message-actions" }, send));
+  if (draft.replyTo) {
+    const cancelReply = button(t("取消回复", "Cancel reply"), null, { class: "small" });
+    cancelReply.addEventListener("click", () => { draft.replyTo = null; draft.requestId = null; render(); });
+    form.prepend(el("div", { class: "message-reply-context" }, el("span", {}, t("回复消息", "Reply to message"), " · ", draft.replyTo), cancelReply));
+  }
+  send.textContent = draft.requestWork ? t("发送并请求协作", "Send and request collaboration") : t("发送消息", "Send message");
+  form.addEventListener("submit", (event) => {
+    event.preventDefault(); if (!title.value.trim() || !body.value.trim() || (requestWork.checked && !recipient.value)) return;
+    const payload = { title: title.value.trim(), body: body.value.trim(), recipient_id: recipient.value || null, reply_to: draft.replyTo, request_work: requestWork.checked, request_id: draft.requestId ||= crypto.randomUUID() };
+    submitAction(send, error, () => api.sendProjectMessage(projectId, payload), async (result) => {
+      state.messageDrafts[projectId] = { title: "", body: "", recipientId: "", replyTo: null, requestWork: false, requestId: null };
+      delete state.messages[projectId]; await refresh(); await loadMessages(); render();
+      showToast(payload.request_work ? t("消息已发送，关联协作任务已创建。", "Message sent and collaboration task created.") : t("消息已发送。", "Message sent."));
+    });
+  });
+  return [heading(navLabels.messages, t("在项目中沟通，再按需要请求工作。消息记录与执行任务分别保留。", "Communicate within the project and request work when needed. Messages and execution tasks retain separate records.")), el("div", { class: "messages-layout" }, thread, form)];
 }
 const governanceLabels = {
   task_dispatched: t("派发任务", "Task assigned"), employee_joined: t("员工加入", "Employee connected"),
@@ -377,12 +556,12 @@ function renderGovernancePanel() {
 }
 async function loadGovernance() {
   if (state.applicationStopping || state.applicationStopped) return;
-  if (!state.projectId || state.view !== "employees") return;
+  if (!state.projectId || state.view !== "members") return;
   if (state.governanceLoading) { state.governanceQueued = true; return; }
   state.governanceLoading = true;
   state.governanceError = null;
   const projectId = state.projectId;
-  const update = () => { if (state.view === "employees") document.getElementById("governance-panel")?.replaceWith(renderGovernancePanel()); };
+  const update = () => { if (state.view === "members") document.getElementById("governance-panel")?.replaceWith(renderGovernancePanel()); };
   update();
   try {
     const result = await api.governance(projectId);
@@ -475,7 +654,7 @@ function render() {
     root.setAttribute("aria-busy", "false");
     return;
   }
-  const renders = { overview: renderOverview, tasks: renderTasks, employees: renderEmployees, resources: renderResources, devices: renderDevices };
+  const renders = { overview: renderOverview, tasks: renderTasks, employees: renderEmployees, members: renderMembers, messages: renderMessages, resources: renderResources, devices: renderDevices };
   const content = state.data ? renders[state.view]() : renderDisconnected();
   root.replaceChildren(...content.flat(Infinity).filter((item) => item !== null && item !== undefined && item !== false));
   root.setAttribute("aria-busy", "false");
@@ -493,6 +672,7 @@ async function refresh({ silent = false } = {}) {
       if (!Array.isArray(result[key])) throw new ApiError("invalid_response");
     }
     state.data = result;
+    if (Array.isArray(result.messages)) { for (const item of result.projects) state.messages[item.id] = result.messages.filter((message) => message.project_id === item.id); }
     document.getElementById("version-label").textContent = result.version ? `v${result.version.replace(/^v/, "")}` : "";
     state.error = null;
     if (!result.projects.some((item) => item.id === state.projectId)) state.projectId = result.projects[0]?.id || "";
@@ -503,7 +683,7 @@ async function refresh({ silent = false } = {}) {
     const activeElement = document.activeElement;
     // Preserve ongoing searches and form input during background updates.
     if (!silent || !root.contains(activeElement) || !["INPUT", "TEXTAREA", "SELECT"].includes(activeElement?.tagName)) render();
-    if (state.view === "employees") loadGovernance();
+    if (state.view === "members") loadGovernance();
   } catch (error) {
     if (state.applicationStopping || state.applicationStopped) return;
     state.error = error;
@@ -792,74 +972,59 @@ function openProjectForm() {
   name.focus();
 }
 async function openEmployeeForm() {
-  if (!project()) { openProjectForm(); return; }
-  const body = openForm(t("发现已有员工", "Discover existing employees"), t("检查这台设备上已经安装的 AI 工具。选择需要的工具，为它建立项目员工身份。", "Check AI tools installed on this computer. Choose a tool and connect an employee to this project."));
+  const body = openForm(t("发现已有员工", "Discover existing employees"), t("登记本机已有的 CLI 或桌面应用。支持自动执行的 CLI 使用独立受管任务会话；桌面应用登记不会接管现有对话。", "Register CLI tools or desktop apps on this device. Supported CLIs use managed task sessions; app registration does not attach to an existing conversation."));
   if (!body) return;
-  const projectId = state.projectId;
-  const list = el("div", { class: "discovery-list" }, el("div", { class: "skeleton skeleton-row" }), el("p", { class: "muted small-text" }, t("正在检查已有工具…", "Checking installed tools…")));
+  const list = el("div", { class: "discovery-list" });
   const box = errorBox();
   const retry = button(t("重新检查", "Check again"), null, { class: "small", icon: "refresh" });
-  retry.removeAttribute("data-action");
   body.append(list, box, el("div", { class: "form-footer" }, retry));
   async function discover() {
-    retry.disabled = true;
-    box.hidden = true;
+    retry.disabled = true; box.hidden = true;
+    list.replaceChildren(el("div", { class: "skeleton skeleton-row" }), el("p", { class: "muted small-text" }, t("正在检查已有工具…", "Checking installed tools…")));
     try {
       const result = await api.discoverEmployees();
       if (!formDialog.open || !list.isConnected) return;
       if (!Array.isArray(result.employees)) throw new ApiError("invalid_response");
-      state.discovered = result.employees;
-      list.replaceChildren();
-      if (!result.employees.length) {
-        list.append(el("p", { class: "inline-empty" }, t("没有发现已安装的员工工具。请先安装并登录你要使用的 AI 工具，再点击重新检查。", "No installed employee tools were found. Install and sign in to the AI tool you want to use, then check again.")));
-        return;
-      }
-      for (const employee of result.employees) {
-        const unavailable = ["missing", "not_installed", "unsupported", "unavailable"].includes(employee.status);
-        const identities = state.data.employees.filter((item) => item.kind === employee.kind && (!item.node_id || item.node_id === state.data.node?.id));
-        const newName = el("input", { id: `new-employee-name-${employee.kind}`, maxlength: 160, autocomplete: "off", value: identities.some((item) => item.name === employee.name && item.lifecycle === "retired") ? "" : employee.name, placeholder: t("例如：代码审查员", "For example: Code reviewer"), "aria-label": t("员工名称", "Employee name") });
-        const identityHint = el("p", { class: "field-hint" });
-        const add = button(t("加入项目", "Add to project"), null, { class: "small primary", disabled: unavailable });
-        add.removeAttribute("data-action");
+      state.discovered = result.employees; list.replaceChildren();
+      if (!result.employees.length) { list.append(el("p", { class: "inline-empty" }, t("没有发现已安装的员工工具。安装你要使用的 AI 工具后重新检查。", "No installed employee tools were found. Install an AI tool and check again."))); return; }
+      result.employees.forEach((employee, index) => {
+        const unavailable = ["missing", "not_installed", "unavailable"].includes(employee.status) || !employee.entrypoint;
+        const connectionType = employee.connection_type || "cli";
+        const identities = state.data.employees.filter((item) => item.kind === employee.kind && (item.connection_type || "cli") === connectionType && (!item.node_id || item.node_id === state.data.node?.id));
+        const newName = el("input", { id: `new-employee-name-${index}`, maxlength: 160, autocomplete: "off", value: employee.name, placeholder: t("例如：代码审查员", "For example: Code reviewer"), "aria-label": t("员工名称", "Employee name") });
+        const hint = el("p", { class: "field-hint" });
+        const add = button(t("登记员工", "Register employee"), null, { class: "small primary" });
         const updateIdentity = () => {
           const existing = identities.find((item) => item.name === newName.value.trim());
-          const connected = existing && (existing.project_id === projectId || existing.project_ids?.includes(projectId));
-          const retired = existing?.lifecycle === "retired";
-          add.disabled = unavailable || !newName.value.trim() || connected || retired;
-          add.textContent = retired ? t("身份已退役", "Identity retired") : connected ? t("已加入", "Connected") : t("加入项目", "Add to project");
-          identityHint.textContent = retired ? t("此身份已退役，不能复用。请填写不同名称，原历史记录会保留。", "This identity is retired. Choose a different name; its history is retained.") : t("不同名称代表不同员工身份；同一工具默认共享本机原生登录与配置，名称不会创建独立账号。", "Different names create distinct employee identities. The same tool shares this computer's native sign-in and configuration by default; names do not create separate accounts.");
+          add.disabled = unavailable || !newName.value.trim() || Boolean(existing);
+          add.textContent = existing?.lifecycle === "retired" ? t("身份已退役", "Identity retired") : existing ? t("已登记", "Registered") : t("登记员工", "Register employee");
+          hint.textContent = existing?.lifecycle === "retired" ? t("此身份已退役。填写新名称可建立新身份，原记录保留。", "This identity is retired. Choose a new name to create a new identity; history is retained.") : t("名称用于管理员工，不会创建独立账号。已有登录与执行验证分别记录。", "Names organize employees without creating separate accounts. Sign-in and execution verification are recorded separately.");
         };
-        newName.addEventListener("input", updateIdentity);
-        updateIdentity();
+        newName.addEventListener("input", updateIdentity); updateIdentity();
         add.addEventListener("click", () => {
-          const name = newName.value.trim();
-          if (!name) return;
-          submitAction(add, box, () => api.addEmployee({ name, kind: employee.kind, project_id: projectId, node_id: state.data.node?.id }), async () => {
-          add.textContent = t("已加入", "Connected");
-          add.disabled = true;
-          showToast(t(`${name} 已加入项目。`, `${name} is connected to the project.`));
-          await refresh();
-          await discover();
+          const name = newName.value.trim(); if (!name) return;
+          submitAction(add, box, () => api.addEmployee({ name, kind: employee.kind, connection_type: connectionType, entrypoint: employee.entrypoint || "", discovery_id: employee.discovery_id }), async () => {
+            showToast(employee.execution_supported ? t(`${name} 已登记。请在项目中选择它作为成员。`, `${name} is registered. Choose it as a project member.`) : t("登记完成，自动执行暂不支持。", "Registered. Automatic execution is not supported yet."));
+            await refresh(); await discover();
           });
         });
-        list.append(el("div", { class: "discovery-row" }, avatar(employee.name), el("div", {}, el("h3", {}, employee.name), tag(employee.status), employee.detail ? el("p", {}, humanDetail(employee.detail)) : null,
-          el("div", { class: "new-identity-field" }, formField(t("员工名称", "Employee name"), newName), identityHint)), add));
-      }
-    } catch (error) {
-      if (!list.isConnected) return;
-      list.replaceChildren();
-      formError(box, error);
-    } finally { retry.disabled = false; }
+        list.append(el("div", { class: "discovery-row" }, avatar(employee.name), el("div", {}, el("h3", {}, employee.name),
+          el("p", { class: "employee-kind" }, connectionType === "app" ? t("桌面应用", "Desktop app") : "CLI"), tag(employee.status), employee.detail ? el("p", {}, humanDetail(employee.detail)) : null,
+          employee.entrypoint ? el("code", {}, employee.entrypoint) : null,
+          el("p", { class: "field-hint" }, employee.execution_supported ? t("支持受管任务执行；完成任务后才标记执行已验证。", "Supports managed execution. Verified execution is recorded after a task completes.") : t("可登记和加入项目，自动执行暂不支持。", "Can be registered and added to projects. Automatic execution is unsupported.")),
+          el("p", { class: "field-hint" }, t("原生登录", "Native sign-in"), " · ", tag(employee.auth_status || "unknown")), formField(t("员工名称", "Employee name"), newName), hint), add));
+      });
+    } catch (error) { if (list.isConnected) { list.replaceChildren(); formError(box, error); } }
+    finally { retry.disabled = false; }
   }
-  retry.addEventListener("click", discover);
-  await discover();
+  retry.addEventListener("click", discover); await discover();
 }
 function openTaskForm() {
   if (!project()) { openProjectForm(); return; }
   const people = assignableEmployees();
   if (!people.length) {
-    if (projectEmployees().length) { selectView("employees"); showToast(t("当前项目没有在岗员工。可恢复已暂停的员工，或为退役员工建立新身份。", "No active employees in this project. Resume a paused employee or create a new identity for a retired employee.")); }
-    else openEmployeeForm();
+    if (projectEmployees().length) { selectView("members"); showToast(t("当前项目没有支持自动执行的在岗员工。请加入已支持的 CLI 员工，或恢复其接单状态。", "No active employees support automatic execution in this project. Add a supported CLI employee or resume assignments.")); }
+    else openMemberForm();
     return;
   }
   const body = openForm(t("交代一件工作", "Assign a task"), t("写清目标、背景和验收标准。任务默认只读，修改文件需要你主动选择。", "Describe the goal, context, and acceptance criteria. Choose write access explicitly if the task needs it."));
@@ -1068,6 +1233,7 @@ function renderTaskDetail({ task, events, permissions }) {
   content.append(el("section", { class: "detail-section" }, el("h3", {}, t("工作说明", "Instructions")), el("p", { class: "prose" }, task.prompt || t("没有工作说明。", "No instructions recorded."))));
   if (task.result) content.append(el("section", { class: "detail-section" }, el("h3", {}, t("员工交付", "Employee output")), el("div", { class: "result-block" }, el("p", { class: "prose" }, typeof task.result === "string" ? task.result : JSON.stringify(task.result, null, 2)))));
   if (task.error) content.append(el("section", { class: "detail-section" }, el("h3", {}, t("需要处理的问题", "Issue to resolve")), el("p", { class: "prose" }, typeof task.error === "string" ? task.error : task.error.message || JSON.stringify(task.error))));
+  if (task.error?.code === "MODEL_UNSUPPORTED") content.append(el("p", { class: "field-hint" }, t("这个模型不适用于员工当前的登录方式。新建任务时，从模型列表选择服务实际提供的模型；原任务保留为失败，不会自动换模型重跑。", "This model is not supported by the employee's current sign-in method. Create a new task and select a model advertised by the service. The failed task is retained and is not automatically retried with another model.")));
   if (task.status === "review") {
     const note = el("textarea", { id: "review-note", placeholder: t("可选：写下验收意见；退回时说明还需要完成什么。", "Optional review note. When returning work, explain what still needs to be done."), "aria-label": t("验收意见", "Review note") });
     const accept = button(t("通过验收", "Accept work"), null, { class: "primary", icon: "check" });
@@ -1111,7 +1277,7 @@ async function installRuntime(control) {
   } catch (error) { state.runtimeInstalling = false; showToast(errorText(error), true); render(); }
 }
 const actions = {
-  "new-project": openProjectForm, discover: openEmployeeForm,
+  "new-project": openProjectForm, discover: openEmployeeForm, "add-member": openMemberForm,
   "new-task": openTaskForm, "add-resource": openResourceForm,
   "add-memory": openMemoryForm, refresh: () => refresh(),
   "install-runtime": installRuntime,
@@ -1124,7 +1290,7 @@ document.addEventListener("click", (event) => {
   const target = event.target.closest("button, a");
   if (!target) return;
   if (state.applicationStopped) { event.preventDefault(); return; }
-  if (target.matches(".brand")) { event.preventDefault(); selectView("overview"); }
+  if (target.matches(".brand")) { event.preventDefault(); selectView("employees"); }
   else if (target.dataset.project) selectProject(target.dataset.project);
   else if (target.dataset.view) selectView(target.dataset.view);
   else if (target.dataset.task) openTaskDetail(target.dataset.task);

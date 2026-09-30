@@ -164,7 +164,7 @@ def test_auth_origin_and_employee_scope(bench, tmp_path):
             {"employee_id": employee["id"], "project_id": project["id"]},
             token=credentials["token"],
         )[0]
-        == 200
+        == 401
     )
     other = server.store.create_project("Other", str(tmp_path / "state"))
     assert (
@@ -190,6 +190,134 @@ def test_static_assets_and_path_traversal(bench):
     with pytest.raises(urllib.error.HTTPError) as exc:
         urllib.request.urlopen(server.endpoint + "/../workbench_store.py")
     assert exc.value.code == 404
+
+
+def test_employee_first_discovered_apps_members_and_messages(tmp_path, monkeypatch):
+    import agent_mailbox.workbench as web
+
+    discoveries = [
+        {
+            "kind": "codex",
+            "name": "Codex",
+            "connection_type": "cli",
+            "entrypoint": "/test/codex",
+            "status": "installed",
+            "detail": "Not execution verified.",
+        },
+        {
+            "kind": "codex",
+            "name": "Codex",
+            "connection_type": "app",
+            "entrypoint": "/test/Codex.app",
+            "status": "installed",
+            "detail": "App adapter unavailable.",
+        },
+        {
+            "kind": "hermes",
+            "name": "Hermes",
+            "connection_type": "cli",
+            "entrypoint": "/test/hermes",
+            "status": "installed",
+            "detail": "Adapter unavailable.",
+        },
+    ]
+    monkeypatch.setattr(web, "discover_employees", lambda: discoveries)
+    store = WorkbenchStore(tmp_path / "home")
+    server = WorkbenchHTTP(store, token="test-owner-token")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        assert request(server, "bootstrap")[1]["projects"] == []
+        people = []
+        for candidate in discoveries:
+            status, person = request(
+                server,
+                "employees",
+                {
+                    "name": candidate["name"] + " " + candidate["connection_type"],
+                    "kind": candidate["kind"],
+                    "connection_type": candidate["connection_type"],
+                    "entrypoint": candidate["entrypoint"],
+                    "execution_supported": True,
+                },
+            )
+            assert status == 200
+            assert person["project_ids"] == []
+            people.append(person)
+        assert people[0]["execution_supported"] is True
+        assert people[1]["execution_supported"] is False
+        assert people[2]["execution_supported"] is False
+        status, checked = request(server, f"employees/{people[0]['id']}/check", {})
+        assert status == 200
+        assert checked["execution_verified"] is False
+        assert (
+            request(
+                server, "employees", {"name": "Fake", "kind": "codex", "entrypoint": "/unknown"}
+            )[0]
+            == 400
+        )
+        _, project = request(server, "projects", {"name": "Group", "path": str(tmp_path)})
+        for person in people:
+            assert (
+                request(server, f"projects/{project['id']}/members", {"employee_id": person["id"]})[
+                    0
+                ]
+                == 200
+            )
+        prefix = f"projects/{project['id']}/messages"
+        _, normal = request(
+            server, prefix, {"title": "Hello", "body": "Shared progress", "request_id": "human-1"}
+        )
+        assert not normal.get("task_id")
+        assert store.snapshot()["tasks"] == []
+        assert (
+            request(
+                server, prefix, {"title": "Fake sender", "body": "No", "sender_id": people[0]["id"]}
+            )[0]
+            == 400
+        )
+        for person in people[1:]:
+            status, error = request(
+                server,
+                prefix,
+                {
+                    "title": "Work",
+                    "body": "Read",
+                    "recipient_id": person["id"],
+                    "request_work": True,
+                },
+            )
+            assert status == 400
+            assert error["error"]["code"] == "ADAPTER_UNSUPPORTED"
+        payload = {
+            "title": "Work",
+            "body": "Read",
+            "recipient_id": people[0]["id"],
+            "request_work": True,
+            "request_id": "human-work-1",
+        }
+        status, first = request(server, prefix, payload)
+        assert status == 200
+        replay = request(server, prefix, payload)[1]
+        assert replay["id"] == first["id"]
+        assert replay["task_id"] == first["task_id"]
+        assert len(store.snapshot()["tasks"]) == 1
+        reply = request(
+            server, prefix, {"title": "Reply", "body": "Recorded", "reply_to": normal["id"]}
+        )[1]
+        assert reply["thread_id"] == normal["thread_id"]
+        assert len(request(server, prefix)[1]["messages"]) == 3
+        assert (
+            request(server, f"projects/{project['id']}/members/{people[1]['id']}", method="DELETE")[
+                0
+            ]
+            == 200
+        )
+        assert people[1]["id"] in {p["id"] for p in store.snapshot()["employees"]}
+    finally:
+        server.shutdown()
+        server.close()
+        thread.join(timeout=2)
 
 
 def test_bridge_timeout_and_wrong_session(tmp_path):
