@@ -327,14 +327,16 @@ else
   fail "A3.2" "doctor 未用人话报因（应含「配置家/配置页面」可操作指引）| got: $(echo "$NEG_ENTRY" | head -c 200)"
 fi
 
-# 负例真跑：配置家坏了 → 替身 CLI 模拟真品输出 auth 墙（exit 0 伪装）→ 失败必响应判失败
+# 负例真跑：配置家坏了 → 先发一封新信（A2 的信已 done，空箱触发本就 rc=0）→
+# 替身 CLI 模拟真品输出 auth 墙（exit 0 伪装）→ 失败必响应判失败
+send_letter codebuddy "A3 负例测试信（配置家已改错）" >/dev/null 2>&1
 NEG_RC="$(run_entry_trigger codebuddy cli)"
 if [ "$NEG_RC" != "0" ]; then
   pass "A3.3" "配置家改错后真跑非零退出（失败必响，禁 rc=0 伪装成功；rc=${NEG_RC}）"
 else
   fail "A3.3" "配置家改错后真跑 rc=0（失败静默复发——auth 墙被当成功）"
 fi
-NEG_ERR="$(grep -c '"error_class":"auth_required"' "$MAIL_ROOT/wake-attempts.jsonl" 2>/dev/null)"
+NEG_ERR="$(grep -c 'auth_required' "$MAIL_ROOT/wake-attempts.jsonl" 2>/dev/null)"  # 格式无关（jsonl 冒号后空格两种形态都算）
 NEG_ERR="${NEG_ERR:-0}"
 if [ "${NEG_ERR:-0}" -ge 1 ]; then
   pass "A3.4" "锚A 留痕 auth_required ×${NEG_ERR}（替身 CLI 的 rc=0 auth 墙被输出特征判失败）"
