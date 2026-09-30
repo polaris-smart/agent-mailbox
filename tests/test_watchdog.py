@@ -20,8 +20,15 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from agent_mailbox.installer import belt_script_body
 from agent_mailbox.watchdog import WATCHDOG_TIMEOUT_RC, main, run_watchdog
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX 语义钉（进程组 killpg/getpgid / bash 管道输出编码）；win32 等价语义归平台批（0.7.6 发布 CI 实测定谳）",
+)
 
 # 唯一标签的假慢命令：sleep 秒数用罕用数字，ps grep 不撞真机进程
 SLOW_SHELL = "sleep 2917 & sleep 2923 & wait"

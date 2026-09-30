@@ -11,7 +11,15 @@ rules stay executable checks, not prose.
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
+
+import pytest
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX 语义钉（resolver 的 bash 管道输出编码/版本序管道）；win32 等价语义归平台批（0.7.6 发布 CI 实测定谳）",
+)
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "resolve-provider-config.sh"
 
