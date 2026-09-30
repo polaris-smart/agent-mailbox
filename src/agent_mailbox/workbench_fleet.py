@@ -351,6 +351,7 @@ class FleetCoordinator:
             }
             invitation["used"] = True
             self._save()
+            self.notify()
             return {
                 "device_id": device_id,
                 "token": token,
@@ -517,6 +518,7 @@ class FleetCoordinator:
             employee = self.store.create_employee(
                 body.get("name"), body.get("kind"), project_id, node_id=device["device_id"]
             )
+            self.notify()
             return {"employee": employee}
         if method == "POST" and path == "/v1/tasks/claim":
             project_id = body.get("project_id")

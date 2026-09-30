@@ -40,6 +40,18 @@ def mapped(fleet, tmp_path, name="device"):
     return client
 
 
+def test_pair_employee_registration_and_revoke_notify_owner(fleet, tmp_path):
+    _, project, _, coordinator = fleet
+    changes = []
+    coordinator.on_change = lambda: changes.append("changed")
+    client = paired(fleet, tmp_path)
+    assert len(changes) == 1
+    client.register_employee(project["id"], "Remote", "codex")
+    assert len(changes) == 2
+    coordinator.revoke_device(client.credentials["device_id"])
+    assert len(changes) == 3
+
+
 def test_pairing_real_tls_private_credential_and_project_context(fleet, tmp_path):
     owner, project, _, coordinator = fleet
     owner.add_memory(project["id"], "Rule", "Use local workspace")
