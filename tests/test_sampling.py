@@ -819,7 +819,15 @@ def test_sampling_stdio_e2e_wire(mailroot, tmp_path):
         done = False
         while time.time() < deadline and not done:
             log = read_sampling_log(proc_mailroot)
-            done = any(e.get("event") == "result" and e.get("outcome") == "ok" for e in log)
+            # These are two durable files, not one atomic transaction. Wait for
+            # both receipts rather than racing the writer after reading result.
+            letter = store.get_letter("WB", msg_id)
+            done = any(
+                e.get("event") == "result" and e.get("outcome") == "ok" for e in log
+            ) and any(
+                e.get("action") == "sampling" and e.get("outcome") == "ok"
+                for e in letter.get("handled_log") or []
+            )
             if not done:
                 time.sleep(0.1)
         assert done, f"audit trail incomplete: {read_sampling_log(proc_mailroot)}"
