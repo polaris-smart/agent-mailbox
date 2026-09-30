@@ -458,3 +458,35 @@ def test_project_tools_deny_wrong_device_employee_project_self_and_tool(fleet, t
             client.project_tool(project["id"], employee_id, tool, args)
         assert error.value.code == "permission_denied"
     assert owner.snapshot()["tasks"] == []
+
+
+def test_active_reconciliation_lists_only_authorized_device_runs(fleet, tmp_path):
+    owner, project, other, _ = fleet
+    first = mapped(fleet, tmp_path, "first")
+    second = mapped(fleet, tmp_path, "second")
+    own = first.register_employee(project["id"], "Own", "codex")
+    peer = second.register_employee(project["id"], "Peer", "codex")
+    private = owner.create_employee("Private", "codex", other["id"], node_id=own["node_id"])
+    own_task = owner.create_task(project["id"], "Own task", "Report", own["id"])
+    peer_task = owner.create_task(project["id"], "Peer task", "Report", peer["id"])
+    private_task = owner.create_task(other["id"], "Private task", "Secret", private["id"])
+    first.claim(project["id"])
+    second.claim(project["id"])
+    owner.claim_task(own["node_id"], project_ids=[other["id"]])
+    rows = first.active_runs()
+    assert rows == [
+        {
+            "id": own_task["id"],
+            "run_id": own_task["run_id"],
+            "project_id": project["id"],
+            "status": "starting",
+            "cancel_requested": False,
+        }
+    ]
+    assert peer_task["id"] not in json.dumps(rows)
+    assert private_task["id"] not in json.dumps(rows)
+    assert set(rows[0]) == {"id", "run_id", "project_id", "status", "cancel_requested"}
+    first.credentials["device_id"] = second.credentials["device_id"]
+    with pytest.raises(WorkbenchError) as error:
+        first.active_runs()
+    assert error.value.code == "permission_denied"

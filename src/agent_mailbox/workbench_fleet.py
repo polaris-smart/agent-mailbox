@@ -487,6 +487,19 @@ class FleetCoordinator:
                     if row["id"] in device["project_ids"]
                 ]
             }
+        if method == "GET" and path == "/v1/tasks/active":
+            return {
+                "tasks": [
+                    {
+                        key: task[key]
+                        for key in ("id", "run_id", "project_id", "status", "cancel_requested")
+                    }
+                    for task in self.store.snapshot()["tasks"]
+                    if task["node_id"] == device["device_id"]
+                    and task["project_id"] in device["project_ids"]
+                    and task["status"] in ACTIVE
+                ]
+            }
         match = re.fullmatch(r"/v1/projects/([A-Za-z0-9_-]+)/context", path)
         if method == "GET" and match:
             project_id = match[1]
@@ -706,6 +719,9 @@ class FleetClient:
 
     def projects(self):
         return self._request("GET", "/v1/projects")["projects"]
+
+    def active_runs(self):
+        return self._request("GET", "/v1/tasks/active")["tasks"]
 
     def project_tool(self, project_id, employee_id, tool, args):
         project_id = _identifier(project_id, "项目编号")
