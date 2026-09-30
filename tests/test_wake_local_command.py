@@ -26,6 +26,11 @@ from agent_mailbox.wake import (
     run_once,
 )
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="超时硬杀断言用 POSIX getpgid/killpg；win32 归平台批（0.7.6 发布 CI 实测定谳）",
+)
+
 
 @pytest.fixture()
 def env(tmp_path, monkeypatch):

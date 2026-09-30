@@ -27,6 +27,11 @@ from agent_mailbox.wake import (
     wake_main,
 )
 
+pytestmark = pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="install 通道旗标断言钉 darwin launchd 形态；linux systemd / win32 unsupported 归平台批（0.7.6 发布 CI 实测定谳）",
+)
+
 SECRET = "s"
 
 
