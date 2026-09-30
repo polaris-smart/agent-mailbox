@@ -20,7 +20,7 @@ from agent_mailbox.workbench_runtime import BridgeExecution
 from agent_mailbox.workbench_store import WorkbenchError, WorkbenchStore
 
 BRIDGE = r"""
-import asyncio,json,os,sys
+import asyncio,json,os,sys,pathlib
 request=json.loads(sys.stdin.readline())
 def send(kind, **fields):
     print(json.dumps(dict(protocol=1,run_id=request['run_id'],
@@ -30,13 +30,18 @@ if request['prompt']=='wait':
     operation=json.loads(sys.stdin.readline())
     send('result',status='cancelled' if operation['op']=='cancel' else 'failed')
     sys.exit(0)
-if request['prompt']=='permission':
+if request['prompt'].startswith('permission'):
     send('permission_required',request_id='write',
-         options=[{'optionId':'once','name':'Allow once','kind':'allow_once'}],
-         tool_call={'title':'Write a file'})
+         options=[{'optionId':'once','name':'Allow once','kind':
+                  'allow_always' if request['prompt']=='permission-invalid' else 'allow_once',
+                  'private':'option-secret'}],
+         tool_call={'title':'Write a file','rawInput':{'secret':'tool-secret'},'content':'private-content'},
+         request={'credentials':'raw-request-secret'},
+         timeout_ms=1000 if request['prompt']=='permission-timeout' else 120000)
     answer=json.loads(sys.stdin.readline())
-    if answer.get('decision')!='deny':
-        send('result',status='failed',error={'code':'UNEXPECTED_APPROVAL','message':'Must deny'})
+    if answer.get('decision')=='allow_once':
+        pathlib.Path(request['cwd'],'permission-approved').write_text('authorized')
+        send('result',status='completed',output_text='Human approved this operation once')
     else:
         send('result',status='failed',error={'code':'REMOTE_PERMISSION_DENIED','message':'Denied'})
     sys.exit(0)
@@ -184,14 +189,104 @@ def test_remote_control_cancel_stops_child_and_releases_same_employee_queue(remo
     assert await_task(owner.store, second["id"], "review")["result"]
 
 
-def test_remote_permission_requests_default_to_deny_without_human_approval(remote):
+def test_remote_permission_requests_follow_owner_human_deny(remote):
     owner, _, _, _, _ = remote
     task = dispatch(remote, "permission")
+    await_task(owner.store, task["id"], "waiting_approval")
+    request(owner, f"tasks/{task['id']}/permissions/write", {"decision": "deny"})
     result = await_task(owner.store, task["id"], "failed")
     assert result["error"]["code"] == "REMOTE_PERMISSION_DENIED"
     detail = owner.store.task_detail(task["id"])
-    assert detail["permissions"] == []
-    assert any(event["type"] == "permission_denied" for event in detail["events"])
+    assert detail["permissions"][0]["decision"] == "deny"
+    assert any(event["type"] == "permission_resolved" for event in detail["events"])
+
+
+def test_remote_permission_owner_allow_once_uses_only_sanitized_summary(remote):
+    owner, _, _, _, folder = remote
+    task = dispatch(remote, "permission")
+    await_task(owner.store, task["id"], "waiting_approval")
+    detail = owner.store.task_detail(task["id"])
+    encoded = json.dumps(detail)
+    for secret in ("option-secret", "tool-secret", "private-content", "raw-request-secret"):
+        assert secret not in encoded
+    assert detail["permissions"][0]["tool_call"] == {"title": "Write a file"}
+    request(owner, f"tasks/{task['id']}/permissions/write", {"decision": "allow_once"})
+    assert (
+        await_task(owner.store, task["id"], "review")["result"]
+        == "Human approved this operation once"
+    )
+    assert (folder / "permission-approved").read_text() == "authorized"
+
+
+def test_remote_permission_timeout_expires_and_late_approval_fails(remote):
+    owner, _, _, _, _ = remote
+    task = dispatch(remote, "permission-timeout")
+    result = await_task(owner.store, task["id"], "failed")
+    assert result["error"]["code"] == "REMOTE_PERMISSION_DENIED"
+    assert owner.store.get_permission(task["id"], "write")["status"] == "expired"
+    with pytest.raises(WorkbenchError):
+        owner.store.resolve_permission(task["id"], "write", "allow_once")
+
+
+def test_remote_permission_cancel_never_allows_operation(remote):
+    owner, _, _, _, _ = remote
+    task = dispatch(remote, "permission")
+    await_task(owner.store, task["id"], "waiting_approval")
+    request(owner, f"tasks/{task['id']}/cancel", {})
+    assert await_task(owner.store, task["id"], "cancelled")["cancel_requested"]
+    assert owner.store.get_permission(task["id"], "write")["status"] == "expired"
+
+
+def test_remote_permission_without_allow_once_option_cannot_be_approved(remote):
+    owner, _, _, _, _ = remote
+    task = dispatch(remote, "permission-invalid")
+    await_task(owner.store, task["id"], "waiting_approval")
+    with pytest.raises(WorkbenchError):
+        owner.store.resolve_permission(task["id"], "write", "allow_once")
+    request(owner, f"tasks/{task['id']}/permissions/write", {"decision": "deny"})
+    assert (
+        await_task(owner.store, task["id"], "failed")["error"]["code"] == "REMOTE_PERMISSION_DENIED"
+    )
+
+
+def test_remote_permission_revoke_stops_child_without_authorized_operation(remote):
+    owner, device, _, _, folder = remote
+    task = dispatch(remote, "permission")
+    await_task(owner.store, task["id"], "waiting_approval")
+    request(owner, "fleet/revoke", {"device_id": device.store.local_node()["id"]})
+    deadline = time.monotonic() + 5
+    while device.remote_worker.status()["active"] and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert device.remote_worker.status()["active"] == 0
+    assert not (folder / "permission-approved").exists()
+    assert owner.store.get_permission(task["id"], "write")["status"] == "expired"
+    with pytest.raises(WorkbenchError):
+        owner.store.resolve_permission(task["id"], "write", "allow_once")
+
+
+def test_remote_permission_disconnect_never_runs_unapproved_operation(remote, monkeypatch):
+    owner, device, _, _, folder = remote
+
+    def disconnected(*args, **kwargs):
+        raise WorkbenchError("network_error", "Coordinator disconnected")
+
+    monkeypatch.setattr(device.remote_client, "permission_decision", disconnected)
+    task = dispatch(remote, "permission")
+    assert (
+        await_task(owner.store, task["id"], "failed")["error"]["code"] == "REMOTE_PERMISSION_DENIED"
+    )
+    assert not (folder / "permission-approved").exists()
+    assert owner.store.get_permission(task["id"], "write")["status"] == "expired"
+
+
+def test_remote_permission_worker_stop_expires_pending_without_allow(remote):
+    owner, device, _, _, folder = remote
+    task = dispatch(remote, "permission")
+    await_task(owner.store, task["id"], "waiting_approval")
+    device.remote_worker.close()
+    assert await_task(owner.store, task["id"], "cancelled")
+    assert owner.store.get_permission(task["id"], "write")["status"] == "expired"
+    assert not (folder / "permission-approved").exists()
 
 
 def test_remote_child_uses_injected_mcp_shared_context_and_proposes_note(remote):
