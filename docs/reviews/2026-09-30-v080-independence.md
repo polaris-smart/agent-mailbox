@@ -12,7 +12,7 @@
 
 | 级别 | 可触发的问题 | 本轮处理与证据 |
 | --- | --- | --- |
-| P1 | alpha2 默认 console 与 Python 入口仍启动 v0.7 server，包内同时含两套产品 | 默认入口统一工作台；删除 18 个旧生产模块、39 个旧测试文件、7 个旧安装/验收脚本；包内容及隔离入口检查 |
+| P1 | alpha2 默认 console 与 Python 入口仍启动 v0.7 server，包内同时含两套产品 | 默认入口统一工作台；删除 17 个旧生产模块并重写旧 CLI；删除 39 个旧测试文件、7 个旧安装/验收脚本；包内容及隔离入口检查 |
 | P1 | 远端执行已产出结果，但发送回执或最后一次 control 断网时，结果没有 durable 保存，重启只报中断 | 私有 terminal outbox 先保存；断线/重启重发原结果；不重复模型执行 |
 | P1 | 主控已写终态但回包丢失，重复回执会被 invalid_state 拒绝 | SQLite 同事务存 run+canonical payload 摘要；同回执可确认，不改人已验收状态；冲突/旧 run 拒绝；本机清理写盘失败保留原回执，不能变成执行失败 |
 | P1 | 邀请已消耗，配对回包或 client.json 保存失败使同设备无法重试 | 首次请求前持久 256-bit proof；server 仅 hash；同 invite/device/proof 恢复同 token；其他 proof/撤销拒绝 |

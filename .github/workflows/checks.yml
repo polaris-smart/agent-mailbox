@@ -9,7 +9,7 @@ jobs:
     env:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: utf-8
-      AGENT_MAILBOX_TEST_RUNTIME_DIR: src/agent_mailbox/runtime_bridge
+      AGENT_MAILBOX_TEST_RUNTIME_DIR: ${{ github.workspace }}/src/agent_mailbox/runtime_bridge
     strategy:
       fail-fast: false
       matrix:
