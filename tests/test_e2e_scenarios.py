@@ -30,6 +30,11 @@ from agent_mailbox.digest import digest_path
 from agent_mailbox.store import MailStore
 from agent_mailbox.wake import WAKE_ATTEMPTS_FILE, WAKE_LABEL, wake_main
 
+pytestmark = pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="场景钉 darwin 形态（launchd plist/WatchPaths）；linux systemd / win32 的等价场景测归平台批（0.7.6 发布 CI 实测定谳）",
+)
+
 AUTH_LINE = "Authentication required. Please use /login to continue"
 
 # 假被叫醒 agent: 读投递 env → 回信给发件人 → 标 done → 落 marker（触发证据）
@@ -37,10 +42,7 @@ FAKE_AGENT_BODY = """
 import os
 from agent_mailbox.store import MailStore
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "darwin",
-    reason="场景钉 darwin 形态（launchd plist/WatchPaths）；linux systemd / win32 的等价场景测归平台批（0.7.6 发布 CI 实测定谳）",
-)
+
 root = os.environ["AGENT_MAIL_HOME"]
 me = os.environ.get("AGENT_MAIL_AGENT_ID", "")
 mid = os.environ.get("AGENT_MAIL_MSG_ID", "")

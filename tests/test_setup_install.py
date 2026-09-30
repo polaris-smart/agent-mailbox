@@ -39,7 +39,6 @@ pytestmark = pytest.mark.skipif(
     reason="场景钉 darwin 形态（launchd plist/WatchPaths）；linux systemd / win32 的等价场景测归平台批（0.7.6 发布 CI 实测定谳）",
 )
 
-
 @pytest.fixture()
 def fake_home(tmp_path, monkeypatch):
     """Pin Path.home() + PATH to fixture dirs — no test touches the real HOME."""
