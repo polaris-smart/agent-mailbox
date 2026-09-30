@@ -479,13 +479,34 @@ function renderMembers() {
   const box = document.getElementById("members");
   box.innerHTML = (DATA.members || []).map(m => {
     const label = { ok: "通", bad: "收不到", warn: "可疑", idle: "未实测" }[m.dot] || "未实测";
+    // G-6/G-7 入口档：每个成员的 app/cli 入口一眼可见 + 一键添加（其余全探测）
+    const entries = m.entries || {};
+    const entryBits = Object.keys(entries).map(k => {
+      const e = entries[k] || {};
+      const mode = e.wake_mode === "manual_confirm" ? "需人工" : "自动";
+      return '<span class="c">' + esc(k) + '·' + esc(e.model || "") + '·' + mode + '</span>';
+    }).join("");
+    const addBtns = m.kind === "owner" ? "" :
+      '<span class="c">' +
+      '<a href="#" data-add-entry data-agent="' + esc(m.id) + '" data-entry="cli">＋cli</a> ' +
+      '<a href="#" data-add-entry data-agent="' + esc(m.id) + '" data-entry="app">＋app</a></span>';
     return '<div class="item" data-member="' + esc(m.id) + '">' +
       '<span class="dot ' + m.dot + '"></span>' + esc(m.id) +
-      '<span class="c">' + label + '</span></div>';
+      '<span class="c">' + label + '</span>' + entryBits + addBtns + '</div>';
   }).join("");
   box.querySelectorAll("[data-member]").forEach(el => el.addEventListener("click", () => {
     memberFilter = memberFilter === el.dataset.member ? null : el.dataset.member;
     renderList(); renderMembers();
+  }));
+  box.querySelectorAll("[data-add-entry]").forEach(el => el.addEventListener("click", async ev => {
+    ev.preventDefault(); ev.stopPropagation();
+    const agent = el.dataset.agent, entry = el.dataset.entry;
+    const model = (prompt("模型（留空=自动探测，如 custom-local:deepseek-v4.1-flash）：") || "").trim();
+    try {
+      const r = await api("/api/entries/save", { agent, entry, model });
+      toast("成员 " + agent + " 的 " + entry + " 入口已生效（" + (r.wake_mode || "unattended") + "）");
+      reload(false);
+    } catch (err) { toastErr(err.message); }
   }));
 }
 

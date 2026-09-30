@@ -161,8 +161,9 @@ def test_doctor_detects_wb_auth_required_with_plain_reason(tmp_path):
     )
     auth_check = _check(report, "host_auth")
     assert auth_check["ok"] is False
-    assert "未登录" in auth_check["detail"]
-    assert "登录" in auth_check["next_step"] and "doctor" in auth_check["next_step"]
+    # G-6 口径: 认证报错 ≠ 真需要 /login——人话判「缺配置家」，修法指配置页面
+    assert "缺配置家" in auth_check["detail"]
+    assert "配置页面" in auth_check["next_step"] and "doctor" in auth_check["next_step"]
 
 
 def test_doctor_last_wake_distinguishes_fake_success(tmp_path):

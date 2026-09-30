@@ -35,8 +35,8 @@ fi
 
 # ------------------------------------------------ 1. 自造干净环境
 SBX="$(mktemp -d "${TMPDIR:-/tmp}/agent-mailbox-accept.XXXXXX")"
-trap 'rm -rf "$SBX"' EXIT
-HOME_SBX="$(cd "$SBX/home" 2>/dev/null && pwd || echo "$SBX/home")"  # 规格化（双斜杠会让路径比对假红）
+: # keep sandbox for debug
+HOME_SBX="$SBX/home"
 MAIL_ROOT="$HOME_SBX/.agent-mail"
 BIN_SBX="$HOME_SBX/bin"
 LA_DIR="$HOME_SBX/Library/LaunchAgents"
@@ -50,7 +50,7 @@ CLEAN_ENV=(env -i HOME="$HOME_SBX" PATH="$BIN_SBX:/usr/bin:/bin"
 
 mb() { "${CLEAN_ENV[@]}" "$PY" -m agent_mailbox.cli "$@"; }      # 产品 CLI（用户位置）
 mbwake() { "${CLEAN_ENV[@]}" "$PY" -m agent_mailbox.wake "$@"; } # 产品唤醒器
-mbpy() { "${CLEAN_ENV[@]}" "$PY" -c "$1"; }                      # store 断言面
+mbpy() { "${CLEAN_ENV[@]}" "$PY" -c "$1" "${@:2}"; }                              # 透传断言参数（原版丢参=全部 got 空）
 
 # ------------------------------------------------ 2. 断言器
 FAILS=0
@@ -172,7 +172,7 @@ else
 fi
 
 # cli 入口（codebuddy）：入口档在 + 配置家探测在 + 模型继承在
-CLI_ENTRY="$(read_entry codebuddy cli entry 2>/dev/null || true)"
+CLI_ENTRY="$(read_entry codebuddy cli entry 2>"$SBX/re.err" || true)"
 if [ "$CLI_ENTRY" = "cli" ]; then
   pass "A1.3" "agents.codebuddy.entries.cli 存在（cli 入口一条）"
 else
@@ -240,6 +240,8 @@ if [ -f "$PLIST_APP" ] && plutil -lint "$PLIST_APP" >/dev/null 2>&1; then
 else
   fail "A1.11" "app 入口 plist 未生成或不合法（${PLIST_APP}）"
 fi
+
+cp "$WJ" "$SBX/wake-after-setup.json" 2>/dev/null
 
 # ================================================ A2 · 真跑：发信 → 自动处理 → done 增量
 say ""

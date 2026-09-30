@@ -278,7 +278,7 @@ def test_cmd_run_adapter_cli_override(env, monkeypatch):
     )
     captured = {}
 
-    def fake_run(root_, cfg_, once=False):
+    def fake_run(root_, cfg_, once=False, entry_id=""):
         captured["adapter"] = cfg_.adapter
         captured["agent"] = cfg_.agent_id
 

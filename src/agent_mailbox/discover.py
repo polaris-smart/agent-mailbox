@@ -176,7 +176,7 @@ def default_context(
 ) -> DiscoverContext:
     """Build the real-machine context (injectable knobs left at defaults)."""
     home = Path.home()
-    apps = (Path("/Applications"), home / "Applications")
+    apps = (home / "Applications", Path("/Applications"))  # 用户目录优先（G-7 探测序）
     return DiscoverContext(
         root=Path(root or os.environ.get("AGENT_MAIL_HOME", home / ".agent-mail")).expanduser(),
         home=home,

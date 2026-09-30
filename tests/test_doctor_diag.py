@@ -115,6 +115,7 @@ def test_doctor_g1_titles_have_installed_loaded_split():
         "breaker",
         "wake_scripts",
         "alert_reach",
+        "entries",
     ]
 
 

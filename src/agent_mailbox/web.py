@@ -30,6 +30,7 @@ import tempfile
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from . import version_check
@@ -406,6 +407,9 @@ def _member_cards(store: MailStore) -> list[dict]:
     report = _cached_report(store.root) or {}
     channels = {m.get("member"): (m.get("channels") or []) for m in report.get("members", [])}
     reg = store.registry().get("agents", {})
+    from .wake import WakeConfig
+
+    cfg = WakeConfig.load(Path(store.root))  # 无 wake.json 时为 None（fail-open）
     out = []
     for aid in sorted(set(reg) | {OWNER_ID} | set(channels)):
         card = reg.get(aid) if isinstance(reg.get(aid), dict) else {}
@@ -426,6 +430,7 @@ def _member_cards(store: MailStore) -> list[dict]:
                 "description": card.get("description", ""),
                 "dot": dot,
                 "channels": chans,
+                "entries": cfg.agent_entries(aid) if cfg else {},
             }
         )
     return out
@@ -629,6 +634,14 @@ class _BoardHandler(BaseHTTPRequestHandler):
         # ---- v0.7.5 mailbox / wizard / visibility APIs ----
         if path == "/api/mail":
             return self._json(200, _mailbox_payload(self.store))
+        if path == "/api/entries":
+            # G-6 配置页面数据面：每个成员的入口档（agents.<ID>.entries）
+            from .wake import WakeConfig
+
+            cfg = WakeConfig.load(Path(self.store.root))
+            members = sorted(self.store.registry().get("agents", {}))
+            out = {m: cfg.agent_entries(m) for m in members if cfg.agent_entries(m)}
+            return self._json(200, {"entries": out})
         if path == "/api/visibility":
             return self._json(
                 200,
@@ -793,6 +806,54 @@ class _BoardHandler(BaseHTTPRequestHandler):
                 kind=str(data.get("kind", "") or ""),
             )
             return self._json(200, {"member": card})
+        if path == "/api/entries/save":
+            # G-6/G-7 配置页：用户只给 成员名 + 入口类型（app/cli），其余
+            # （二进制/配置家/env/模型）由 installer 探测补齐——零手写零 env。
+            data = self._body()
+            agent = str(data.get("agent", "")).strip()
+            entry_id = str(data.get("entry", "")).strip()
+            if not agent or entry_id not in ("app", "cli"):
+                return self._json(400, {"error": "agent 与 entry(app|cli) 必填"})
+            overrides: dict[str, Any] = {}
+            if data.get("model"):
+                overrides["model"] = str(data["model"])
+            if data.get("binary"):
+                overrides["binary"] = str(data["binary"])
+            from .installer import install_agent
+
+            try:
+                result = install_agent(
+                    root,
+                    agent,
+                    adapter="local-command",
+                    entry_id=entry_id,
+                    entry=overrides or None,
+                    activate=True,
+                )
+            except MailboxError as e:
+                return self._json(400, {"error": str(e)})
+            except Exception as e:  # noqa: BLE001 — 配置页不裸甩栈
+                return self._json(
+                    400,
+                    {
+                        "error": (
+                            f"{agent} 入口 {entry_id} 安装失败：{e}。"
+                            "常见原因=二进制不在 PATH 或配置家缺失——"
+                            "在配置页面补 binary/config_env 后重试"
+                        )
+                    },
+                )
+            return self._json(
+                200,
+                {
+                    "ok": True,
+                    "agent": agent,
+                    "entry": entry_id,
+                    "command": result.get("command"),
+                    "wake_mode": result.get("wake_mode", "unattended"),
+                    "notes": result.get("notes", []),
+                },
+            )
         if path == "/api/discover":
             data = self._body()
             report = _run_discover(root, save=bool(data.get("save", True)))

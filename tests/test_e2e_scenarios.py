@@ -224,7 +224,7 @@ def test_S3_fault_injection_triple(tmp_path, clean_home, capsys):
     # ② 未登录态 → ③ 判 auth_required（auth_required 行 + 人话根因）
     last_wake = checks["last_wake"]
     assert last_wake["ok"] is False and "auth_required" in last_wake["detail"]
-    assert "未登录" in last_wake["next_step"]
+    assert "缺配置家" in last_wake["next_step"]
     # ③ 身份不在名单 → ② 判 gamma 需补注册/补装（t-64 装/加载分行后归「装」维；
     #    加载维另行如实报未加载单元——假环境 launchctl 永无真加载，两维同真）
     wake_installed = checks["wake_installed"]

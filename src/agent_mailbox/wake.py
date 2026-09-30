@@ -260,6 +260,30 @@ class WakeConfig:
                 return v
         return {}
 
+    def agent_entries(self, agent_id: str) -> dict[str, Any]:
+        """``agents.<ID>.entries`` 入口档（G-6）：``{entry_id: profile}``。
+
+        缺段/形状不对回 {}（fail-open：旧配置无入口档照旧可用）。"""
+        entries = self.agent_section(agent_id).get("entries")
+        if not isinstance(entries, dict):
+            return {}
+        return {str(k): v for k, v in entries.items() if isinstance(v, dict)}
+
+    def set_agent_entry(
+        self, agent_id: str, entry_id: str, profile: dict[str, Any]
+    ) -> dict[str, Any]:
+        """只写 ``agents.<ID>.entries.<entry>``（G-6 硬约束：只动自己的键）。
+
+        段内既有键（adapter/command/sampling policy/其他入口）原样保留。
+        返回更新后的 entries 段。"""
+        section = dict(self.agent_section(agent_id))
+        entries = section.get("entries")
+        entries = dict(entries) if isinstance(entries, dict) else {}
+        entries[str(entry_id)] = dict(profile)
+        section["entries"] = entries
+        self._agents[str(agent_id)] = section
+        return entries
+
     def set_agent_route(
         self,
         agent_id: str,
@@ -307,13 +331,37 @@ class WakeConfig:
         if webhook_url:
             self._cli_override["webhook_url"] = str(webhook_url)
 
-    def effective_route(self, agent_id: str) -> WakeRoute:
-        """解析一个身份的生效唤醒通道（t-58 优先级链）。
+    def effective_route(self, agent_id: str, entry_id: str = "") -> WakeRoute:
+        """解析一个身份的生效唤醒通道（t-58 优先级链 + G-6 入口档）。
 
         逐键独立解析：CLI 覆盖 > ``agents.<ID>`` > 全局 > 默认。旧配置（无
         agents 段/缺键）每个键都自然落回全局/默认——fail-open 向后兼容，
-        多身份同机各回各家则靠段内键生效。"""
+        多身份同机各回各家则靠段内键生效。
+
+        ``entry_id`` 非空且该入口档存在 ⇒ 解析**该入口**的通道（G-6 per-entry
+        唤醒单元：命令 = 生成物 wrapper，超时 = 入口档 watchdog_secs）；wrapper
+        缺失（manual_confirm / 未生成）回空命令——LocalCommandAdapter 判
+        no_command（信不丢），doctor 三级报点名该入口。"""
         section = self.agent_section(agent_id)
+        if entry_id:
+            entries = self.agent_entries(agent_id)
+            prof = entries.get(str(entry_id))
+            if isinstance(prof, dict) and prof.get("entry"):
+                src = f"entries:{agent_id}:{entry_id}"
+                wrapper = self.root / f"wake-cmd-{agent_id}-{entry_id}.sh"
+                command = ["/bin/bash", str(wrapper)] if wrapper.is_file() else []
+                timeout = self.command_timeout
+                try:
+                    if prof.get("watchdog_secs") is not None:
+                        timeout = float(prof["watchdog_secs"])
+                except (TypeError, ValueError):
+                    pass
+                return WakeRoute(
+                    adapter="local-command",
+                    command=tuple(command),
+                    command_timeout=timeout,
+                    sources={"adapter": src, **({"command": src} if command else {})},
+                )
         webhook = section.get("webhook")
         webhook = webhook if isinstance(webhook, dict) else {}
         src_agent = f"agents:{agent_id}" if section else ""
@@ -569,7 +617,9 @@ class LocalCommandAdapter(WakeAdapter):
         except OSError as exc:  # binary missing etc. — retry path, 信不丢
             self.last_error_class = "spawn_failed"
             print(
-                f"[agent-mailbox wake] local-command spawn failed: {exc}",
+                f"[agent-mailbox wake] local-command spawn failed: {exc}\n"
+                "  人话: 该入口的唤醒命令不存在——去配置页面给该成员补 binary"
+                "（绝对路径），或重跑 install 由产品探测注入。",
                 file=sys.stderr,
                 flush=True,
             )
@@ -593,7 +643,9 @@ class LocalCommandAdapter(WakeAdapter):
             self.last_error_class = "auth_required"
             print(
                 f"[agent-mailbox wake] local-command host not logged in "
-                f"(exit {proc.returncode}): {auth_line}",
+                f"(exit {proc.returncode}): {auth_line}\n"
+                "  人话: 该入口缺配置家/凭据——去配置页面给该成员的入口补 "
+                "config_env 与 model（本地自定义 provider 不需要 /login）。",
                 file=sys.stderr,
                 flush=True,
             )
@@ -945,6 +997,7 @@ def run_once(
     store: MailStore | None = None,
     now: float | None = None,
     session_label: str | None = None,
+    entry_id: str = "",
 ) -> dict[str, Any]:
     """One drain round: reap orphans, scan, claim-first, route (optional
     Jev), wake, dedup, retry.
@@ -980,7 +1033,9 @@ def run_once(
     }
     try:
         store = store or MailStore(root)
-        adapter = adapter or make_adapter(cfg)
+        # G-6: entry_id 非空 = per-entry plist 触发（--entry cli|app），按入口档
+        # 解析通道；空 = 传统单路由（向后兼容逐字节）。
+        adapter = adapter or make_adapter(cfg.effective_route(cfg.agent_id, entry_id))
         ref = time.time() if now is None else now
         # t-56: per-round session identity for handled_log ``by`` (J3) —
         # "wake:<runid>" makes the claiming window auditable across windows.
@@ -1153,7 +1208,11 @@ def run_once(
 
 
 def run(
-    root: Path, cfg: WakeConfig, poll_interval: float = 2.0, once: bool = False
+    root: Path,
+    cfg: WakeConfig,
+    poll_interval: float = 2.0,
+    once: bool = False,
+    entry_id: str = "",
 ) -> dict[str, Any]:
     """Drain loop. WatchPaths/path-unit mode passes ``once=True`` (the OS
     re-launches us on every inbox change); manual mode loops forever.
@@ -1162,7 +1221,7 @@ def run(
     ``failed``/``round_error`` 非零退出；loop 模式永不返回（每轮失败已有
     U2 告警 + 锚A fail 行留痕）。"""
     while True:
-        stats = run_once(root, cfg)
+        stats = run_once(root, cfg, entry_id=entry_id)
         if once:
             return stats
         time.sleep(poll_interval)
@@ -1552,7 +1611,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
     )
     if not cfg.agent_id:
         raise SystemExit("wake run: no agent_id in wake.json — pass --agent")
-    stats = run(root, cfg, once=args.once) or {}
+    stats = run(root, cfg, once=args.once, entry_id=str(getattr(args, "entry", "") or "")) or {}
     # t-59（A-2）失败必响: once 模式（WatchPaths/手跑）投递失败必须非零退出，
     # 禁 rc=0 伪装成功；信不丢，下一个触发会重投。
     failed = int(stats.get("failed") or 0)
@@ -1634,6 +1693,11 @@ def wake_main(argv: list[str] | None = None) -> None:
         "--webhook-url", default="", help="highest-priority in-memory webhook override (t-58)"
     )
     p_run.add_argument("--once", action="store_true", help="one round then exit (WatchPaths mode)")
+    p_run.add_argument(
+        "--entry",
+        default="",
+        help="run the drain for ONE entry profile (G-6 per-entry wake unit; e.g. cli|app)",
+    )
     p_run.set_defaults(func=_cmd_run)
 
     p_st = sub.add_parser("status", help="show wake configuration and install state")

@@ -107,7 +107,11 @@ def test_setup_zero_input_auto_installs_discovered_cli(fake_home, capsys):
     out = capsys.readouterr().out
     saved = json.loads((root / "wake.json").read_text(encoding="utf-8"))
     assert saved["agents"]["codex"]["adapter"] == "local-command"
-    assert saved["agents"]["codex"]["command"] == [str(fake_cli)]
+    # G-6 入口档流程：CLI 形态成员的 command 走产品生成的包装脚本（配置家/
+    # 模型 env 显式入单元），不再裸调二进制——包装脚本体内含探测到的 CLI。
+    cmd = saved["agents"]["codex"]["command"]
+    assert cmd[0] == "/bin/bash" and cmd[1].endswith("wake-cmd-codex-cli.sh")
+    assert str(fake_cli) in (root / "wake-cmd-codex-cli.sh").read_text(encoding="utf-8")
     assert "codex" in MailStore(root).registry()["agents"]
     assert "自动接线" in out or "初始化完成" in out
     # 已有配置的身份不重复动（存量为空的根此处只验 codex 装上了）

@@ -258,6 +258,7 @@ def _setup_install_one(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         activate=not getattr(args, "no_activate", False),
         launch_agents_dir=getattr(args, "launch_agents_dir", None),
         systemd_dir=getattr(args, "systemd_dir", None),
+        entry_id=str(getattr(args, "entry", "") or ""),
     )
 
 
@@ -522,6 +523,7 @@ DOCTOR_TITLES = (
     ("breaker", "⑦ 唤醒断路器（breaker）"),
     ("wake_scripts", "⑧ 仓内/线上脚本一致"),
     ("alert_reach", "⑨ 告警投递可达性"),
+    ("entries", "⑩ 入口档体检"),
 )
 
 # ⑥ 宿主认证态的已知故障特征（对日志尾部逐行匹配；spawn_failed 用组提取
@@ -530,10 +532,12 @@ DOCTOR_LOG_SIGNATURES: tuple[tuple[str, re.Pattern[str], str, str | None], ...] 
     (
         "auth_required",
         re.compile(r"authentication required|please use /login|未登录", re.IGNORECASE),
-        "宿主 CLI 未登录",
+        "入口缺配置家/凭据（认证报错 ≠ 真需要 /login）",
         (
-            "去宿主 CLI 完成登录（如 codex /login 或对应 CLI 的登录命令），"
-            "登录后重跑 agent-mailbox doctor 确认。"
+            "打开配置页面给该成员的入口补 config_env 与 model"
+            "（如 codebuddy 的 CODEBUDDY_CONFIG_DIR=~/.workbuddy 与 "
+            "--model custom-local:…），保存即生效，重跑 agent-mailbox doctor 复核。"
+            "不要做任何 /login——本地自定义 provider 不需要账号登录（G-6 更正口径）。"
         ),
     ),
     (
@@ -545,10 +549,10 @@ DOCTOR_LOG_SIGNATURES: tuple[tuple[str, re.Pattern[str], str, str | None], ...] 
     (
         "provider_missing",
         re.compile(r"无法定位 CLI"),
-        "zcode provider 配置路径不存在",
+        "入口缺 provider 配置（非交互 shell 丢了 app 的 env）",
         (
-            "检查 zcode provider 配置：真源在 /Applications/ZCode.app/Contents/Resources/config/"
-            "provider 与 ~/.zcode/v2/provider_config.json，唤醒命令里的路径要指向真源。"
+            "该入口缺 provider 配置 → 配置页面补，或重跑 install 由产品探测注入；"
+            "真源在 ~/.zcode/v2/provider_config.json 与 app 内 config/provider。"
         ),
     ),
 )
@@ -1105,7 +1109,10 @@ def doctor_report(
             # （带真实 agent id，非占位符）。
             fixes: list[str] = []
             if "auth_required" in bad_errs:
-                fixes.append("宿主 CLI 未登录 → 去对应 CLI 完成登录（如 codex /login）")
+                fixes.append(
+                    "入口缺配置家/凭据 → 配置页面补 config_env 与 model"
+                    "（本地 provider 不需要 /login，G-6 口径）"
+                )
             if "spawn_failed" in bad_errs:
                 fixes.append(
                     "唤醒命令不在 PATH/不存在 → "
@@ -1392,6 +1399,47 @@ def doctor_report(
                 "（只读探测, 未真发信）",
             )
 
+        # ⑩ 入口档三级体检（G-6）: 每条入口的配置家/二进制按「在不在+通不通」
+        # 逐条点名（人话 + 可操作指引），负例（配置家改错）由此现形。
+        _entry_problems: list[str] = []
+        _entry_ok: list[str] = []
+        for _aid2 in targets:
+            for _eid, _prof in sorted(cfg.agent_entries(_aid2).items()):
+                _label2 = f"{_aid2}/{_eid}"
+                _bad2 = ""
+                _bin = str(_prof.get("binary") or "")
+                if _bin and not _bin.startswith("/"):
+                    _bad2 = f"二进制不是绝对路径（{_bin}）"
+                elif _bin and not Path(_bin).exists():
+                    _bad2 = f"二进制不存在（{_bin}）"
+                for _k, _v in sorted((_prof.get("config_env") or {}).items()):
+                    _vp = str(_v)
+                    if _vp.startswith("/") and not _vp.endswith(".json") and not Path(_vp).is_dir():
+                        _bad2 = f"配置家 {_k} 指向不存在的目录（{_vp}）"
+                    elif _vp.startswith("/") and _vp.endswith(".json") and not Path(_vp).is_file():
+                        _bad2 = f"配置家 {_k} 指向不存在的文件（{_vp}）"
+                if _bad2:
+                    _entry_problems.append(
+                        f"{_label2}: {_bad2} → 打开配置页面给 {_label2} 补配置家/二进制后重跑 install"
+                    )
+                else:
+                    _entry_ok.append(_label2)
+        if _entry_problems:
+            _check(
+                "entries",
+                False,
+                "；".join(_entry_problems)
+                + (f"；正常: {' '.join(_entry_ok)}" if _entry_ok else ""),
+                "入口断开项在配置页面按成员逐条补（config_env/binary），"
+                "补完重跑 agent-mailbox setup --agent <id> --entry <app|cli> 复绿。",
+            )
+        elif _entry_ok:
+            _check(
+                "entries",
+                True,
+                f"入口档全部健康（配置家/二进制在位）: {' '.join(_entry_ok)}",
+            )
+
     unhealthy = [c for c in checks if not c["ok"]]
     return {
         "root": str(root),
@@ -1505,6 +1553,12 @@ def cli_main(argv: list[str] | None = None) -> int:
         "--agent",
         default="",
         help="显式装这一个身份（配合 --adapter/--command/--webhook-url）；缺省=零输入自动发现接线",
+    )
+    p.add_argument(
+        "--entry",
+        default="",
+        choices=("app", "cli"),
+        help="入口类型（G-6 入口档：app|cli）——按名字+入口重装 = 配置页负例复绿的 CLI 面",
     )
     p.add_argument(
         "--adapter",
