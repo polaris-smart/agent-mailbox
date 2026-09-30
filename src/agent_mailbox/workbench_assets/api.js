@@ -18,10 +18,10 @@ if (fragment.has("token")) {
   try { token = window.sessionStorage.getItem(storageKey) || ""; } catch { /* no persisted authorization */ }
 }
 
-async function request(path, method = "GET", body) {
+async function request(path, method = "GET", body, timeoutMs = 15000) {
   if (!token) throw new ApiError("authorization_required", 401);
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 15000);
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     const headers = { Authorization: `Bearer ${token}`, Accept: "application/json" };
     if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -104,6 +104,11 @@ export const api = Object.freeze({
   tokenAvailable: Boolean(token),
   subscribeChanges,
   snapshot: () => request("/bootstrap"),
+  updateStatus: () => request("/updates/status"),
+  updateChannel: (channel) => request("/updates/channel", "POST", { channel }),
+  checkUpdates: () => request("/updates/check", "POST", {}),
+  prepareUpdate: () => request("/updates/prepare", "POST", {}, 60000),
+  resumeUpdates: () => request("/updates/resume", "POST", {}),
   createProject: (body) => request("/projects", "POST", body),
   pickProject: () => request("/pick-project", "POST", {}),
   discoverEmployees: () => request("/discover"),

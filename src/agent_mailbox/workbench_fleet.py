@@ -16,6 +16,7 @@ import json
 import os
 import re
 import secrets
+import socket
 import ssl
 import threading
 import time
@@ -24,6 +25,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
+from . import __version__
+from .workbench_compatibility import FLEET_PROTOCOL, node_report
 from .workbench_execution_resources import execution_project_context
 from .workbench_store import ACTIVE, WorkbenchError, WorkbenchStore
 
@@ -408,6 +411,8 @@ class FleetCoordinator:
                 existing is not None and not existing.get("revoked", False)
             ):
                 raise WorkbenchError("permission_denied", "该设备已有身份，请使用现有凭据。")
+            if self.store.update_maintenance()["paused"]:
+                raise WorkbenchError("UPDATE_PAUSED", "主控正在准备更新，请恢复接单后再加入设备。")
             token = pair_token or secrets.token_urlsafe(32)
             self.store.upsert_device(
                 device_id, name, "online", datetime.now(timezone.utc).isoformat()
@@ -445,6 +450,16 @@ class FleetCoordinator:
             valid = hmac.compare_digest(expected, _digest(token))
             if not device or not valid or device.get("revoked"):
                 raise WorkbenchError("permission_denied", "设备身份验证失败。")
+            if "x-agent-mail-version" in headers or "x-agent-mail-protocol" in headers:
+                report = node_report(
+                    headers.get("x-agent-mail-version"), headers.get("x-agent-mail-protocol")
+                )
+                if (
+                    device.get("version") != report["version"]
+                    or device.get("protocol") != report["protocol"]
+                ):
+                    device.update(report)
+                    self._save()
             return {**device, "project_ids": list(device["project_ids"]), "_request_token": token}
 
     @staticmethod
@@ -704,7 +719,11 @@ class FleetCoordinator:
                 "device": {
                     key: device[key] for key in ("device_id", "name", "project_ids", "paired_at")
                 },
-                "coordinator": self.store.local_node(),
+                "coordinator": {
+                    **self.store.local_node(),
+                    "version": __version__,
+                    "protocol": FLEET_PROTOCOL,
+                },
             }
         if method == "GET" and path == "/v1/projects":
             return {
@@ -744,6 +763,7 @@ class FleetCoordinator:
             self.notify()
             return {"employee": employee}
         if method == "POST" and path == "/v1/tasks/claim":
+            self._compatible_claim(device)
             project_id = body.get("project_id")
             self._scope(device, project_id)
             wait = body.get("wait", 0)
@@ -758,6 +778,7 @@ class FleetCoordinator:
                     if self.server is not None:
                         device = self._authenticate(headers)
                         self._scope(device, project_id)
+                        self._compatible_claim(device)
                         task = self.store.claim_task(device["device_id"], project_ids=[project_id])
             if task:
                 employee = next(
@@ -828,11 +849,30 @@ class FleetCoordinator:
             self.store.upsert_device(device_id, record["name"], "offline")
         self.notify()
 
-    def public_devices(self):
+    @staticmethod
+    def _compatible_claim(device):
+        if device.get("protocol") not in {None, FLEET_PROTOCOL}:
+            raise WorkbenchError(
+                "protocol_incompatible", "节点协议不兼容，请更新后再领取新任务；已有任务仍可回执。"
+            )
+
+    def public_devices(self, include_reports=False):
         """Owner UI metadata; no token hashes, secrets or invitation records."""
         with self.lock:
             return [
-                {"id": device_id, "revoked": bool(record.get("revoked", False))}
+                {
+                    "id": device_id,
+                    "revoked": bool(record.get("revoked", False)),
+                    **(
+                        {
+                            key: value
+                            for key, value in node_report(
+                                record.get("version"), record.get("protocol")
+                            ).items()
+                            if include_reports and key in record
+                        }
+                    ),
+                }
                 for device_id, record in self.state["devices"].items()
             ]
 
@@ -840,6 +880,11 @@ class FleetCoordinator:
 class FleetClient:
     def __init__(self, root: Path, invite: dict):
         self.store = WorkbenchStore(root)
+        self.claim_lock = threading.RLock()
+        self.journal_lock = threading.RLock()
+        self.connection_lock = threading.Lock()
+        self.claim_connection = None
+        self.claim_cancellation = threading.local()
         self.directory = _directory(self.store.root)
         self.credentials_path = self.directory / "client.json"
         self.mapping_path = self.directory / "projects.json"
@@ -978,6 +1023,8 @@ class FleetClient:
             if authenticated:
                 headers["Authorization"] = "Bearer " + self.credentials["token"]
                 headers["X-Device-ID"] = self.credentials["device_id"]
+                headers["X-Agent-Mail-Version"] = __version__
+                headers["X-Agent-Mail-Protocol"] = FLEET_PROTOCOL
             data = (
                 None
                 if body is None
@@ -985,6 +1032,12 @@ class FleetClient:
             )
             if data is not None and len(data) > MAX_BODY:
                 raise WorkbenchError("payload_too_large", "请求超过 1 MiB，请缩小内容。")
+            if path == "/v1/tasks/claim":
+                with self.connection_lock:
+                    stop = getattr(self.claim_cancellation, "event", None)
+                    if stop is not None and stop.is_set():
+                        raise WorkbenchError("claim_stopped", "设备已停止领取任务。")
+                    self.claim_connection = connection
             connection.request(method, path, body=data, headers=headers)
             response = connection.getresponse()
             payload = response.read(MAX_BODY * 4 + 1)
@@ -1004,7 +1057,20 @@ class FleetClient:
                 "network_error", "无法连接主控设备，请检查地址、网络和 TLS 监听。"
             ) from exc
         finally:
+            with self.connection_lock:
+                if self.claim_connection is connection:
+                    self.claim_connection = None
             connection.close()
+
+    def interrupt_claim(self):
+        # Stop only the pending claim transport, never receipts or running tools.
+        with self.connection_lock:
+            connection = self.claim_connection
+            if connection and connection.sock:
+                try:
+                    connection.sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
 
     def device(self):
         return self._request("GET", "/v1/device")
@@ -1013,7 +1079,31 @@ class FleetClient:
         return self._request("GET", "/v1/projects")["projects"]
 
     def active_runs(self):
-        return self._request("GET", "/v1/tasks/active")["tasks"]
+        # Ordinary status reads must not wait behind a 30-second claim poll.
+        # Recovery may clear markers only when no claim transport is in flight.
+        if not self.claim_lock.acquire(blocking=False):
+            return self._request("GET", "/v1/tasks/active")["tasks"]
+        try:
+            tasks = self._request("GET", "/v1/tasks/active")["tasks"]
+            pending = self.store.update_maintenance()["pending_claims"]
+            if pending:
+                self._journal_claims(tasks)
+                for marker in pending:
+                    self.store.end_update_claim(marker["id"])
+            return tasks
+        finally:
+            self.claim_lock.release()
+
+    def _journal_claims(self, tasks, handed_off=False):
+        with self.journal_lock:
+            path = self.directory / "active-runs.json"
+            active = _load(path, {})
+            if not isinstance(active, dict):
+                raise WorkbenchError("storage_error", "设备执行记录格式无效，请恢复备份。")
+            active.update({task["id"]: task["run_id"] for task in tasks})
+            _write_private(path, json.dumps(active).encode("utf-8"))
+            if handed_off and hasattr(self, "claimed_runs"):
+                self.claimed_runs.update({task["id"]: task["run_id"] for task in tasks})
 
     def project_tool(self, project_id, employee_id, tool, args, *, task_id="", run_id=""):
         project_id = _identifier(project_id, "项目编号")
@@ -1060,10 +1150,54 @@ class FleetClient:
     def claim(self, project_id, wait=30):
         if not isinstance(wait, int) or isinstance(wait, bool) or not 0 <= wait <= 45:
             raise WorkbenchError("invalid_field", "领取等待时间需要在 0 到 45 秒之间。")
-        self.local_project(project_id)  # Never claim work without an explicit local directory.
-        return self._request(
-            "POST", "/v1/tasks/claim", {"project_id": project_id, "wait": wait}, timeout=wait + 10
-        )["task"]
+        with self.claim_lock:
+            if self.store.update_maintenance()["paused"]:
+                return None
+            if self.store.update_maintenance()["pending_claims"]:
+                raise WorkbenchError(
+                    "claim_unconfirmed", "尚有未确认的任务领取，请先恢复连接并确认回执。"
+                )
+            marker = "claim_" + secrets.token_hex(16)
+            if not self.store.begin_update_claim(marker):
+                return None  # Maintenance pauses network claims too.
+            try:
+                self.local_project(project_id)  # Explicit local mapping is mandatory.
+                coordinator = self.device().get("coordinator", {})
+                report = node_report(coordinator.get("version"), coordinator.get("protocol"))
+                if report["protocol"] not in {None, FLEET_PROTOCOL}:
+                    raise WorkbenchError(
+                        "protocol_incompatible", "主控协议不兼容，请更新后再领取新任务。"
+                    )
+            except BaseException:
+                # No claim request was sent, therefore no uncertain execution.
+                self.store.end_update_claim(marker)
+                raise
+            stop = getattr(self.claim_cancellation, "event", None)
+            if stop is not None and stop.is_set():
+                self.store.end_update_claim(marker)
+                return None
+            try:
+                task = self._request(
+                    "POST",
+                    "/v1/tasks/claim",
+                    {"project_id": project_id, "wait": wait},
+                    timeout=wait + 10,
+                )["task"]
+            except WorkbenchError as exc:
+                if exc.code in {
+                    "permission_denied",
+                    "protocol_incompatible",
+                    "invalid_field",
+                    "tls_pin_mismatch",
+                    "claim_stopped",
+                }:
+                    # Definite rejection/pre-transmission pin failure allocated no run.
+                    self.store.end_update_claim(marker)
+                raise
+            if task:
+                self._journal_claims([task], handed_off=True)
+            self.store.end_update_claim(marker)
+            return task
 
     def event(self, task_id, run_id, type, message="", payload=None):
         task_id = _identifier(task_id, "任务编号")
@@ -1075,11 +1209,20 @@ class FleetClient:
 
     def receipt(self, task_id, run_id, status, result="", error=None):
         task_id = _identifier(task_id, "任务编号")
-        return self._request(
+        task = self._request(
             "POST",
             f"/v1/tasks/{task_id}/receipt",
             {"run_id": run_id, "status": status, "result": result, "error": error},
         )["task"]
+        with self.journal_lock:
+            path = self.directory / "active-runs.json"
+            active = _load(path, {})
+            if not isinstance(active, dict):
+                raise WorkbenchError("storage_error", "设备执行记录格式无效，请恢复备份。")
+            if active.get(task_id) == run_id:
+                del active[task_id]
+                _write_private(path, json.dumps(active).encode("utf-8"))
+        return task
 
     def control(self, task_id, run_id, wait=30):
         task_id = _identifier(task_id, "任务编号")

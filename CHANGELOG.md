@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0b2 — local prerelease (2026-10-01)
+
+- Explicit stable/Beta GitHub release checks with numeric version ordering; no automatic polling, downloads or replacement. Public releases may be older than this local Beta.
+- Persistent update maintenance pause blocks local/remote new claims while existing tasks finish. Queued work survives; uncertain claims and unconfirmed receipts block update readiness.
+- Private, verified SQLite and identity/configuration backup before manual upgrade. Errors keep claims paused; explicit resume remains available. No automatic rollback.
+- Installation-specific guidance and authenticated node version/protocol reports; incompatible protocols block new claims while preserving terminal receipts. Legacy unreported nodes remain unknown.
+- About/update and device UI supports Chinese/English, mobile, waiting/ready/error states and a persistent pause banner. Schema 8 preserves existing business data.
+
 ## 0.8.0b1 — local Beta 1 (not publicly released)
 
 - Separate global employees, current-project navigation and management in the sidebar; add a real project work log and accessible mobile navigation.

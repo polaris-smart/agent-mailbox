@@ -541,3 +541,37 @@ dialog::backdrop { background: rgb(15 23 36 / 30%); }
 .activity-meta { display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
 
 body.drawer-open { overflow: hidden; }
+
+/* Explicit update preparation; no polling or automatic installation. */
+.update-section h3 { font-size: 14px; margin: 26px 0 10px; }
+.update-toolbar, .update-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.update-toolbar { align-items: flex-end; margin: 18px 0 8px; }
+.update-toolbar .form-field { margin: 0; }
+.update-toolbar > .button { margin-bottom: 2px; }
+.update-check-result { font-weight: 600; }
+.update-release-link { margin-left: 12px; }
+.update-release-notes { margin: 12px 0; }
+.update-release-notes summary { cursor: pointer; font-size: 13px; }
+.update-release-notes pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 12px; line-height: 1.7; max-height: 300px; overflow: auto; padding: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; }
+.update-location code, .update-backup code { overflow-wrap: anywhere; font-size: 12px; }
+.update-backup { border-left: 3px solid var(--accent); padding: 4px 0 4px 16px; margin: 18px 0; }
+.update-backup p { margin: 6px 0; }
+.update-pause-state { font-weight: 600; }
+.update-active-tasks { padding-left: 20px; font-size: 13px; margin-bottom: 16px; }
+.update-error { color: var(--danger); }
+.update-node-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.update-node-list li { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); padding: 12px 0; }
+.update-node-list p { margin: 3px 0 0; }
+.update-node-status { font-size: 12px; color: var(--muted); }
+.update-node-status.error { color: var(--danger); }
+.update-maintenance { display: flex; gap: 14px; align-items: flex-start; padding: 16px 18px; border: 1px solid var(--line); border-left: 3px solid var(--accent); background: var(--surface); border-radius: 6px; margin-bottom: 22px; }
+.update-maintenance[hidden] { display: none; }
+.update-maintenance > svg { width: 18px; height: 18px; flex: none; margin-top: 2px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+.update-maintenance-copy { flex: 1; min-width: 0; }
+.update-maintenance strong { font-size: 13px; }
+.update-maintenance p { font-size: 12px; line-height: 1.7; color: var(--muted); margin-top: 4px; }
+@media (max-width: 760px) {
+  .update-maintenance { flex-wrap: wrap; padding: 14px; gap: 10px; }
+  .update-maintenance .update-actions { width: 100%; padding-left: 28px; }
+  .update-node-list li { align-items: flex-start; flex-direction: column; gap: 6px; }
+}

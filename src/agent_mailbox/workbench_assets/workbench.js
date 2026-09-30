@@ -23,6 +23,7 @@ const state = {
   governance: null, governanceError: null, governanceLoading: false, governanceQueued: false,
   applicationStopping: false, applicationStopped: false,
   legalDocuments: {},
+  updates: null, updatesLoading: false, updatesError: null, updatesAction: "", updatesAttempted: false, updatePauseUnconfirmed: false,
   taskFormUpdate: null,
   employeeQuery: "", employeeFilter: "all", mailboxEmployeeId: "", mailboxFolder: "inbox",
   messageDrafts: {}, messages: {}, messagesLoading: false, messagesError: null, dragEmployeeId: null,
@@ -224,6 +225,7 @@ function selectView(view) {
   document.getElementById("main").focus({ preventScroll: true });
   if (view === "members") loadGovernance();
   if (view === "messages") loadMessages();
+  if (view === "about") loadUpdates();
 }
 
 function renderSidebar() {
@@ -954,9 +956,10 @@ function renderDevices() {
   })) : null;
   const rows = devices.map((device) => {
     const local = state.data.node?.id === device.id;
+    const compatibility = (state.data.update_nodes || state.updates?.nodes || []).find(item => item.id === device.id);
     const revoke = !local && fleet?.listener && !device.revoked ? button(t("撤销配对", "Revoke pairing"), null, { class: "small" }) : null;
     revoke?.addEventListener("click", () => confirmFleetAction("revoke", device));
-    return el("div", { class: "device-row" }, el("span", { class: "device-icon", "aria-hidden": "true" }, icon("monitor")), el("div", { class: "device-row-main" }, el("h2", {}, device.name), el("p", {}, local ? t("当前工作台所在设备", "This workbench's device") : t("已登记设备", "Registered device")), device.last_seen ? el("p", {}, `${t("最近连接", "Last seen")} · ${formatDate(device.last_seen, true)}`) : null), tag(device.revoked ? "revoked" : device.status), revoke);
+    return el("div", { class: "device-row" }, el("span", { class: "device-icon", "aria-hidden": "true" }, icon("monitor")), el("div", { class: "device-row-main" }, el("h2", {}, device.name), el("p", {}, local ? t("当前工作台所在设备", "This workbench's device") : t("已登记设备", "Registered device")), device.last_seen ? el("p", {}, `${t("最近连接", "Last seen")} · ${formatDate(device.last_seen, true)}`) : null, compatibility ? nodeCompatibility(compatibility) : null), tag(device.revoked ? "revoked" : device.status), revoke);
   });
   return [heading(navLabels.devices, t("单机使用无需配置设备。需要更多执行节点时，可连接局域网或私网中的设备；远处设备需先通过私网或隧道可达。", "Single-computer use needs no device setup. Add execution nodes on a local or private network when needed; distant devices must first be reachable through a private network or tunnel.")),
     fleet?.error ? el("div", { class: "runtime-notice error", role: "status" }, icon("warning"), el("span", {}, fleet.error.message || t("设备连接需要重新检查。", "Check the device connection.")), button(t("重新检查", "Check again"), "refresh", { class: "small" })) : null,
@@ -971,6 +974,141 @@ function renderDisconnected() {
   return [heading(t("工作台暂未连接", "The workbench is disconnected"), t("连接服务后，你的项目、员工和任务会显示在这里。", "Your projects, employees, and tasks appear when the service is connected.")),
     empty(t("连接本机工作台", "Connect to your workbench"), errorText(state.error || new ApiError("connection_failed")), "refresh", t("重新连接", "Reconnect"), "link")];
 }
+// Update metadata is fetched on entry or an explicit action, never on a timer.
+async function loadUpdates({ force = false } = {}) {
+  if (state.updatesLoading || state.updatesAction || (state.updatesAttempted && !force)) return;
+  state.updatesAttempted = true;
+  state.updatesLoading = true;
+  state.updatesError = null;
+  if (state.view === "about") render();
+  try { state.updates = await api.updateStatus(); state.updatePauseUnconfirmed = false; }
+  catch (error) { state.updatesError = error; }
+  finally { state.updatesLoading = false; renderMaintenanceBanner(); if (state.view === "about") render(); }
+}
+async function updateAction(action, channel) {
+  if (state.updatesAction) return;
+  state.updatesAction = action;
+  state.updatesError = null;
+  if (state.view === "about") render();
+  renderMaintenanceBanner();
+  try {
+    const result = await ({ check: api.checkUpdates, prepare: api.prepareUpdate, resume: api.resumeUpdates, channel: () => api.updateChannel(channel) })[action]();
+    state.updates = result;
+    state.updatePauseUnconfirmed = false;
+    if (state.data) state.data.update_maintenance = result.maintenance;
+  } catch (error) {
+    state.updatesError = error;
+    if (action === "prepare") state.updatePauseUnconfirmed = true;
+    // Preparation can pause before returning an error. Reload authoritative state,
+    // but retain the failed action's explanation and a usable resume control.
+    try {
+      state.updates = await api.updateStatus();
+      state.updatePauseUnconfirmed = false;
+      if (state.data) state.data.update_maintenance = state.updates.maintenance;
+    } catch { await refresh({ silent: true }); }
+  } finally {
+    state.updatesAction = "";
+    renderMaintenanceBanner();
+    if (state.view === "about") render();
+  }
+}
+function updateControl(label, action, primary = false) {
+  const control = button(label, null, { class: `${primary ? "primary " : ""}small`, disabled: Boolean(state.updatesAction || state.updatesLoading) });
+  control.addEventListener("click", () => updateAction(action));
+  return control;
+}
+function renderMaintenanceBanner() {
+  let banner = document.getElementById("update-maintenance-banner");
+  if (!banner) {
+    banner = el("div", { id: "update-maintenance-banner", class: "update-maintenance", role: "status", hidden: true });
+    root.before(banner);
+  }
+  const maintenance = state.data?.update_maintenance || state.updates?.maintenance;
+  banner.hidden = !maintenance?.paused || state.applicationStopped;
+  if (banner.hidden) return;
+  const details = button(t("查看更新准备", "View update preparation"), null, { class: "small" });
+  details.addEventListener("click", () => { selectView("about"); loadUpdates({ force: true }); });
+  banner.replaceChildren(icon("pause"), el("div", { class: "update-maintenance-copy" },
+    el("strong", {}, t("更新准备中 · 已暂停领取新任务", "Update preparation · New task claims paused")),
+    el("p", {}, t("已有任务继续执行，队列保留。重启后仍暂停，需要你显式恢复接单。", "Existing tasks continue and the queue is retained. The pause survives restart; explicitly resume task claims when ready."))),
+    el("div", { class: "update-actions" }, details, updateControl(t("恢复接单", "Resume task claims"), "resume")));
+}
+function nodeCompatibility(node) {
+  const labels = {
+    matched: t("同版本 · 协议兼容", "Same version · Protocol compatible"),
+    compatible: t("版本不同 · 协议兼容", "Different version · Protocol compatible"),
+    unknown: t("版本或协议未确认", "Version or protocol unconfirmed"),
+    incompatible: t("协议不兼容 · 不能领取新任务", "Protocol incompatible · New claims blocked"),
+  };
+  return el("span", { class: `update-node-status ${node.status === "incompatible" ? "error" : ""}` }, labels[node.status] || labels.unknown);
+}
+function formatUpdateBytes(value) {
+  const bytes = Number(value) || 0;
+  return bytes < 1024 ? `${bytes} B` : bytes < 1048576 ? `${(bytes / 1024).toFixed(1)} KiB` : `${(bytes / 1048576).toFixed(1)} MiB`;
+}
+function renderUpdateSection() {
+  const data = state.updates;
+  const busy = state.updatesLoading || Boolean(state.updatesAction);
+  const maintenance = state.data?.update_maintenance || data?.maintenance;
+  const paused = maintenance?.paused;
+  const section = el("section", { class: "about-section update-section", "aria-busy": String(busy) }, el("h2", {}, t("版本与升级", "Version & updates")),
+    el("p", {}, t("当前本地 Beta 尚未公开发布。只在你点击时检查 GitHub，不会自动下载、替换应用或恢复接单。", "This local Beta is not publicly released. GitHub is checked only when you click; the app does not automatically download, replace itself, or resume task claims.")));
+  if (state.updatesError) {
+    const retry = button(t("重新读取更新设置", "Reload update settings"), null, { class: "small", disabled: busy });
+    retry.addEventListener("click", () => loadUpdates({ force: true }));
+    section.append(el("p", { class: "update-error", role: "alert" }, errorText(state.updatesError)), retry);
+  }
+  if (!data) {
+    const retry = button(t("重新读取更新设置", "Reload update settings"), null, { class: "small", disabled: busy });
+    retry.addEventListener("click", () => loadUpdates({ force: true }));
+    section.append(el("p", { class: "muted" }, busy ? t("正在读取更新设置…", "Loading update settings…") : t("更新设置暂时不可用。", "Update settings are unavailable.")), retry);
+    if (paused || state.updatePauseUnconfirmed) section.append(updateControl(t("恢复接单", "Resume task claims"), "resume"));
+    return section;
+  }
+  const channel = el("select", { id: "update-channel", disabled: busy, "aria-label": t("更新渠道", "Update channel") },
+    el("option", { value: "stable" }, t("稳定版（推荐）", "Stable (recommended)")), el("option", { value: "beta" }, t("Beta 与稳定版", "Beta & stable")));
+  channel.value = data.channel || "stable";
+  channel.addEventListener("change", () => updateAction("channel", channel.value));
+  section.append(el("div", { class: "update-toolbar" }, formField(t("更新渠道", "Update channel"), channel), updateControl(state.updatesAction === "check" ? t("正在检查…", "Checking…") : t("检查更新", "Check for updates"), "check")),
+    el("p", { class: "muted" }, t("稳定版不含预发布；Beta 渠道也包含稳定版。切换渠道后请重新检查。", "Stable excludes prereleases. The Beta channel also includes stable releases. Check again after changing channels.")));
+  const check = data.check;
+  if (!check) section.append(el("p", { class: "update-check-result" }, t("尚未检查公开发行版。", "Public releases have not been checked.")));
+  else {
+    const labels = { update_available: t("发现新版本", "Update available"), current: t("当前版本无需更新", "No update needed for this version"), no_releases: t("此渠道暂无公开发行版", "No public releases in this channel"), error: t("检查失败，请重试", "Check failed; try again") };
+    section.append(el("p", { class: "update-check-result", role: "status" }, labels[check.status] || t("检查结果待确认", "Check result unconfirmed"), check.checked_at ? ` · ${formatDate(check.checked_at, true)}` : ""));
+    if (check.status === "error") section.append(el("p", { class: "update-error" }, check.error?.message || t("无法读取 GitHub 发行版。", "Could not read GitHub releases."), check.error?.code ? ` (${check.error.code})` : ""));
+    if (check.latest && check.status !== "error") {
+      const url = String(check.latest.url || "");
+      const safe = /^https:\/\/github\.com\/polaris-smart\/agent-mailbox\/releases(?:\/|$)/.test(url);
+      section.append(el("p", {}, t("公开发行版", "Public release"), " · ", el("strong", {}, check.latest.version || ""), safe ? el("a", { class: "update-release-link", href: url, target: "_blank", rel: "noopener noreferrer" }, t("查看发行说明 ↗", "Open release notes ↗")) : null));
+      if (check.latest.notes) section.append(el("details", { class: "update-release-notes" }, el("summary", {}, t("发行说明", "Release notes")), el("pre", {}, String(check.latest.notes).slice(0, 12000))));
+    }
+  }
+  const kind = { app: t("桌面应用", "Desktop app"), wheel: t("Python 安装包", "Python package"), source: t("源码运行", "Source checkout"), unknown: t("安装方式未确认", "Installation type unconfirmed") };
+  section.append(el("h3", {}, t("当前安装与操作", "Installation & next steps")), el("p", {}, kind[data.installation?.kind] || kind.unknown, " · ", data.installation?.platform || "", " / ", data.installation?.architecture || ""));
+  const instructions = data.installation?.instructions || [];
+  if (instructions.length) section.append(el("ol", {}, instructions.map(item => el("li", {}, english ? item.en || item.zh : item.zh || item.en))));
+  if (data.installation?.home) section.append(el("p", { class: "update-location" }, t("数据目录", "Data directory"), " · ", el("code", {}, data.installation.home)));
+  section.append(el("h3", {}, t("安全更新准备", "Prepare safely")), el("p", {}, t("先暂停领取新任务，等待已有执行及远端回执结束，再备份工作台数据和身份配置。项目文件及供应商外部登录不在此备份中。准备失败也保持暂停。", "Pause new task claims, wait for existing executions and remote receipts, then back up workbench data and identity settings. Project files and external provider sign-in are excluded. Preparation failures keep claims paused.")));
+  if (state.updatePauseUnconfirmed) section.append(el("p", { class: "update-error", role: "status" }, t("准备请求未完成，暂停状态暂时无法确认。重新读取设置或显式恢复接单；不要据此认为已完成备份。", "The preparation request did not complete and pause status cannot be confirmed. Reload settings or explicitly resume task claims; this does not confirm a completed backup.")));
+  const active = maintenance?.active_tasks || [];
+  if (paused) section.append(el("p", { class: "update-pause-state" }, t("已暂停接单", "Task claims paused"), ` · ${t("队列保留", "Queue retained")}: ${maintenance.queued_count || 0}`));
+  const pendingClaims = maintenance?.pending_claims || [];
+  if (paused && (active.length || pendingClaims.length || data.remote_pending?.length || data.status === "waiting")) section.append(el("p", { role: "status" }, t("等待现有任务、未确认的远端领取或执行回执。确认结束后点击“重新检查并备份”。", "Waiting for existing tasks, unconfirmed remote claims, or execution receipts. Once confirmed finished, click “Recheck & back up”.")),
+    active.length ? el("ul", { class: "update-active-tasks" }, active.map(task => el("li", {}, task.title || task.id, " · ", statusLabels[task.status] || task.status))) : null);
+  if (paused && data.status === "ready") section.append(el("p", { class: "update-pause-state", role: "status" }, t("更新准备已完成，接单仍暂停。请按当前安装方式升级并验证数据。", "Update preparation is complete; task claims remain paused. Upgrade for your installation type and verify your data.")));
+  const backup = data.backup || data.last_backup;
+  if (backup) section.append(el("div", { class: "update-backup" }, el("strong", {}, backup.verified ? t("私有备份已校验", "Private backup verified") : t("备份待校验", "Backup verification pending")),
+    el("p", {}, `${formatDate(backup.created_at, true)} · ${backup.files ?? "—"} ${t("文件", "files")} · ${formatUpdateBytes(backup.bytes || 0)}`),
+    el("code", {}, backup.path || ""), el("p", { class: "muted" }, t("备份保存在本机，不会通过页面下载身份凭证。升级后检查员工和项目，确认后恢复接单。", "The backup stays on this machine; identity credentials are not downloadable through this page. After upgrading, verify employees and projects, then resume task claims."))));
+  section.append(el("div", { class: "update-actions" }, updateControl(state.updatesAction === "prepare" ? t("正在准备…", "Preparing…") : paused ? t("重新检查并备份", "Recheck & back up") : t("暂停接单并准备更新", "Pause claims & prepare update"), "prepare", true),
+    paused || state.updatePauseUnconfirmed ? updateControl(t("恢复接单", "Resume task claims"), "resume") : null));
+  if (data.nodes?.length) section.append(el("h3", {}, t("设备版本兼容性", "Device version compatibility")), el("p", { class: "muted" }, t("版本由节点报告。未报告的旧节点显示待确认，不代表兼容；协议不兼容时阻止新派工。", "Versions are reported by nodes. Older nodes without a report remain unconfirmed, not compatible; incompatible protocols block new claims.")),
+    el("ul", { class: "update-node-list" }, data.nodes.map(node => el("li", {}, el("div", {}, el("strong", {}, node.name || node.id), node.is_local ? el("span", { class: "muted" }, " · ", t("本机", "This device")) : null, el("p", {}, node.version || t("版本未知", "Unknown version"), " · ", t("协议", "Protocol"), " ", node.protocol ?? "?")), nodeCompatibility(node)))));
+  section.append(el("p", { class: "about-links" }, el("a", { href: "https://github.com/polaris-smart/agent-mailbox/releases", target: "_blank", rel: "noopener noreferrer" }, t("GitHub 发行页 ↗", "GitHub releases ↗")), el("a", { href: "https://github.com/polaris-smart/agent-mailbox/issues", target: "_blank", rel: "noopener noreferrer" }, t("反馈问题 ↗", "Report an issue ↗"))));
+  return section;
+}
+
 function renderAbout() {
   const language = el("select", { id: "language-preference", "aria-label": t("界面语言", "Interface language") },
     el("option", { value: "auto" }, t("跟随浏览器", "Follow browser")),
@@ -1005,19 +1143,13 @@ function renderAbout() {
   });
   return [heading(t("关于与更新", "About & updates"), "agent-mailbox · " + version), el("div", { class: "about-content" },
     section(t("界面语言", "Interface language"), el("p", {}, t("支持简体中文与英文。偏好保存在当前浏览器；切换会重新加载界面，不会改变任务或项目资料的语言。", "Simplified Chinese and English are available. Preferences are stored in this browser. Switching reloads the interface and does not translate tasks or project content.")), language),
-    section(t("版本与升级", "Version & updates"), el("p", {}, t("当前为本地 Beta 1，尚未公开发布到 GitHub / PyPI，也没有应用内自动更新。GitHub 公开发行版可能仍是旧版本，请核对版本号。", "This is local Beta 1, not yet published to GitHub / PyPI. There is no in-app automatic updater. Public GitHub releases may still be older versions; check their version numbers.")),
-      el("ol", {}, ...[
-        t("先让运行中的任务结束，再退出应用。", "Let running tasks finish, then quit the application."),
-        t("备份原数据目录，再替换同系统的新应用包；保留原数据目录。", "Back up your data directory, then replace the app with the new package for your OS. Keep the existing data directory."),
-        t("用同一数据目录启动，确认员工、项目和历史仍在。迁移失败时停止使用，按对应版本说明恢复备份。", "Start with the same data directory and verify employees, projects and history. If migration fails, stop and follow that release's backup recovery instructions."),
-      ].map(item => el("li", {}, item))),
-      el("p", {}, t("默认 Mac 数据目录：~/.agent-mailbox-v08。供应商登录保留在各 agent 本机；不会迁移到其他设备。", "Default Mac data directory: ~/.agent-mailbox-v08. Provider sign-in stays local to each agent and is not transferred to other devices.")),
-      el("p", { class: "about-links" }, link(t("GitHub 发行页 ↗", "GitHub releases ↗"), "https://github.com/polaris-smart/agent-mailbox/releases"), link(t("反馈问题 ↗", "Report an issue ↗"), "https://github.com/polaris-smart/agent-mailbox/issues"))),
+    renderUpdateSection(),
     section(t("开源与版权", "Open source & notices"), el("p", {}, "© 2026 NoFox · Apache-2.0"), el("p", {}, t("保留原有代码及第三方要求的版权声明。以下是随本版本发行的原始内容。", "Original and required third-party copyright notices are retained. The documents below ship with this version.")), ...licenses))];
 }
 
 function render() {
   renderSidebar();
+  renderMaintenanceBanner();
   if (state.applicationStopped) {
     root.replaceChildren(heading(t("应用已退出", "Application closed"), t("任务、成果和项目记录仍然保留。", "Tasks, deliverables, and project records are retained.")), empty(t("重新启动 Agent Mailbox", "Restart Agent Mailbox"), t("可以关闭这个浏览器页面。使用原来的应用入口或启动命令重新启动，再打开它提供的新地址。", "You can close this browser page. Restart using your application launcher or original command, then open its new address."), null, null, "monitor"));
     root.setAttribute("aria-busy", "false");
@@ -1041,6 +1173,8 @@ async function refresh({ silent = false } = {}) {
       if (!Array.isArray(result[key])) throw new ApiError("invalid_response");
     }
     state.data = result;
+    if (result.update_maintenance) { state.updatePauseUnconfirmed = false; if (state.updates) state.updates.maintenance = result.update_maintenance; }
+    renderMaintenanceBanner();
     if (Array.isArray(result.messages)) { for (const item of result.projects) state.messages[item.id] = result.messages.filter((message) => message.project_id === item.id); }
     document.getElementById("version-label").textContent = result.version ? `v${result.version.replace(/^v/, "")}` : "";
     state.error = null;
@@ -1053,6 +1187,7 @@ async function refresh({ silent = false } = {}) {
     // Preserve ongoing searches and form input during background updates.
     if (!silent || !root.contains(activeElement) || !["INPUT", "TEXTAREA", "SELECT"].includes(activeElement?.tagName)) render();
     if (state.view === "members") loadGovernance();
+    if (state.view === "about") loadUpdates();
   } catch (error) {
     if (state.applicationStopping || state.applicationStopped) return;
     state.error = error;

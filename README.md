@@ -2,7 +2,7 @@
 
 A local workbench for managing AI employees around projects: assign work, share project knowledge, inspect progress, approve operations and accept results.
 
-**v0.8 is an independent implementation.** It keeps the product name and release line, with its own runtime, private database and project tools. v0.7 mail commands and background services are not part of the v0.8 package. The current build is **0.8.0b1, local Beta 1**; no v0.8 release has been published to GitHub or PyPI yet.
+**v0.8 is an independent implementation.** It keeps the product name and release line, with its own runtime, private database and project tools. v0.7 mail commands and background services are not part of the v0.8 package. The current build is **0.8.0b2, local Beta 1**; no v0.8 release has been published to GitHub or PyPI yet.
 
 [中文](README.zh-CN.md) · [Product baseline](docs/PRD.md) · [Quick start](docs/GITHUB-QUICKSTART.md) · [Optional devices](docs/NODES.md) · [Security](SECURITY.md)
 
@@ -47,3 +47,5 @@ Apache-2.0 licensed, by NoFox and contributors. Prior MIT notices are preserved 
 ## Shared resources
 
 Register project texts, view the live source or freeze an approved revision. Each task pins its approved resource manifest at claim time. Employee proposals require human approval; a remote employee can explicitly submit up to 256 KiB of text without replacing coordinator files. New approvals apply to subsequently started tasks. This is shared resource retrieval, not automatic Git synchronization. CodeGraph symbol retrieval is optional; self-contained archify HTML can be previewed in isolation. See [beta acceptance](docs/BETA-ACCEPTANCE.md).
+
+Beta 2 adds explicit release checks, stable/Beta channels, persistent maintenance pause, quiescence checks, verified private backups and node protocol reports. Replacement and rollback remain manual; see [update preparation](docs/designs/2026-10-01-update-beta2.md).

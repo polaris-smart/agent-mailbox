@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-mailbox"
-version = "0.8.0b1"
+version = "0.8.0b2"
 description = "Manage AI employees, project work and shared knowledge locally, with optional paired execution nodes."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -51,5 +51,5 @@ include = [
   "/docs/HANDOVER-CODEX.md", "/docs/archive/v07/PRD.md", "/docs/reviews/2026-09-30-v080-independence.md",
   "/docs/designs/2026-09-30-v080-independent.md", "/docs/designs/2026-09-30-connection-guidance.md", "/docs/designs/2026-09-30-employee-cards-mailboxes.md", "/docs/evidence/v080/employee-cards-mailboxes.md", "/docs/evidence/v080/connection-guidance.md", "/docs/designs/v080-packaging.md",
   "/docs/evidence/v080-independent", "/scripts/build-workbench.py", "/scripts/release-workbench.py",
-  "/scripts/RELEASE-workbench.md", "/scripts/check-node-beta.py", "/docs/BETA-ACCEPTANCE.md", "/docs/evidence/v080/beta1.md",
+  "/scripts/RELEASE-workbench.md", "/scripts/check-node-beta.py", "/docs/BETA-ACCEPTANCE.md", "/docs/evidence/v080/beta1.md", "/docs/evidence/v080/beta2-updates.md", "/docs/designs/2026-10-01-update-beta2.md",
 ]

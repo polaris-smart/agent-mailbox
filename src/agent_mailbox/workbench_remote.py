@@ -21,10 +21,11 @@ class RemoteWorker:
         self.stopping = threading.Event()
         self.threads = []
         self.workers = set()
-        self.lock = threading.Lock()
+        self.lock = getattr(client, "journal_lock", threading.RLock())
         self.errors = {}
         self.active_path = client.directory / "active-runs.json"
         self.active = {}
+        client.claimed_runs = self.active
         self.outbox_path = client.directory / "terminal-receipts.json"
         self.outbox = _load(self.outbox_path, {})
         if not isinstance(self.outbox, dict):
@@ -91,7 +92,8 @@ class RemoteWorker:
                     except WorkbenchError as exc:
                         self.errors[task_id] = "主控已确认，本机回执清理未完成：" + exc.message
                         continue
-                    self.active = next_active
+                    self.active.clear()
+                    self.active.update(next_active)
                     self.outbox = next_outbox
                     self.errors.pop(task_id, None)
 
@@ -149,10 +151,18 @@ class RemoteWorker:
         thread.start()
 
     def _loop(self, project_id):
+        if hasattr(self.client, "claim_cancellation"):
+            self.client.claim_cancellation.event = self.stopping
         while not self.stopping.is_set():
             try:
                 task = self.client.claim(project_id, wait=30)
                 self.errors.pop(project_id, None)
+                if task is None and self.client.store.update_maintenance()["paused"]:
+                    if self.client.store.update_maintenance()["pending_claims"]:
+                        raise WorkbenchError(
+                            "claim_unconfirmed", "更新暂停期间正在确认此前未收到的任务领取。"
+                        )
+                    self.stopping.wait(1)
                 if task and self.stopping.is_set():
                     self._queue_receipt(
                         task,
@@ -396,6 +406,8 @@ class RemoteWorker:
 
     def close(self):
         self.stopping.set()
+        if hasattr(self.client, "interrupt_claim"):
+            self.client.interrupt_claim()
         self.receipt_ready.set()
         if self.receipt_thread:
             self.receipt_thread.join(timeout=0.2)

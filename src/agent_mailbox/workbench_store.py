@@ -31,7 +31,7 @@ class WorkbenchError(Exception):
 ACTIVE = frozenset({"starting", "running", "waiting_approval"})
 FINISH = frozenset({"review", "failed", "cancelled", "interrupted"})
 MAX_TEXT = 1024 * 1024
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 EMPLOYEE_KINDS = frozenset(
     {
         "codex",
@@ -103,6 +103,12 @@ def _json(value: Any) -> str:
 
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS update_settings (
+    id INTEGER PRIMARY KEY CHECK(id=1), channel TEXT NOT NULL DEFAULT 'stable',
+    paused INTEGER NOT NULL DEFAULT 0 CHECK(paused IN (0,1))
+);
+INSERT OR IGNORE INTO update_settings(id) VALUES(1);
+CREATE TABLE IF NOT EXISTS update_claims(id TEXT PRIMARY KEY, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS devices (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, is_local INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'online', created_at TEXT NOT NULL, last_seen TEXT
@@ -473,6 +479,59 @@ class WorkbenchStore:
                     for row in rows
                 ]
             return self._scrub(db, result)
+
+    def update_maintenance(self) -> dict:
+        with self._connection() as db:
+            db.execute("BEGIN")
+            paused = bool(db.execute("SELECT paused FROM update_settings WHERE id=1").fetchone()[0])
+            active = [
+                dict(row)
+                for row in db.execute(
+                    "SELECT id,title,status FROM tasks WHERE status IN ('starting','running','waiting_approval') ORDER BY created_at"
+                )
+            ]
+            queued = db.execute("SELECT count(*) FROM tasks WHERE status='queued'").fetchone()[0]
+            pending = [
+                dict(row)
+                for row in db.execute("SELECT id,created_at FROM update_claims ORDER BY created_at")
+            ]
+            return self._scrub(
+                db,
+                {
+                    "paused": paused,
+                    "active_tasks": active,
+                    "queued_count": queued,
+                    "pending_claims": pending,
+                },
+            )
+
+    def begin_update_claim(self, claim_id: str) -> bool:
+        _text(claim_id, "领取编号", 128)
+        with self._transaction() as db:
+            if db.execute("SELECT paused FROM update_settings WHERE id=1").fetchone()[0]:
+                return False
+            db.execute("INSERT INTO update_claims(id,created_at) VALUES(?,?)", (claim_id, _now()))
+            return True
+
+    def end_update_claim(self, claim_id: str) -> None:
+        _text(claim_id, "领取编号", 128)
+        with self._transaction() as db:
+            db.execute("DELETE FROM update_claims WHERE id=?", (claim_id,))
+
+    def pause_updates(self, paused: bool) -> dict:
+        if not isinstance(paused, bool):
+            raise WorkbenchError("invalid_field", "更新暂停状态需要为布尔值。")
+        with self._transaction() as db:
+            db.execute("UPDATE update_settings SET paused=? WHERE id=1", (int(paused),))
+        return self.update_maintenance()
+
+    def update_channel(self, channel=None) -> str:
+        if channel is not None:
+            _choice(channel, {"stable", "beta"}, "请选择稳定版或 Beta 更新渠道。")
+            with self._transaction() as db:
+                db.execute("UPDATE update_settings SET channel=? WHERE id=1", (channel,))
+        with self._connection() as db:
+            return db.execute("SELECT channel FROM update_settings WHERE id=1").fetchone()[0]
 
     def create_project(self, name: str, path: str | Path) -> dict:
         name = _text(name, "项目名称", 200).strip()
@@ -1073,6 +1132,8 @@ class WorkbenchStore:
             raise WorkbenchError("invalid_field", "请提供有效的授权项目列表。")
         with self._transaction() as db:
             self._required(db, "devices", node_id)
+            if db.execute("SELECT paused FROM update_settings WHERE id=1").fetchone()[0]:
+                return None
             if project_ids == []:
                 return None
             scope_clause = ""

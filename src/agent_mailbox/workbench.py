@@ -20,10 +20,12 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import __version__
 from .workbench_activity import project_activity
+from .workbench_compatibility import compatibility_nodes
 from .workbench_engine import WorkbenchEngine
 from .workbench_lock import WorkbenchLock
 from .workbench_runtime import available_models, discover_employees, runtime_status
 from .workbench_store import WorkbenchError, WorkbenchStore
+from .workbench_updates import UpdateService
 
 ASSETS = Path(__file__).parent / "workbench_assets"
 PREFIX = "/api/workbench"
@@ -74,6 +76,7 @@ class WorkbenchHTTP(ThreadingHTTPServer):
         self.remote_worker = None
         self.remote_projects = []
         self.fleet_error = None
+        self.updates = UpdateService(self)
         self.closing = threading.Event()
         self.listener_path = store.root / "workbench/fleet-listener.json"
         try:
@@ -399,12 +402,35 @@ class Handler(BaseHTTPRequestHandler):
         result = None
         if method == "GET" and route == ["changes"]:
             return self.changes()
+        if (
+            method in {"POST", "DELETE"}
+            and route
+            and route[0] == "fleet"
+            and store.update_maintenance()["paused"]
+        ):
+            raise WorkbenchError("UPDATE_PAUSED", "更新准备期间暂停设备配置变更，请先恢复接单。")
         if method == "POST" and route == ["application", "quit"]:
+            self.server.updates.assert_can_quit()
             # Respond before shutting down this instance; main's finally owns
             # worker cleanup. Browser tabs and unrelated agents remain external.
             self.send_value(200, {"stopping": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
+        if route and route[0] == "updates":
+            action = route[1] if len(route) == 2 else ""
+            if method == "GET" and action == "status":
+                result = self.server.updates.status()
+            elif method == "POST" and action == "check":
+                result = self.server.updates.check_releases()
+            elif method == "POST" and action == "channel":
+                result = self.server.updates.channel(data.get("channel"))
+            elif method == "POST" and action == "prepare":
+                result = self.server.updates.prepare()
+            elif method == "POST" and action == "resume":
+                result = self.server.updates.resume()
+            else:
+                raise WorkbenchError("NOT_FOUND", "Unknown update action.")
+            return self.send_value(200, result)
         if method == "GET" and route == ["bootstrap"]:
             runtime = runtime_status(store.root)
             runtime["install"] = self.server.install_status
@@ -420,6 +446,8 @@ class Handler(BaseHTTPRequestHandler):
                 "node": store.local_node(),
                 "runtime": runtime,
                 "fleet": self.server.fleet_status(),
+                "update_maintenance": store.update_maintenance(),
+                "update_nodes": compatibility_nodes(store, self.server.fleet),
             }
         elif method == "POST" and route == ["projects"]:
             result = store.create_project(data["name"], data["path"])

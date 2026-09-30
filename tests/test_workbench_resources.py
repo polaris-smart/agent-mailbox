@@ -279,7 +279,9 @@ def test_migration_failure_rolls_back_business_and_schema(resources, monkeypatch
         assert not db.execute(
             "SELECT name FROM sqlite_master WHERE name='resource_versions'"
         ).fetchone()
-    backup = list(store.directory.glob("state-v6-before-v7-*.sqlite"))
+    from agent_mailbox.workbench_store import SCHEMA_VERSION
+
+    backup = list(store.directory.glob(f"state-v6-before-v{SCHEMA_VERSION}-*.sqlite"))
     assert len(backup) == 1
     with sqlite3.connect(backup[0]) as db:
         assert db.execute("SELECT id FROM resources").fetchone()[0] == rid
