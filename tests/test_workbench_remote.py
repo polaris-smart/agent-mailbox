@@ -287,3 +287,26 @@ def test_remote_restore_reconnects_when_coordinator_starts_later(remote):
         restored.shutdown()
         restored.close()
         thread.join(timeout=2)
+
+
+def test_orphan_starting_run_without_device_journal_is_interrupted_not_replayed(
+    remote, monkeypatch
+):
+    owner, device, project, employee, _ = remote
+    device.remote_worker.close()
+    task = owner.store.create_task(project["id"], "Lost claim", "complete", employee["id"])
+    client = device.remote_client
+    # Simulate a coordinator committed claim whose response was not journaled.
+    assert client.claim(project["id"], wait=0)["id"] == task["id"]
+    active_path = client.directory / "active-runs.json"
+    active_path.unlink(missing_ok=True)
+    executed = threading.Event()
+    recovered = RemoteWorker(client, bridge_command=device.remote_worker.execution.command)
+    monkeypatch.setattr(recovered.execution, "run", lambda *args, **kwargs: executed.set())
+    try:
+        recovered.start_project(project["id"])
+        assert owner.store.get_task(task["id"])["status"] == "interrupted"
+        assert not executed.is_set()
+        assert client.active_runs() == []
+    finally:
+        recovered.close()
