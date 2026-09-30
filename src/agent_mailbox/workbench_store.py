@@ -879,6 +879,37 @@ class WorkbenchStore:
                 )
             ]
 
+    def employee_messages(
+        self, project_id: str, employee_id: str, folder: str = "inbox", limit: int = 100
+    ) -> dict:
+        """Read a bound employee's folder; viewing never acknowledges or starts work."""
+        if folder not in ("inbox", "sent", "group"):
+            raise WorkbenchError("invalid_field", "信箱分类必须是 inbox、sent 或 group。")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise WorkbenchError("invalid_field", "信箱读取数量必须为 1–100。")
+        with self._connection() as db:
+            self._required(db, "projects", project_id)
+            self._message_member(db, project_id, employee_id)
+            condition = {
+                "inbox": "recipient_id=?",
+                "sent": "sender_id=?",
+                "group": "recipient_id IS NULL AND (sender_id IS NULL OR sender_id!=?)",
+            }[folder]
+            rows = db.execute(
+                "SELECT * FROM messages WHERE project_id=? AND "
+                + condition
+                + " ORDER BY created_at DESC,rowid DESC LIMIT ?",
+                (project_id, employee_id, limit + 1),
+            ).fetchall()
+            return {
+                "project_id": project_id,
+                "employee_id": employee_id,
+                "folder": folder,
+                "messages": [self._message(db, row) for row in reversed(rows[:limit])],
+                "has_older": len(rows) > limit,
+                "viewing_acknowledges": False,
+            }
+
     def _message_member(self, db, project_id, employee_id):
         employee = self._required(db, "employees", employee_id)
         if not self._membership(db, employee_id, project_id):
@@ -1608,7 +1639,7 @@ class WorkbenchStore:
                 db, {"resource": self._entity(row), "content": content, "source": str(location)}
             )
 
-    def project_context(self, project_id: str) -> dict:
+    def project_context(self, project_id: str, employee_id: str | None = None) -> dict:
         with self._connection() as db:
             db.execute("BEGIN")
             project = self._entity(self._required(db, "projects", project_id))
@@ -1667,9 +1698,19 @@ class WorkbenchStore:
                     for row in items:
                         row["body"] = row["body"][:8000]
                 result[table] = items
+            if employee_id:
+                self._message_member(db, project_id, employee_id)
+            message_filter = (
+                " AND (recipient_id IS NULL OR recipient_id=? OR sender_id=?)"
+                if employee_id
+                else ""
+            )
+            message_args = (project_id, employee_id, employee_id) if employee_id else (project_id,)
             messages = db.execute(
-                "SELECT * FROM messages WHERE project_id=? ORDER BY created_at DESC,rowid DESC LIMIT 20",
-                (project_id,),
+                "SELECT * FROM messages WHERE project_id=?"
+                + message_filter
+                + " ORDER BY created_at DESC,rowid DESC LIMIT 20",
+                message_args,
             ).fetchall()
             result["messages"] = [self._message(db, row) for row in messages]
             for message in result["messages"]:

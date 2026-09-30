@@ -32,7 +32,7 @@ def build_server(store, employee_id, project_id, token, endpoint="", task_id="",
     def project_context() -> dict:
         """Read this project's shared resources, memory and employee membership."""
         guard()
-        return store.project_context(project_id)
+        return store.project_context(project_id, employee_id=employee_id)
 
     @server.tool()
     def project_memory_search(query: str) -> dict:
@@ -53,10 +53,10 @@ def build_server(store, employee_id, project_id, token, endpoint="", task_id="",
         return store.add_memory(project_id, title, body, source=f"employee:{employee_id}")
 
     @server.tool()
-    def project_messages() -> dict:
-        """Read this project's communication history, including linked work requests."""
+    def project_messages(folder: str = "inbox", limit: int = 100) -> dict:
+        """Read my inbox, sent mail or project group. Viewing is not ACK or completion."""
         guard()
-        return {"messages": store.list_messages(project_id)}
+        return store.employee_messages(project_id, employee_id, folder, limit)
 
     def send(title, body, recipient_id=None, reply_to=None, request_work=False, request_id=None):
         guard(write=True)
@@ -187,9 +187,9 @@ def build_remote_server(client, employee_id, project_id, task_id="", run_id=""):
         return call("note", {"title": title, "body": body})
 
     @server.tool()
-    def project_messages() -> dict:
-        """Read shared project communication history."""
-        return call("messages", {})
+    def project_messages(folder: str = "inbox", limit: int = 100) -> dict:
+        """Read my inbox, sent mail or project group without ACK or triggering work."""
+        return call("messages", {"folder": folder, "limit": limit})
 
     @server.tool()
     def project_message(

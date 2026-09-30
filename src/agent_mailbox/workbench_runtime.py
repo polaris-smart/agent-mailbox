@@ -757,7 +757,7 @@ def context_prompt(task: dict, context: dict) -> str:
         "Use the injected project tools for full resources, new notes and requests to colleagues. "
         "Project tools and credentials belong only to this managed employee session. "
         "Subagents must report to their parent and must not share these tools or credentials. "
-        "Use project_messages to read relevant project conversations. "
+        "Use project_messages() for your inbox, folder=sent for your sent mail, and folder=group for shared project discussion. Reading never acknowledges or completes work. "
         "An ordinary project_message records a conversation and does not trigger work; "
         "team_message requests work from a colleague. "
         "Do not represent delivery or your own completion as human acceptance.\n"

@@ -671,6 +671,17 @@ def test_remote_project_tools_context_notes_resources_and_team_dispatch(fleet, t
     context = client.project_tool(project["id"], employee["id"], "context", {})
     assert {row["id"] for row in context["employees"]} == {employee["id"], colleague["id"]}
     assert "path" not in context["project"]
+    incoming = owner.send_message(
+        project["id"], "For remote", "personal", recipient_id=employee["id"]
+    )
+    owner.send_message(project["id"], "For local", "other mail", recipient_id=colleague["id"])
+    shared = owner.send_message(project["id"], "Group", "shared")
+    inbox = client.project_tool(project["id"], employee["id"], "messages", {})
+    assert inbox["folder"] == "inbox" and [m["id"] for m in inbox["messages"]] == [incoming["id"]]
+    group = client.project_tool(project["id"], employee["id"], "messages", {"folder": "group"})
+    assert [m["id"] for m in group["messages"]] == [shared["id"]]
+    context = client.project_tool(project["id"], employee["id"], "context", {})
+    assert {m["id"] for m in context["messages"]} == {incoming["id"], shared["id"]}
     source_task = owner.create_task(project["id"], "Source", "Request review", employee["id"])
     client.claim(project["id"], wait=0)
     note = client.project_tool(

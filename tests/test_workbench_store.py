@@ -604,3 +604,54 @@ def test_version_four_to_five_adds_receipt_proofs_without_replacing_identity(
     with sqlite3.connect(store.db_path) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert db.execute("SELECT count(*) FROM remote_receipts").fetchone()[0] == 0
+
+
+def test_employee_mail_folders_filter_before_limit_and_do_not_mutate(store, project, employee):
+    bob = store.create_employee("Bob", "codex", project["id"])
+    source = running(store, project, employee)
+    incoming = store.send_message(project["id"], "For me", "inbox", recipient_id=employee["id"])
+    sent = store.send_message(
+        project["id"],
+        "For Bob",
+        "sent",
+        sender_id=employee["id"],
+        recipient_id=bob["id"],
+        source_task_id=source["id"],
+    )
+    own_group = store.send_message(
+        project["id"],
+        "My broadcast",
+        "sent broadcast",
+        sender_id=employee["id"],
+        source_task_id=source["id"],
+    )
+    group = store.send_message(project["id"], "Everyone", "group")
+    for i in range(25):
+        store.send_message(project["id"], f"Bob only {i}", "not my mail", recipient_id=bob["id"])
+    before = store.snapshot()
+    inbox = store.employee_messages(project["id"], employee["id"], limit=1)
+    assert [m["id"] for m in inbox["messages"]] == [incoming["id"]]
+    assert inbox["folder"] == "inbox" and not inbox["viewing_acknowledges"]
+    sent_mail = store.employee_messages(project["id"], employee["id"], "sent", 1)
+    assert sent_mail["has_older"] and sent_mail["messages"][0]["id"] == own_group["id"]
+    assert {
+        m["id"] for m in store.employee_messages(project["id"], employee["id"], "sent")["messages"]
+    } == {sent["id"], own_group["id"]}
+    assert [
+        m["id"] for m in store.employee_messages(project["id"], employee["id"], "group")["messages"]
+    ] == [group["id"]]
+    context = store.project_context(project["id"], employee_id=employee["id"])
+    assert {m["id"] for m in context["messages"]} == {
+        incoming["id"],
+        sent["id"],
+        own_group["id"],
+        group["id"],
+    }
+    assert store.snapshot() == before
+    for folder, limit in [("all", 100), ("inbox", True), ("inbox", 0), ("sent", 101)]:
+        with pytest.raises(WorkbenchError):
+            store.employee_messages(project["id"], employee["id"], folder, limit)
+    other = store.create_project("Other", store.root)
+    outsider = store.create_employee("Outside", "codex", other["id"])
+    with pytest.raises(WorkbenchError):
+        store.employee_messages(project["id"], outsider["id"])

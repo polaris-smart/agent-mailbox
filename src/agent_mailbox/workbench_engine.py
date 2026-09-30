@@ -79,7 +79,9 @@ class WorkbenchEngine:
             employee = next(e for e in snapshot["employees"] if e["id"] == task["assignee_id"])
             task = {**task, "kind": employee["kind"]}
             if self.execution.command is None:
-                task["prompt"] = context_prompt(task, self.store.project_context(project["id"]))
+                task["prompt"] = context_prompt(
+                    task, self.store.project_context(project["id"], employee_id=task["assignee_id"])
+                )
             creds = self.store.execution_credentials(task["id"])
             command, args = workspace_server_command()
             mcp_servers = [

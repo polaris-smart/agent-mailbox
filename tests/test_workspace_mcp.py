@@ -108,9 +108,21 @@ def test_project_mcp_context_message_wakes_colleague(tmp_path):
             )
             assert not replay.is_error
             assert len(store.snapshot()["tasks"]) == 2
-            messages = await session.call_tool("project_messages", {})
+            messages = await session.call_tool("project_messages", {"folder": "sent"})
             assert not messages.is_error
             assert "employee_session" in json.dumps(messages.model_dump())
+            incoming = store.send_message(
+                project["id"], "For Alice", "personal", recipient_id=alice["id"]
+            )
+            store.send_message(project["id"], "For Bob", "other mail", recipient_id=bob["id"])
+            inbox = await session.call_tool("project_messages", {})
+            payload = json.loads(inbox.content[0].text)
+            assert payload["folder"] == "inbox"
+            assert [row["id"] for row in payload["messages"]] == [incoming["id"]]
+            group = await session.call_tool("project_messages", {"folder": "group"})
+            assert not group.is_error and json.loads(group.content[0].text)["folder"] == "group"
+            invalid = await session.call_tool("project_messages", {"folder": "all"})
+            assert invalid.is_error
             # Cross-project recipient membership is validated by the domain store.
             outsider = store.create_employee("Outside", "codex", other["id"])
             refused = await session.call_tool(

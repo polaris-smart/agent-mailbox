@@ -2,7 +2,7 @@
 
 A local workbench for managing AI employees around projects: assign work, share project knowledge, inspect progress, approve operations and accept results.
 
-**v0.8 is an independent implementation.** It keeps the product name and release line, with its own runtime, private database and project tools. v0.7 mail commands and background services are not part of the v0.8 package. The current build is **0.8.0a6, a local alpha**; no v0.8 release has been published to GitHub or PyPI yet.
+**v0.8 is an independent implementation.** It keeps the product name and release line, with its own runtime, private database and project tools. v0.7 mail commands and background services are not part of the v0.8 package. The current build is **0.8.0a7, a local alpha**; no v0.8 release has been published to GitHub or PyPI yet.
 
 [中文](README.zh-CN.md) · [Product baseline](docs/PRD.md) · [Quick start](docs/GITHUB-QUICKSTART.md) · [Optional devices](docs/NODES.md) · [Security](SECURITY.md)
 

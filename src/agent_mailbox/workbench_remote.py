@@ -230,7 +230,17 @@ class RemoteWorker:
             if self.execution.command is None:
                 task = {
                     **task,
-                    "prompt": context_prompt(task, self.client.context(task["project_id"])),
+                    "prompt": context_prompt(
+                        task,
+                        self.client.project_tool(
+                            task["project_id"],
+                            task["assignee_id"],
+                            "context",
+                            {},
+                            task_id=task["id"],
+                            run_id=task["run_id"],
+                        ),
+                    ),
                 }
             command, args = workspace_server_command()
             servers = [

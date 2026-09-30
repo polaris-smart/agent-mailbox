@@ -502,8 +502,8 @@ class FleetCoordinator:
                     return {"status": "pending", "decision": None}
                 self.condition.wait(timeout=remaining)
 
-    def _context(self, project_id):
-        result = self.store.project_context(project_id)
+    def _context(self, project_id, employee_id=None):
+        result = self.store.project_context(project_id, employee_id=employee_id)
         result["project"].pop("path", None)
         for resource in result["resources"]:
             resource.pop("path", None)
@@ -550,7 +550,7 @@ class FleetCoordinator:
         ):
             raise WorkbenchError("permission_denied", "工具不能切换到其他项目或员工身份。")
         if tool == "context":
-            return self._context(project_id)
+            return self._context(project_id, employee_id=employee_id)
         if tool == "memory_search":
             return {"memories": self.store.search_memory(project_id, args.get("query", ""))}
         if tool == "resource_read":
@@ -559,7 +559,9 @@ class FleetCoordinator:
             result["source"] = f"resource:{result['resource']['id']}:{result['resource']['name']}"
             return result
         if tool == "messages":
-            return {"messages": self.store.list_messages(project_id)}
+            return self.store.employee_messages(
+                project_id, employee_id, args.get("folder", "inbox"), args.get("limit", 100)
+            )
         if tool in {"note", "message", "team_message"}:
             if not body.get("task_id") or not body.get("run_id"):
                 raise WorkbenchError("permission_denied", "写入工具需要当前执行会话。")
