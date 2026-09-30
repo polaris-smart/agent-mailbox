@@ -10,6 +10,168 @@ import pytest
 from agent_mailbox.workbench_fleet import FleetClient, FleetCoordinator
 from agent_mailbox.workbench_store import WorkbenchError, WorkbenchStore
 
+PERMISSION_OPTIONS = [{"optionId": "once", "name": "Allow once", "kind": "allow_once"}]
+
+
+def awaiting_permission(fleet, tmp_path):
+    owner, project, _, coordinator = fleet
+    client = mapped(fleet, tmp_path)
+    employee = client.register_employee(project["id"], "Remote", "codex")
+    task = owner.create_task(project["id"], "Write", "Report", employee["id"])
+    client.claim(project["id"], wait=0)
+    client.event(task["id"], task["run_id"], "started")
+    reply = client.request_permission(
+        task["id"],
+        task["run_id"],
+        employee["id"],
+        "write",
+        PERMISSION_OPTIONS,
+        {"title": "Write file", "rawInput": {"token": "secret"}},
+    )
+    assert reply["status"] == "pending"
+    return owner, coordinator, client, task, employee
+
+
+@pytest.mark.parametrize("decision", ["allow_once", "deny"])
+def test_device_permission_wait_is_event_driven_and_human_only(
+    fleet, tmp_path, monkeypatch, decision
+):
+    owner, coordinator, client, task, employee = awaiting_permission(fleet, tmp_path)
+    calls = []
+    real = owner.permission_decision
+
+    def observed(*args):
+        calls.append(time.monotonic())
+        return real(*args)
+
+    monkeypatch.setattr(owner, "permission_decision", observed)
+    with ThreadPoolExecutor() as pool:
+        future = pool.submit(
+            client.permission_decision, task["id"], task["run_id"], employee["id"], "write", 5
+        )
+        time.sleep(0.2)
+        assert not future.done() and len(calls) == 1
+        owner.resolve_permission(task["id"], "write", decision)
+        coordinator.notify()
+        assert future.result(timeout=1) == {"status": "resolved", "decision": decision}
+    assert len(calls) == 2
+    with pytest.raises(WorkbenchError):
+        client._request(
+            "POST", f"/v1/tasks/{task['id']}/permissions/write/resolve", {"decision": "allow_once"}
+        )
+
+
+@pytest.mark.parametrize("stop", ["cancel", "revoke"])
+def test_permission_wait_cancel_or_revoke_defaults_deny(fleet, tmp_path, stop):
+    owner, coordinator, client, task, employee = awaiting_permission(fleet, tmp_path)
+    with ThreadPoolExecutor() as pool:
+        future = pool.submit(
+            client.permission_decision, task["id"], task["run_id"], employee["id"], "write", 5
+        )
+        time.sleep(0.1)
+        if stop == "cancel":
+            owner.cancel_task(task["id"])
+            coordinator.notify()
+            assert future.result(timeout=1)["decision"] == "deny"
+        else:
+            coordinator.revoke_device(client.credentials["device_id"])
+            with pytest.raises(WorkbenchError):
+                future.result(timeout=1)
+    assert owner.get_permission(task["id"], "write")["status"] == "expired"
+    with pytest.raises(WorkbenchError):
+        owner.resolve_permission(task["id"], "write", "allow_once")
+
+
+def test_permission_endpoint_binds_device_project_employee_run_and_request(fleet, tmp_path):
+    owner, _, client, task, employee = awaiting_permission(fleet, tmp_path)
+    peer = mapped(fleet, tmp_path, "peer")
+    for wrong_client, run_id, employee_id, request_id in (
+        (peer, task["run_id"], employee["id"], "write"),
+        (client, "stale-run", employee["id"], "write"),
+        (client, task["run_id"], "other-employee", "write"),
+        (client, task["run_id"], employee["id"], "unknown"),
+    ):
+        with pytest.raises(WorkbenchError):
+            wrong_client.permission_decision(task["id"], run_id, employee_id, request_id, wait=0)
+    assert owner.get_permission(task["id"], "write")["status"] == "pending"
+    assert client.permission_decision(
+        task["id"], task["run_id"], employee["id"], "write", wait=0
+    ) == {"status": "pending", "decision": None}
+    assert owner.get_permission(task["id"], "write")["status"] == "pending"
+    assert client.expire_permission(task["id"], task["run_id"], employee["id"], "write") == {
+        "status": "expired",
+        "decision": "deny",
+    }
+
+
+def test_permission_timeout_deadline_is_persisted_not_renewed(fleet, tmp_path, monkeypatch):
+    monkeypatch.setattr("agent_mailbox.workbench_store.PERMISSION_TIMEOUT", 1)
+    owner, _, client, task, employee = awaiting_permission(fleet, tmp_path)
+    deadline = owner.get_permission(task["id"], "write")["expires_at"]
+    duplicate = client.request_permission(
+        task["id"],
+        task["run_id"],
+        employee["id"],
+        "write",
+        PERMISSION_OPTIONS,
+        {"title": "Write file"},
+    )
+    assert duplicate["expires_at"] == deadline
+    assert client.permission_decision(
+        task["id"], task["run_id"], employee["id"], "write", wait=5
+    ) == {"status": "expired", "decision": "deny"}
+    with pytest.raises(WorkbenchError):
+        owner.resolve_permission(task["id"], "write", "allow_once")
+
+
+def test_permission_rejects_outside_project_and_retired_employee(fleet, tmp_path):
+    owner, project, other, coordinator = fleet
+    client = mapped(fleet, tmp_path)
+    foreign = owner.create_employee(
+        "Private", "codex", other["id"], node_id=client.credentials["device_id"]
+    )
+    task = owner.create_task(other["id"], "Private", "Secret", foreign["id"])
+    owner.claim_task(client.credentials["device_id"], project_ids=[other["id"]])
+    owner.set_status(task["id"], "running")
+    with pytest.raises(WorkbenchError):
+        client.request_permission(
+            task["id"],
+            task["run_id"],
+            foreign["id"],
+            "private",
+            PERMISSION_OPTIONS,
+            {"title": "Private"},
+        )
+    assert owner.task_detail(task["id"])["permissions"] == []
+    employee = client.register_employee(project["id"], "Active", "codex")
+    own = owner.create_task(project["id"], "Own", "Report", employee["id"])
+    client.claim(project["id"], wait=0)
+    client.event(own["id"], own["run_id"], "started")
+    client.request_permission(
+        own["id"], own["run_id"], employee["id"], "write", PERMISSION_OPTIONS, {"title": "Write"}
+    )
+    owner.set_employee_lifecycle(employee["id"], "retired", "Retired in isolated fixture")
+    coordinator.notify()
+    with pytest.raises(WorkbenchError):
+        client.permission_decision(own["id"], own["run_id"], employee["id"], "write", wait=0)
+    with pytest.raises(WorkbenchError):
+        client.project_tool(project["id"], employee["id"], "context", {})
+    assert owner.get_permission(own["id"], "write")["status"] == "expired"
+
+
+def test_device_revoked_during_blocking_claim_cannot_receive_new_task(fleet, tmp_path):
+    owner, project, _, coordinator = fleet
+    client = mapped(fleet, tmp_path)
+    employee = client.register_employee(project["id"], "Remote", "codex")
+    with ThreadPoolExecutor() as pool:
+        future = pool.submit(client.claim, project["id"], 5)
+        time.sleep(0.1)
+        task = owner.create_task(project["id"], "Next", "Report", employee["id"])
+        coordinator.revoke_device(client.credentials["device_id"])
+        with pytest.raises(WorkbenchError):
+            future.result(timeout=1)
+    assert owner.get_task(task["id"])["status"] == "queued"
+
 
 @pytest.fixture
 def fleet(tmp_path):

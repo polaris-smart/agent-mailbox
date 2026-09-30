@@ -32,6 +32,49 @@ FINGERPRINT_PATTERN = re.compile(r"^sha256:[a-f0-9]{64}$")
 REMOTE_EVENTS = frozenset({"started", "session", "event", "output", "error", "permission_denied"})
 
 
+def permission_summary(options, tool_call):
+    """Only ACP choice labels and a concise tool description cross devices."""
+    if not isinstance(options, list) or not 1 <= len(options) <= 32:
+        raise WorkbenchError("invalid_field", "权限请求需要有效的选项。")
+    clean_options = []
+    seen = set()
+    for option in options:
+        if not isinstance(option, dict):
+            raise WorkbenchError("invalid_field", "权限选项格式无效。")
+        option_id = _string(option.get("optionId"), "权限选项编号", 200)
+        kind = option.get("kind")
+        if (
+            option_id in seen
+            or not isinstance(kind, str)
+            or kind
+            not in {
+                "allow_once",
+                "allow_always",
+                "reject_once",
+                "reject_always",
+            }
+        ):
+            raise WorkbenchError("invalid_field", "权限选项无效或重复。")
+        seen.add(option_id)
+        clean_options.append(
+            {
+                "optionId": option_id,
+                "name": _string(option.get("name"), "权限选项说明", 300),
+                "kind": kind,
+            }
+        )
+    if not isinstance(tool_call, dict):
+        raise WorkbenchError("invalid_field", "权限请求需要工具说明。")
+    clean_tool = {
+        key: _string(tool_call[key], "工具说明", 300)
+        for key in ("title", "kind", "toolCallId")
+        if key in tool_call
+    }
+    if not clean_tool.get("title"):
+        raise WorkbenchError("invalid_field", "权限请求需要工具标题。")
+    return clean_options, clean_tool
+
+
 def _identifier(value, label="编号"):
     if not isinstance(value, str) or not ID_PATTERN.fullmatch(value):
         raise WorkbenchError("invalid_field", f"{label}无效，请刷新后重试。")
@@ -389,6 +432,48 @@ class FleetCoordinator:
             raise WorkbenchError("permission_denied", "任务不属于这个设备或执行已过期。")
         return task
 
+    def _permission_task(self, device, task_id, body):
+        task = self._task_scope(device, task_id, body.get("run_id"))
+        if body.get("employee_id") != task["assignee_id"]:
+            raise WorkbenchError("permission_denied", "权限请求不属于这位员工。")
+        self.store.employee_credentials(task["assignee_id"], task["project_id"])
+        return task
+
+    def _permission_decision(self, device, task_id, request_id, headers, body):
+        wait = body.get("wait", 120)
+        if not isinstance(wait, int) or isinstance(wait, bool) or not 0 <= wait <= 120:
+            raise WorkbenchError("invalid_field", "审批等待时间需要在 0 到 120 秒之间。")
+        deadline = time.monotonic() + wait
+        with self.condition:
+            while True:
+                try:
+                    self._authenticate(headers)
+                    self._permission_task(device, task_id, body)
+                    permission = self.store.permission_decision(
+                        task_id, request_id, body.get("run_id")
+                    )
+                except WorkbenchError:
+                    self.store.expire_permission(task_id, request_id, body.get("run_id"))
+                    self.notify()
+                    raise
+                status = permission["status"]
+                if status != "pending":
+                    decision = permission.get("decision") if status == "resolved" else "deny"
+                    return {"status": status, "decision": decision or "deny"}
+                expires = datetime.fromisoformat(permission["expires_at"].replace("Z", "+00:00"))
+                expires_in = (expires - datetime.now(timezone.utc)).total_seconds()
+                remaining = min(
+                    deadline - time.monotonic(),
+                    expires_in,
+                )
+                if remaining <= 0 or self.server is None:
+                    if expires_in <= 0 or self.server is None:
+                        self.store.expire_permission(task_id, request_id, body.get("run_id"))
+                        self.notify()
+                        return {"status": "expired", "decision": "deny"}
+                    return {"status": "pending", "decision": None}
+                self.condition.wait(timeout=remaining)
+
     def _context(self, project_id):
         result = self.store.project_context(project_id)
         result["project"].pop("path", None)
@@ -413,6 +498,7 @@ class FleetCoordinator:
             or project_id not in employee["project_ids"]
         ):
             raise WorkbenchError("permission_denied", "员工不属于这个设备或授权项目。")
+        self.store.employee_credentials(employee_id, project_id)
         tool, args = body.get("tool"), body.get("args", {})
         if not isinstance(args, dict):
             raise WorkbenchError("invalid_field", "工具参数需要是 JSON 对象。")
@@ -445,6 +531,7 @@ class FleetCoordinator:
                 args.get("message"),
                 args.get("recipient_id"),
                 "read-only",
+                actor=f"employee:{employee_id}",
             )
             self.store.add_event(
                 task["id"], "team_message", "项目同事请求了这项工作。", {"from_id": employee_id}
@@ -476,6 +563,26 @@ class FleetCoordinator:
             return value
 
         body = redact(body)
+        match = re.fullmatch(
+            r"/v1/tasks/([A-Za-z0-9_-]+)/permissions(?:/([A-Za-z0-9_-]{1,200})/(decision|expire))?",
+            path,
+        )
+        if method == "POST" and match:
+            task_id, request_id, action = match.groups()
+            self._permission_task(device, task_id, body)
+            if request_id:
+                if action == "expire":
+                    self.store.expire_permission(task_id, request_id, body.get("run_id"))
+                    self.notify()
+                    return {"status": "expired", "decision": "deny"}
+                return self._permission_decision(device, task_id, request_id, headers, body)
+            request_id = _string(body.get("request_id"), "权限请求编号", 200)
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", request_id):
+                raise WorkbenchError("invalid_field", "权限请求编号无效。")
+            options, tool_call = permission_summary(body.get("options"), body.get("tool_call"))
+            permission = self.store.request_permission(task_id, request_id, options, tool_call)
+            self.notify()
+            return {"status": permission["status"], "expires_at": permission["expires_at"]}
         if method == "GET" and path == "/v1/device":
             return {
                 "device": {
@@ -533,6 +640,8 @@ class FleetCoordinator:
                 if task is None and wait and self.server is not None:
                     self.condition.wait(timeout=wait)
                     if self.server is not None:
+                        device = self._authenticate(headers)
+                        self._scope(device, project_id)
                         task = self.store.claim_task(device["device_id"], project_ids=[project_id])
             if task:
                 employee = next(
@@ -805,4 +914,42 @@ class FleetClient:
             f"/v1/tasks/{task_id}/control",
             {"run_id": run_id, "wait": wait},
             timeout=wait + 10,
+        )
+
+    def request_permission(self, task_id, run_id, employee_id, request_id, options, tool_call):
+        task_id = _identifier(task_id, "任务编号")
+        options, tool_call = permission_summary(options, tool_call)
+        return self._request(
+            "POST",
+            f"/v1/tasks/{task_id}/permissions",
+            {
+                "run_id": run_id,
+                "employee_id": employee_id,
+                "request_id": request_id,
+                "options": options,
+                "tool_call": tool_call,
+            },
+        )
+
+    def permission_decision(self, task_id, run_id, employee_id, request_id, wait=120):
+        task_id = _identifier(task_id, "任务编号")
+        if not isinstance(wait, int) or isinstance(wait, bool) or not 0 <= wait <= 120:
+            raise WorkbenchError("invalid_field", "审批等待时间需要在 0 到 120 秒之间。")
+        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", request_id):
+            raise WorkbenchError("invalid_field", "权限请求编号无效。")
+        return self._request(
+            "POST",
+            f"/v1/tasks/{task_id}/permissions/{request_id}/decision",
+            {"run_id": run_id, "employee_id": employee_id, "wait": wait},
+            timeout=wait + 10,
+        )
+
+    def expire_permission(self, task_id, run_id, employee_id, request_id):
+        task_id = _identifier(task_id, "任务编号")
+        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", request_id):
+            raise WorkbenchError("invalid_field", "权限请求编号无效。")
+        return self._request(
+            "POST",
+            f"/v1/tasks/{task_id}/permissions/{request_id}/expire",
+            {"run_id": run_id, "employee_id": employee_id},
         )
