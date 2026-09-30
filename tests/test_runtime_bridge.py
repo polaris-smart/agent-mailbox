@@ -26,6 +26,17 @@ store, trace, flavor = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 known = json.loads(store.read_text()) if store.exists() else []
 pending = {}
 permissions = {}
+model = "gpt-6-luna"
+effort = "low"
+def configs():
+    values = [{"id":"model", "name":"Model", "category":"model", "type":"select",
+        "currentValue":model, "options":[{"value":"gpt-6-luna", "name":"Luna"},
+        {"value":"gpt-6-sol", "name":"Sol"}]}]
+    if flavor != "no_reasoning":
+        values.append({"id":"reasoning_effort", "name":"Effort", "type":"select",
+            "currentValue":effort, "options":[{"value":"low", "name":"Low"},
+            {"value":"medium", "name":"Medium"}]})
+    return values
 def out(payload):
     print(json.dumps(payload, ensure_ascii=False), flush=True)
 def result(request, value):
@@ -60,7 +71,7 @@ for line in sys.stdin:
         sid = "fake-" + uuid.uuid4().hex
         known.append(sid)
         store.write_text(json.dumps(known))
-        result(request, {"sessionId":sid, "modes":{"currentModeId":"read-only",
+        result(request, {"sessionId":sid, "configOptions":configs(), "modes":{"currentModeId":"read-only",
             "availableModes":[{"id":"read-only", "name":"Read only"},
             {"id":"workspace-write", "name":"Workspace write"}]}})
     elif method in ("session/resume", "session/load"):
@@ -70,6 +81,15 @@ for line in sys.stdin:
             result(request, {})
     elif method == "session/set_mode":
         result(request, {})
+    elif method == "session/set_config_option":
+        key, value = params["configId"], params["value"]
+        options = next((option for option in configs() if option["id"] == key), None)
+        if not options or value not in [o["value"] for o in options["options"]]:
+            error(request, -32602, "Unsupported option value")
+        else:
+            if key == "model": model = value
+            else: effort = value
+            result(request, {"configOptions":configs()})
     elif method == "session/prompt":
         text = "".join(p.get("text", "") for p in params["prompt"])
         if text in ("permission", "permission_cancel"):
@@ -91,6 +111,25 @@ for line in sys.stdin:
             result(request, {"stopReason":"end_turn"})
         elif text == "long":
             finish(request, "字" * 50000)
+        elif text in ("provider_model_error", "provider_fragmented"):
+            chunk(params["sessionId"], "Warning: Model metadata was not found.\n\n")
+            envelope = json.dumps({"type":"error", "status":400,
+                "error":{"type":"invalid_request_error", "message":
+                    "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."}})
+            if text == "provider_fragmented":
+                chunk(params["sessionId"], envelope[:40])
+                finish(request, envelope[40:])
+            else: finish(request, envelope + "\n\n")
+        elif text == "provider_service_error":
+            finish(request, json.dumps({"type":"error", "status":503,
+                "error":{"type":"server_error", "message":"Provider temporarily unavailable"}}))
+        elif text == "provider_prose":
+            finish(request, "An unsupported model can cause an error; this is an explanation, not a provider error.")
+        elif text == "provider_quoted_example":
+            finish(request, '```json\n{"type":"error","status":503,"error":{"type":"server_error","message":"example"}}\n```')
+        elif text == "provider_native_failure":
+            result(request, {"stopReason":"end_turn", "_meta":{"jetbrains":{"air":{
+                "sessionFailure":{"severity":"error", "title":"Provider denied the request"}}}}})
         else:
             chunk(params["sessionId"], "hidden thought", "agent_thought_chunk")
             chunk(params["sessionId"], "Hello ")
@@ -444,3 +483,65 @@ def test_corrupt_session_state_cannot_silently_start_new_thread(launch):
     second.run(run_id="r2")
     assert second.result("r2")["error"]["code"] == "SESSION_RESUME_FAILED"
     assert sum(r.get("method") == "session/new" for r in second.requests()) == 1
+
+
+@pytest.mark.parametrize(
+    "prompt,code",
+    [
+        ("provider_model_error", "MODEL_UNSUPPORTED"),
+        ("provider_fragmented", "MODEL_UNSUPPORTED"),
+        ("provider_service_error", "PROVIDER_ERROR"),
+        ("provider_native_failure", "PROVIDER_ERROR"),
+    ],
+)
+def test_provider_error_cannot_become_a_successful_deliverable(launch, prompt, code):
+    bridge = launch()
+    bridge.run(prompt=prompt)
+    result = bridge.result()
+    assert result["status"] == "failed"
+    assert result["error"]["code"] == code
+    assert result["runtime_result"]["status"] == "completed"
+
+
+@pytest.mark.parametrize("prompt", ["provider_prose", "provider_quoted_example"])
+def test_error_explanations_do_not_trigger_provider_failure(launch, prompt):
+    bridge = launch()
+    bridge.run(prompt=prompt)
+    assert bridge.result()["status"] == "completed"
+
+
+def test_explicit_model_and_reasoning_are_applied_before_prompt(launch):
+    bridge = launch()
+    bridge.run(model="gpt-6-luna", reasoning_effort="low")
+    assert bridge.result()["status"] == "completed"
+    trace = bridge.requests()
+    controls = [
+        (i, r["params"])
+        for i, r in enumerate(trace)
+        if r.get("method") == "session/set_config_option"
+    ]
+    prompt = next(i for i, r in enumerate(trace) if r.get("method") == "session/prompt")
+    assert {c["configId"]: c["value"] for _, c in controls} == {
+        "model": "gpt-6-luna",
+        "reasoning_effort": "low",
+    }
+    assert all(i < prompt for i, _ in controls)
+    session = next(m for m in bridge.seen if m["type"] == "session")
+    assert session["model"] == "gpt-6-luna" and session["reasoning_effort"] == "low"
+
+
+@pytest.mark.parametrize(
+    "flavor,profile,code",
+    [
+        ("normal", {"model": "invented-model"}, "MODEL_UNSUPPORTED"),
+        ("no_reasoning", {"reasoning_effort": "low"}, "CONFIG_UNSUPPORTED"),
+        ("normal", {"reasoning_effort": "invented-effort"}, "CONFIG_UNSUPPORTED"),
+    ],
+)
+def test_unknown_or_unadvertised_profile_is_rejected_before_execution(
+    launch, flavor, profile, code
+):
+    bridge = launch(flavor)
+    bridge.run(**profile)
+    assert bridge.result()["error"]["code"] == code
+    assert not any(r.get("method") == "session/prompt" for r in bridge.requests())

@@ -69,6 +69,29 @@ function errorInfo(error, resume = false) {
   else if (!code || code.startsWith("ACP_") || code === "RUNTIME") code = "AGENT_FAILED";
   return { code, message, retryable: error?.retryable === true };
 }
+function providerFailure(output) {
+  // Some native providers emit a standalone JSON error envelope as an assistant
+  // message, and their adapter still returns end_turn. Only this explicit
+  // envelope is an error: ordinary prose and quoted/code-fenced examples are not.
+  let fenced = false;
+  for (const line of output.split(/\r?\n/)) {
+    const text = line.trim();
+    if (text.startsWith("```")) { fenced = !fenced; continue; }
+    if (fenced || !text.startsWith("{") || !text.endsWith("}")) continue;
+    let envelope;
+    try { envelope = JSON.parse(text); } catch { continue; }
+    if (envelope?.type !== "error" || !Number.isInteger(envelope.status)
+      || envelope.status < 400 || envelope.status > 599
+      || typeof envelope.error?.type !== "string" || !envelope.error.type
+      || typeof envelope.error?.message !== "string" || !envelope.error.message) continue;
+    const message = safeMessage(envelope.error.message);
+    const unsupported = envelope.status === 400 && envelope.error.type === "invalid_request_error"
+      && /\bmodel\b.*\bnot supported\b|\bunsupported model\b/i.test(message);
+    return { code: unsupported ? "MODEL_UNSUPPORTED" : envelope.status === 401 ? "AUTH_REQUIRED" : "PROVIDER_ERROR",
+      message, provider_status: envelope.status, provider_error_type: envelope.error.type,
+      retryable: envelope.status === 429 || envelope.status >= 500 };
+  }
+}
 function emit(run, type, payload = {}) {
   if (run?.terminal && type !== "result") return;
   process.stdout.write(JSON.stringify({ protocol: 1, run_id: run?.id ?? null,
@@ -252,6 +275,18 @@ async function acquireSessionTurn(entry, run) {
   try { await waitActive(previous, run); return release; }
   catch (error) { release(); throw error; }
 }
+async function configure(entry, run, operation, unsupportedCode) {
+  try {
+    return await deadline(operation, startupTimeout, () => {
+      void entry.runtime.shutdown().catch(() => {});
+      sessions.delete(run.sessionId);
+    });
+  } catch (error) {
+    if (run.controller.signal.aborted) fail("CANCELLED", "Run cancelled before dispatch");
+    if (error.code === "TIMEOUT") throw error;
+    fail(unsupportedCode, safeMessage(error.message));
+  }
+}
 function permission(run, request, { signal }) {
   const requestId = randomUUID();
   return new Promise(resolve => {
@@ -280,6 +315,8 @@ async function execute(run, input) {
     if (!["codex", "claude"].includes(input.agent)) fail("INVALID_REQUEST", "Only codex and claude managed adapters are supported");
     if (typeof input.prompt !== "string" || input.prompt.includes("\0") || input.prompt.length > 2000000) fail("INVALID_REQUEST", "prompt must be a string of at most 2000000 characters");
     if (input.resume_session_id !== undefined) string(input.resume_session_id, "resume_session_id");
+    if (input.model !== undefined) string(input.model, "model", 256);
+    if (input.reasoning_effort !== undefined) string(input.reasoning_effort, "reasoning_effort", 32);
     const timeout = milliseconds(input.timeout_ms, 600000, "timeout_ms");
     run.permissionTimeout = milliseconds(input.permission_timeout_ms, permissionTimeout, "permission_timeout_ms");
     const entry = await sessionFor(run, input);
@@ -288,16 +325,24 @@ async function execute(run, input) {
       fail("SESSION_CONTEXT_MISMATCH", "Resume ID does not match this managed session");
     }
     release = await acquireSessionTurn(entry, run);
-    try {
-      await deadline(entry.runtime.setMode({ handle, mode: run.nativeMode, signal: run.controller.signal }),
-        startupTimeout, () => { void entry.runtime.shutdown().catch(() => {}); sessions.delete(run.sessionId); });
-    } catch (error) {
-      if (run.controller.signal.aborted) fail("CANCELLED", "Run cancelled before dispatch");
-      if (error.code === "TIMEOUT") throw error;
-      fail("SANDBOX_UNSUPPORTED", "Agent adapter does not support the requested native permission mode");
+    if (input.model !== undefined) {
+      await configure(entry, run, entry.runtime.setModel({ handle, model: input.model,
+        signal: run.controller.signal }), "MODEL_UNSUPPORTED");
     }
+    if (input.reasoning_effort !== undefined) {
+      const capabilities = await entry.runtime.getCapabilities({ handle });
+      if (!capabilities.configOptionKeys?.includes("reasoning_effort")) {
+        fail("CONFIG_UNSUPPORTED", "This agent adapter does not advertise reasoning_effort");
+      }
+      await configure(entry, run, entry.runtime.setConfigOption({ handle, key: "reasoning_effort",
+        value: input.reasoning_effort, signal: run.controller.signal }), "CONFIG_UNSUPPORTED");
+    }
+    await configure(entry, run, entry.runtime.setMode({ handle, mode: run.nativeMode,
+      signal: run.controller.signal }), "SANDBOX_UNSUPPORTED");
     emit(run, "session", { backend_session_id: handle.backendSessionId,
-      acpx_record_id: handle.acpxRecordId, native_mode: run.nativeMode });
+      acpx_record_id: handle.acpxRecordId, native_mode: run.nativeMode,
+      ...(input.model === undefined ? {} : { model: input.model }),
+      ...(input.reasoning_effort === undefined ? {} : { reasoning_effort: input.reasoning_effort }) });
     const turn = entry.runtime.startTurn({ handle, text: input.prompt, mode: "prompt", requestId: run.id,
       signal: run.controller.signal, timeoutMs: timeout,
       onPermissionRequest: (request, context) => permission(run, request, context) });
@@ -306,11 +351,18 @@ async function execute(run, input) {
     started.catch(() => {});
     for await (const event of turn.events) {
       if (event.type === "text_delta" && event.stream !== "thought") run.output.push(event.text);
+      if (event.type === "error") run.streamError = errorInfo(event);
       emit(run, "event", { event });
     }
     const result = await turn.result;
     await started.catch(() => {});
-    if (result.status === "failed") {
+    const nativeFailure = result._meta?.jetbrains?.air?.sessionFailure;
+    const providerError = run.streamError ?? (nativeFailure?.severity === "error" && typeof nativeFailure.title === "string"
+      ? { code: "PROVIDER_ERROR", message: safeMessage(nativeFailure.title), retryable: false }
+      : providerFailure(run.output.join("")));
+    if (result.status === "completed" && providerError) {
+      terminal(run, { status: "failed", error: providerError, runtime_result: result });
+    } else if (result.status === "failed") {
       terminal(run, { status: "failed", error: errorInfo(result.error),
         runtime_result: { ...result, error: errorInfo(result.error) } });
     } else terminal(run, { status: result.status, stop_reason: result.stopReason ?? null, runtime_result: result });

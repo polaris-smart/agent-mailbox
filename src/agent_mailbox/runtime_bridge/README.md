@@ -96,7 +96,7 @@ Every stdout line has `protocol: 1`, `run_id`, `session_id` and `type`:
 
 | Type | Payload |
 | --- | --- |
-| `session` | `backend_session_id`, `acpx_record_id`, `native_mode` |
+| `session` | `backend_session_id`, `acpx_record_id`, `native_mode`, and successfully applied optional `model` / `reasoning_effort` |
 | `started` | The underlying ACP transport accepted the prompt, after queue waiting |
 | `event` | `event`: the complete structured ACPX event, including output/thought/tool updates |
 | `permission_required` | `request_id`, `request` (full ACP request), `options`, `tool_call`, `inferred_kind`, `timeout_ms` |
@@ -105,7 +105,11 @@ Every stdout line has `protocol: 1`, `run_id`, `session_id` and `type`:
 
 `output_text` concatenates output text deltas, preserves Unicode and empty output,
 and excludes thought text. `status` is `completed`, `failed` or `cancelled` from the
-actual ACP turn result. The bridge does not decide whether the user's task was
+actual ACP turn result, except that explicit provider failure events or JSON error
+envelopes fail the run even when an adapter incorrectly reports completion. Only
+standalone JSON with `type: "error"`, HTTP error status and typed error/message is
+recognized; prose and fenced examples are not treated as failure envelopes.
+The bridge does not decide whether the user's task was
 semantically satisfied. An empty completed output remains empty. Partial output
 accompanies failures and cancellation.
 
@@ -157,7 +161,16 @@ action under the native agent's permission mechanism.
 
 Failures include `RUNTIME_MISSING`, `AGENT_UNAVAILABLE`, `AUTH_REQUIRED`, `TIMEOUT`,
 `SESSION_RESUME_FAILED`, `SESSION_CONTEXT_MISMATCH`, `PROJECT_BOUNDARY`,
-`SANDBOX_UNSUPPORTED`, `INVALID_REQUEST` and `AGENT_FAILED`.
+`SANDBOX_UNSUPPORTED`, `MODEL_UNSUPPORTED`, `CONFIG_UNSUPPORTED`, `PROVIDER_ERROR`,
+`INVALID_REQUEST` and `AGENT_FAILED`.
+
+An optional run `model` selects an explicit ACP model before dispatch. Optional
+`reasoning_effort` requires the adapter to advertise that configuration key and
+accept the requested value. Unsupported choices fail before the prompt; the bridge
+never substitutes another model or changes user configuration. Omitted settings
+inherit the native adapter's current defaults, which may differ from desktop app
+defaults. The `session` event records the applied values so consumers can report
+whether the requested profile actually took effect.
 
 Only Codex and Claude managed adapters are accepted. Custom GUI apps, general
 agent shells and remote devices require their own supported adapters/node layer;
