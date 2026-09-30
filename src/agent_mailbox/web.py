@@ -576,9 +576,22 @@ class _BoardHandler(BaseHTTPRequestHandler):
         _authorized（token）挡在前面。"""
         return self.client_address[0] in ("127.0.0.1", "::1")
 
+    _body_cache: bytes | None = None
+
+    def _drain_body(self) -> None:
+        """POST 入口先把请求体读进缓存（t-75）。
+
+        根因（CI run 36682561364, windows-latest）：未知端点/错误路径不读体就
+        回包，Windows 对未读体的连接直接 RST——客户端收到 WinError 10053
+        ConnectionAborted 而不是预期的 404。排水后所有回包路径（404/401/400）
+        都不再裸回。"""
+        if self._body_cache is None:
+            n = int(self.headers.get("Content-Length") or 0)
+            self._body_cache = self.rfile.read(n) or b"{}"
+
     def _body(self) -> dict:
-        n = int(self.headers.get("Content-Length") or 0)
-        return json.loads(self.rfile.read(n) or b"{}")
+        self._drain_body()
+        return json.loads(self._body_cache)
 
     def _brand(self, path: str) -> None:
         entry = _BRAND_FILES.get(path)
@@ -719,6 +732,7 @@ class _BoardHandler(BaseHTTPRequestHandler):
         }
 
     def do_POST(self) -> None:
+        self._drain_body()  # t-75: 任何 POST 路径（含 404/401）先排水，防 Windows RST
         if not self._authorized():
             return self._deny()
         path = urlparse(self.path).path
