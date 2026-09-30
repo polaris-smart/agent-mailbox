@@ -814,19 +814,28 @@ def test_sampling_stdio_e2e_wire(mailroot, tmp_path):
             }
         )
         # 全链路审计闭合：request/result 落 sampling.log + handled_log 留痕
+        # t-76：等「两证齐」而非只等审计行——信留痕与审计行是两次落盘，
+        # 任一先到都不算闭合（产品侧已改为留痕先写，这里等终态，双保险）。
         store = MailStore(proc_mailroot)
-        deadline = time.time() + 8
+        deadline = time.time() + 20
+        letter = {}
         done = False
         while time.time() < deadline and not done:
-            log = read_sampling_log(proc_mailroot)
-            done = any(e.get("event") == "result" and e.get("outcome") == "ok" for e in log)
+            letter = store.get_letter("WB", msg_id)
+            audit_ok = any(
+                e.get("event") == "result" and e.get("outcome") == "ok"
+                for e in read_sampling_log(proc_mailroot)
+            )
+            trail_ok = any(
+                e.get("action") == "sampling" and e.get("outcome") == "ok"
+                for e in letter.get("handled_log") or []
+            )
+            done = audit_ok and trail_ok
             if not done:
                 time.sleep(0.1)
-        assert done, f"audit trail incomplete: {read_sampling_log(proc_mailroot)}"
-        letter = store.get_letter("WB", msg_id)
-        assert any(
-            e.get("action") == "sampling" and e.get("outcome") == "ok"
-            for e in letter.get("handled_log") or []
+        assert done, (
+            f"audit trail incomplete: sampling.log={read_sampling_log(proc_mailroot)} "
+            f"handled_log={letter.get('handled_log')}"
         )
         print("sampling wire e2e PASS")
     finally:

@@ -668,6 +668,17 @@ class SamplingNotifier:
                 outcome, detail = "error", str(exc)
             else:
                 outcome, detail = "ok", str(getattr(result, "model", "") or "")
+            # t-76: 铁证先于审计（原序相反）。信上 handled_log 是业务铁证，
+            # sampling.log 是旁路审计——审计行不得早于铁证宣告 ok，否则慢盘上
+            # 留下「审计已 ok / 信未标 ok」的窗口（Windows CI run 36691635309
+            # attempt 1：test_sampling_stdio_e2e_wire 读到 result=ok 后立刻断言
+            # handled_log 落空）。
+            try:
+                store.record_handled(agent_id, msg_id, SAMPLING_ACTION, outcome=outcome)
+            except Exception as exc:  # noqa: BLE001 — 留痕失败不影响唤醒结果，只告警
+                logger.warning(
+                    "sampling handled_log write failed for %s/%s: %s", agent_id, msg_id, exc
+                )
             append_sampling_log(
                 root,
                 {
@@ -678,12 +689,6 @@ class SamplingNotifier:
                     "detail": detail,
                 },
             )
-            try:
-                store.record_handled(agent_id, msg_id, SAMPLING_ACTION, outcome=outcome)
-            except Exception as exc:  # noqa: BLE001 — 留痕失败不影响唤醒结果，只告警
-                logger.warning(
-                    "sampling handled_log write failed for %s/%s: %s", agent_id, msg_id, exc
-                )
         except Exception as exc:  # noqa: BLE001 — fail-open 总闸：唤醒永不向 send 链路抛错
             # 失败静默降级：落日志即止，信留在箱里等 mailbox_check / fallback（改点3）
             logger.warning("sampling wake degraded for %s/%s: %s", agent_id, msg_id, exc)
