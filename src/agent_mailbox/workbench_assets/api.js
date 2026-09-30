@@ -109,6 +109,8 @@ export const api = Object.freeze({
   discoverEmployees: () => request("/discover"),
   models: (kind) => request(`/models?kind=${id(kind)}`),
   addEmployee: (body) => request("/employees", "POST", body),
+  setEmployeeLifecycle: (employeeId, body) => request(`/employees/${id(employeeId)}/lifecycle`, "POST", body),
+  governance: (projectId) => request(`/governance?project_id=${id(projectId)}`),
   createTask: (body) => request("/tasks", "POST", body),
   taskDetail: (taskId) => request(`/tasks/${id(taskId)}`),
   cancelTask: (taskId) => request(`/tasks/${id(taskId)}/cancel`, "POST", {}),

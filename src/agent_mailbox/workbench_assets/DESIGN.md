@@ -22,6 +22,10 @@ Device onboarding has two explicit roles: invite from the coordinator, join on t
 
 Real-time updates use the authenticated local NDJSON change stream. Revision changes coalesce into one refresh; heartbeat messages never trigger database reads. Open forms keep their input, and hidden pages defer rendering until visible. Broken connections reconnect the stream and offer a manual retry.
 
+Employee lifecycle is separate from tool connection readiness. Paused and retired identities remain visible in project history but do not appear in assignment choices. Retirement requires a written reason and an explicit confirmation of stopped assignments, revoked shared access, retained history, and the need for a new identity to rejoin. Management history names the actual actor and records reasons; it does not claim tamper-proof auditing. Permission requests show their absolute expiry and are rechecked before an allow action without a countdown poll.
+
+The schema 3-to-4 upgrade retains existing employee identities while adding lifecycle and management history. The UI reads the service's migrated state; it does not implement or advertise an automatic application updater.
+
 ## Motion
 
 150–200ms feedback for controls and drawer/dialog transitions. Skeletons indicate loading; no orchestrated entrance sequence. Reduced-motion removes animations and smooth scrolling.
