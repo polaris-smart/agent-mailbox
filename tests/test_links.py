@@ -89,7 +89,7 @@ def test_legacy_letter_without_links_untouched(store: MailStore):
 
 def test_links_persisted_verbatim_in_letter_json(store: MailStore, tmp_path):
     f = _mkfile(tmp_path, "docs/a.txt")
-    links = [{"title": "spec", "uri": f"file://{f}", "kind": "spec", "note": "n"}]
+    links = [{"title": "spec", "uri": f.as_uri(), "kind": "spec", "note": "n"}]
     sent = store.send("ZC", "HS", "with links", "b", links=links)[0]
     disk = _letter_on_disk(store, "HS", sent["id"])
     assert disk["links"] == links
@@ -103,7 +103,7 @@ def test_empty_links_list_writes_no_field(store: MailStore):
 def test_states_computed_not_persisted(store: MailStore, tmp_path):
     _allow(store, str(tmp_path))
     f = _mkfile(tmp_path, "docs/a.txt")
-    sent = store.send("ZC", "HS", "s", "b", links=[{"title": "a", "uri": f"file://{f}"}])[0]
+    sent = store.send("ZC", "HS", "s", "b", links=[{"title": "a", "uri": f.as_uri()}])[0]
     got = store.check("HS", mark=False)
     assert got[0]["links"][0]["state"] == "ok"
     disk = _letter_on_disk(store, "HS", sent["id"])
@@ -122,7 +122,7 @@ def test_file_link_ok_inside_allowed_roots(store: MailStore, tmp_path):
         "HS",
         "ok case",
         "b",
-        links=[{"title": "r", "uri": f"file://{f}", "sha256": _sha(f.read_bytes())}],
+        links=[{"title": "r", "uri": f.as_uri(), "sha256": _sha(f.read_bytes())}],
     )
     (link,) = store.list_messages("HS")[0]["links"]
     assert link["state"] == "ok" and link["reason"] is None
@@ -137,7 +137,7 @@ def test_file_link_stale_when_content_changes(store: MailStore, tmp_path):
         "HS",
         "stale case",
         "b",
-        links=[{"title": "r", "uri": f"file://{f}", "sha256": _sha(b"v1")}],
+        links=[{"title": "r", "uri": f.as_uri(), "sha256": _sha(b"v1")}],
     )
     f.write_bytes(b"v2 - edited after send")
     (link,) = store.list_messages("HS")[0]["links"]
@@ -148,7 +148,7 @@ def test_file_link_denied_when_file_missing(store: MailStore, tmp_path):
     docs = tmp_path / "docs"
     f = _mkfile(docs, "report.txt")
     _allow(store, str(docs))
-    store.send("ZC", "HS", "missing case", "b", links=[{"title": "r", "uri": f"file://{f}"}])
+    store.send("ZC", "HS", "missing case", "b", links=[{"title": "r", "uri": f.as_uri()}])
     f.unlink()
     (link,) = store.list_messages("HS")[0]["links"]
     assert link["state"] == "denied" and link["reason"] == "missing"
@@ -158,7 +158,7 @@ def test_sha256_absent_checks_existence_only(store: MailStore, tmp_path):
     docs = tmp_path / "docs"
     f = _mkfile(docs, "report.txt", b"content-that-will-change")
     _allow(store, str(docs))
-    store.send("ZC", "HS", "no hash", "b", links=[{"title": "r", "uri": f"file://{f}"}])
+    store.send("ZC", "HS", "no hash", "b", links=[{"title": "r", "uri": f.as_uri()}])
     (link,) = store.list_messages("HS")[0]["links"]
     assert link["state"] == "ok"  # content changed but no sha256 carried: no comparison
     f.write_bytes(b"totally different")
@@ -174,7 +174,7 @@ def test_sha256_absent_checks_existence_only(store: MailStore, tmp_path):
 
 def test_fail_closed_when_no_config(store: MailStore, tmp_path):
     f = _mkfile(tmp_path, "anywhere/a.txt")
-    store.send("ZC", "HS", "no cfg", "b", links=[{"title": "a", "uri": f"file://{f}"}])
+    store.send("ZC", "HS", "no cfg", "b", links=[{"title": "a", "uri": f.as_uri()}])
     (link,) = store.list_messages("HS")[0]["links"]
     assert link["state"] == "denied" and link["reason"] == "no_allowed_roots"
 
@@ -183,7 +183,7 @@ def test_fail_closed_when_allowed_roots_empty(store: MailStore, tmp_path):
     _allow(store)  # explicit empty list
     assert load_allowed_roots(store.root) == []
     f = _mkfile(tmp_path, "anywhere/a.txt")
-    store.send("ZC", "HS", "empty roots", "b", links=[{"title": "a", "uri": f"file://{f}"}])
+    store.send("ZC", "HS", "empty roots", "b", links=[{"title": "a", "uri": f.as_uri()}])
     (link,) = store.list_messages("HS")[0]["links"]
     assert link["state"] == "denied" and link["reason"] == "no_allowed_roots"
 
@@ -191,7 +191,7 @@ def test_fail_closed_when_allowed_roots_empty(store: MailStore, tmp_path):
 def test_home_not_allowed_by_default(store: MailStore, tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))  # the file *is* under $HOME …
     f = _mkfile(tmp_path, "notes/secret.txt")
-    store.send("ZC", "HS", "home default", "b", links=[{"title": "s", "uri": f"file://{f}"}])
+    store.send("ZC", "HS", "home default", "b", links=[{"title": "s", "uri": f.as_uri()}])
     (link,) = store.list_messages("HS")[0]["links"]
     assert link["state"] == "denied"  # … and is still denied: $HOME is never implicit
 
@@ -200,7 +200,7 @@ def test_explicit_home_subtree_allowed(store: MailStore, tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     f = _mkfile(tmp_path, "docs/ok.txt")
     _allow(store, "~/docs")  # operator opens exactly this door
-    store.send("ZC", "HS", "home explicit", "b", links=[{"title": "o", "uri": f"file://{f}"}])
+    store.send("ZC", "HS", "home explicit", "b", links=[{"title": "o", "uri": f.as_uri()}])
     (link,) = store.list_messages("HS")[0]["links"]
     assert link["state"] == "ok"
 
@@ -214,7 +214,7 @@ def test_dotdot_traversal_denied(store: MailStore, tmp_path):
         "HS",
         "traversal",
         "b",
-        links=[{"title": "t", "uri": f"file://{docs}/../outside/real.txt"}],
+        links=[{"title": "t", "uri": docs.as_uri() + "/../outside/real.txt"}],
     )
     (link,) = store.list_messages("HS")[0]["links"]
     assert link["state"] == "denied" and link["reason"] == "outside_allowed_roots"
@@ -228,7 +228,7 @@ def test_symlink_escape_denied(store: MailStore, tmp_path):
     escape = docs / "escape.txt"
     escape.symlink_to(outside)
     _allow(store, str(docs))
-    store.send("ZC", "HS", "symlink", "b", links=[{"title": "e", "uri": f"file://{escape}"}])
+    store.send("ZC", "HS", "symlink", "b", links=[{"title": "e", "uri": escape.as_uri()}])
     (link,) = store.list_messages("HS")[0]["links"]
     assert link["state"] == "denied" and link["reason"] == "outside_allowed_roots"
 
@@ -238,14 +238,14 @@ def test_wildcard_in_allowed_roots_rejected(store: MailStore, tmp_path):
     with pytest.raises(MailboxError, match="wildcard"):
         load_allowed_roots(store.root)
     f = _mkfile(tmp_path, "docs/a.txt")
-    store.send("ZC", "HS", "wc", "b", links=[{"title": "a", "uri": f"file://{f}"}])
+    store.send("ZC", "HS", "wc", "b", links=[{"title": "a", "uri": f.as_uri()}])
     with pytest.raises(MailboxError, match="wildcard"):
         store.list_messages("HS")  # a read path never runs on a half-open gate
 
 
 def test_denied_reason_distinguishes_unconfigured_vs_outside(store: MailStore, tmp_path):
     f = _mkfile(tmp_path, "x/a.txt")
-    store.send("ZC", "HS", "reasons", "b", links=[{"title": "a", "uri": f"file://{f}"}])
+    store.send("ZC", "HS", "reasons", "b", links=[{"title": "a", "uri": f.as_uri()}])
     (link,) = store.list_messages("HS")[0]["links"]
     assert link["reason"] == "no_allowed_roots"
     _allow(store, str(tmp_path / "elsewhere"))
@@ -332,7 +332,7 @@ def test_sealed_strips_links_for_non_recipient(store: MailStore, tmp_path):
         "sealed",
         "secret",
         sealed=True,
-        links=[{"title": "s", "uri": f"file://{f}"}],
+        links=[{"title": "s", "uri": f.as_uri()}],
     )[0]
     red = redact_sealed(_letter_on_disk(store, "HS", sent["id"]), reader="boss")
     assert red["redacted"] == "sealed"
@@ -347,7 +347,7 @@ def test_sealed_recipient_keeps_links(store: MailStore, tmp_path):
         "sealed self",
         "secret",
         sealed=True,
-        links=[{"title": "s", "uri": f"file://{f}"}],
+        links=[{"title": "s", "uri": f.as_uri()}],
     )[0]
     full = redact_sealed(_letter_on_disk(store, "HS", sent["id"]), reader="HS")
     assert "links" in full and "body" in full
@@ -361,7 +361,7 @@ def test_sealed_links_stripped_through_server_check(store: MailStore, tmp_path, 
         "sealed via srv",
         "secret",
         sealed=True,
-        links=[{"title": "s", "uri": f"file://{f}"}],
+        links=[{"title": "s", "uri": f.as_uri()}],
     )
     monkeypatch.setenv("AGENT_MAIL_ID", "boss")  # owner reads ZC's box: non-recipient
     out = mailbox_check(agent_id="ZC", mark=False)
@@ -382,7 +382,7 @@ def test_check_list_thread_all_carry_states(store: MailStore, tmp_path):
         "HS",
         "three paths",
         "b",
-        links=[{"title": "r", "uri": f"file://{f}", "sha256": _sha(b"artifact-bytes")}],
+        links=[{"title": "r", "uri": f.as_uri(), "sha256": _sha(b"artifact-bytes")}],
     )[0]
     for msgs in (
         store.check("HS", mark=False),
@@ -396,7 +396,7 @@ def test_check_list_thread_all_carry_states(store: MailStore, tmp_path):
 def test_list_archived_carries_states(store: MailStore, tmp_path):
     _allow(store, str(tmp_path))
     f = _mkfile(tmp_path, "docs/r.txt")
-    sent = store.send("ZC", "HS", "archived", "b", links=[{"title": "r", "uri": f"file://{f}"}])[0]
+    sent = store.send("ZC", "HS", "archived", "b", links=[{"title": "r", "uri": f.as_uri()}])[0]
     store.check("HS")  # ack
     store.set_status("HS", sent["id"], "done")
     store.archive_done("HS")
@@ -426,12 +426,12 @@ def test_server_mailbox_send_passes_links(store: MailStore, tmp_path, monkeypatc
     f = _mkfile(tmp_path, "docs/via-server.txt")
     monkeypatch.setenv("AGENT_MAIL_ID", "ZC")
     out = mailbox_send(
-        to="HS", subject="via server", body="b", links=[{"title": "v", "uri": f"file://{f}"}]
+        to="HS", subject="via server", body="b", links=[{"title": "v", "uri": f.as_uri()}]
     )
     assert out["count"] == 1
     msg_id = out["delivered"][0]["id"]
     disk = _letter_on_disk(store, "HS", msg_id)
-    assert disk["links"] == [{"title": "v", "uri": f"file://{f}"}]
+    assert disk["links"] == [{"title": "v", "uri": f.as_uri()}]
     _allow(store, str(tmp_path / "docs"))
     got = store.list_messages("HS")
     assert got[0]["links"][0]["state"] == "ok"

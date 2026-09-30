@@ -512,9 +512,16 @@ def _file_link_check(link: dict[str, Any], roots: list[str]) -> dict[str, Any]:
     link reads ``ok`` (判据⑭ semantics: no hash → no comparison).
     """
     parts = urlsplit(link.get("uri", ""))
-    if parts.netloc not in ("", "localhost"):
+    raw = unquote(parts.path)
+    drive_netloc = re.fullmatch(r"([A-Za-z]:)", parts.netloc)
+    if parts.netloc not in ("", "localhost") and not drive_netloc:
         return {"state": "denied", "reason": "non_local_file_uri"}
-    target = Path(unquote(parts.path)).resolve()  # realpath + symlink normalization
+    if drive_netloc:  # file://C:/… 手写形态：盘符落在 netloc，认回
+        raw = parts.netloc + raw
+    m = re.match(r"^/([A-Za-z]:[/\\].*)$", raw)  # file:///C:/…：URL 形态的前导斜杠+盘符
+    if m:
+        raw = m.group(1)
+    target = Path(raw).resolve()  # realpath + symlink normalization
     if not roots:
         return {"state": "denied", "reason": "no_allowed_roots"}
     for entry in roots:

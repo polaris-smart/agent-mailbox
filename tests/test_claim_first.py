@@ -23,6 +23,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -294,7 +295,8 @@ def test_wake_claim_cli_payload_is_the_delivery(env, tmp_path):
             str(claim_file),
         ]
     )
-    assert (claim_file.stat().st_mode & 0o077) == 0  # 信体落盘 0600
+    if sys.platform != "win32":  # 0600 属 POSIX 语义；Windows 无权限位（ACL 另论）
+        assert (claim_file.stat().st_mode & 0o077) == 0  # 信体落盘 0600
     data = json.loads(claim_file.read_text(encoding="utf-8"))
     assert data["agent"] == "ZC" and data["label"] == "belt:4242"
     assert [m["id"] for m in data["claimed"]] == [mid]
