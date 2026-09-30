@@ -1,0 +1,460 @@
+"""Two isolated data roots communicate over real pinned HTTPS on loopback."""
+
+import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
+
+from agent_mailbox.workbench_fleet import FleetClient, FleetCoordinator
+from agent_mailbox.workbench_store import WorkbenchError, WorkbenchStore
+
+
+@pytest.fixture
+def fleet(tmp_path):
+    owner = WorkbenchStore(tmp_path / "owner")
+    project_folder = tmp_path / "owner-project"
+    project_folder.mkdir()
+    project = owner.create_project("Shared", project_folder)
+    other = owner.create_project("Private", tmp_path)
+    coordinator = FleetCoordinator(owner)
+    coordinator.start()
+    try:
+        yield owner, project, other, coordinator
+    finally:
+        coordinator.stop()
+
+
+def paired(fleet, tmp_path, name="device"):
+    _, project, _, coordinator = fleet
+    client = FleetClient(tmp_path / name, coordinator.issue_invite([project["id"]]))
+    return client
+
+
+def mapped(fleet, tmp_path, name="device"):
+    client = paired(fleet, tmp_path, name)
+    directory = tmp_path / (name + "-project")
+    directory.mkdir()
+    client.map_project(fleet[1]["id"], directory)
+    return client
+
+
+def test_pairing_real_tls_private_credential_and_project_context(fleet, tmp_path):
+    owner, project, _, coordinator = fleet
+    owner.add_memory(project["id"], "Rule", "Use local workspace")
+    source = tmp_path / "brief.md"
+    source.write_text("Shared document")
+    owner.add_resource(project["id"], "Brief", "document", source)
+    invite = coordinator.issue_invite([project["id"]])
+    client = FleetClient(tmp_path / "remote", invite)
+    assert client.credentials["device_id"] == client.store.local_node()["id"]
+    assert client.credentials["coordinator_id"] == owner.local_node()["id"]
+    assert client.credentials["device_id"] != owner.local_node()["id"]
+    assert client.credentials_path.stat().st_mode & 0o777 == 0o600
+    assert client.directory.stat().st_mode & 0o777 == 0o700
+    assert coordinator.state_path.stat().st_mode & 0o777 == 0o600
+    assert (coordinator.directory / "tls-key.pem").stat().st_mode & 0o777 == 0o600
+    context = client.context(project["id"])
+    assert context["project"]["id"] == project["id"]
+    assert "path" not in context["project"]
+    assert "path" not in context["resources"][0]
+    assert context["memories"][0]["body"] == "Use local workspace"
+    metadata = client.device()
+    assert metadata["device"]["device_id"] == client.store.local_node()["id"]
+    assert "token" not in json.dumps(metadata)
+    assert client.credentials["token"] not in json.dumps(owner.snapshot())
+    assert client.credentials["token"] not in coordinator.state_path.read_text()
+    assert invite["invite_secret"] not in coordinator.state_path.read_text()
+    assert client.projects() == [{"id": project["id"], "name": "Shared"}]
+
+
+def test_wrong_fingerprint_stops_before_invite_is_sent(fleet, tmp_path):
+    _, project, _, coordinator = fleet
+    invite = coordinator.issue_invite([project["id"]])
+    altered = {**invite, "fingerprint": "sha256:" + "0" * 64}
+    with pytest.raises(WorkbenchError) as error:
+        FleetClient(tmp_path / "remote", altered)
+    assert error.value.code == "tls_pin_mismatch"
+    assert coordinator.state["invites"][invite["invite_id"]]["used"] is False
+    assert coordinator.state["devices"] == {}
+    valid = FleetClient(tmp_path / "remote", invite)
+    assert valid.device()["coordinator"]["id"] == coordinator.store.local_node()["id"]
+
+
+def test_wrong_invite_secret_rejected(fleet, tmp_path):
+    _, project, _, coordinator = fleet
+    invite = coordinator.issue_invite([project["id"]])
+    with pytest.raises(WorkbenchError) as error:
+        FleetClient(tmp_path / "remote", {**invite, "invite_secret": "wrong"})
+    assert error.value.code == "permission_denied"
+    assert not coordinator.state["invites"][invite["invite_id"]]["used"]
+    assert coordinator.state["devices"] == {}
+
+
+def test_expired_invite_rejected(fleet, tmp_path):
+    _, project, _, coordinator = fleet
+    invite = coordinator.issue_invite([project["id"]])
+    with coordinator.lock:
+        coordinator.state["invites"][invite["invite_id"]]["expires_at"] = 0
+        coordinator._save()
+    with pytest.raises(WorkbenchError) as error:
+        FleetClient(tmp_path / "remote", invite)
+    assert error.value.code == "invite_expired"
+    assert coordinator.state["devices"] == {}
+
+
+def test_invite_exactly_one_winner_under_race(fleet, tmp_path):
+    _, project, _, coordinator = fleet
+    invite = coordinator.issue_invite([project["id"]])
+
+    def join(name):
+        try:
+            return FleetClient(tmp_path / name, invite)
+        except WorkbenchError as exc:
+            return exc.code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(join, ["one", "two"]))
+    assert sum(isinstance(value, FleetClient) for value in results) == 1
+    assert results.count("invite_used") == 1
+    assert len(coordinator.state["devices"]) == 1
+
+
+def test_client_reuses_stable_identity_without_replaying_invite(fleet, tmp_path):
+    _, project, _, coordinator = fleet
+    invite = coordinator.issue_invite([project["id"]])
+    first = FleetClient(tmp_path / "remote", invite)
+    restarted = FleetClient(tmp_path / "remote", invite)
+    assert restarted.credentials == first.credentials
+    assert restarted.device()["device"]["device_id"] == first.store.local_node()["id"]
+    assert len(coordinator.state["devices"]) == 1
+    with pytest.raises(WorkbenchError) as error:
+        FleetClient(tmp_path / "other", invite)
+    assert error.value.code == "invite_used"
+
+
+def test_scope_denies_other_project_registration_and_context(fleet, tmp_path):
+    owner, project, other, _ = fleet
+    client = paired(fleet, tmp_path)
+    assert client.context(project["id"])["project"]["id"] == project["id"]
+    for action in (
+        lambda: client.context(other["id"]),
+        lambda: client.register_employee(other["id"], "Hacker", "codex"),
+        lambda: client._request("POST", "/v1/tasks/claim", {"project_id": other["id"]}),
+    ):
+        with pytest.raises(WorkbenchError) as error:
+            action()
+        assert error.value.code == "permission_denied"
+    assert owner.snapshot()["employees"] == []
+
+
+def test_device_credentials_cannot_access_human_or_arbitrary_command_api(fleet, tmp_path):
+    client = paired(fleet, tmp_path)
+    for path in ("/api/workbench/snapshot", "/v1/shell", "/v1/permissions/approve", "/v1/invites"):
+        with pytest.raises(WorkbenchError) as error:
+            client._request("POST", path, {"command": "echo hacked"})
+        assert error.value.code == "not_found"
+
+
+def test_credentials_invalid_and_revoked_rejected(fleet, tmp_path):
+    _, project, _, coordinator = fleet
+    client = paired(fleet, tmp_path)
+    token = client.credentials["token"]
+    client.credentials["token"] = "wrong"
+    with pytest.raises(WorkbenchError) as error:
+        client.context(project["id"])
+    assert error.value.code == "permission_denied"
+    client.credentials["token"] = token
+    assert client.context(project["id"])["project"]["id"] == project["id"]
+    coordinator.revoke_device(client.credentials["device_id"])
+    with pytest.raises(WorkbenchError):
+        client.context(project["id"])
+
+
+def test_registration_forces_own_node_and_local_mapping_required(fleet, tmp_path):
+    owner, project, _, _ = fleet
+    client = paired(fleet, tmp_path)
+    employee = client._request(
+        "POST",
+        "/v1/employees",
+        {
+            "project_id": project["id"],
+            "name": "Remote Codex",
+            "kind": "codex",
+            "node_id": owner.local_node()["id"],
+        },
+    )["employee"]
+    assert employee["node_id"] == client.credentials["device_id"]
+    task = owner.create_task(project["id"], "Work", "Use local project", employee["id"])
+    with pytest.raises(WorkbenchError) as error:
+        client.claim(project["id"])
+    assert error.value.code == "project_unmapped"
+    assert owner.get_task(task["id"])["status"] == "queued"
+    directory = tmp_path / "local-project"
+    directory.mkdir()
+    mapping = client.map_project(project["id"], directory)
+    assert mapping["path"] != project["path"]
+    assert client.local_project(project["id"])["path"] == str(directory)
+    claimed = client.claim(project["id"])
+    assert claimed["id"] == task["id"]
+    assert claimed["kind"] == "codex"
+    assert claimed["status"] == "starting"
+
+
+def test_scope_filtered_claim_does_not_lose_unauthorized_queued_task(fleet, tmp_path):
+    owner, project, other, _ = fleet
+    client = mapped(fleet, tmp_path)
+    employee = client.register_employee(project["id"], "Remote", "codex")
+    # The owner can assign other projects to the same known device, but the
+    # device's pairing scope must still gate which work it can receive.
+    owner.create_employee("Remote", "codex", other["id"], node_id=employee["node_id"])
+    private = owner.create_task(other["id"], "Private", "Do not dispatch", employee["id"])
+    shared = owner.create_task(project["id"], "Shared", "Dispatch", employee["id"])
+    assert client.claim(project["id"])["id"] == shared["id"]
+    assert owner.get_task(private["id"])["status"] == "queued"
+    assert client.claim(project["id"], wait=0) is None
+
+
+def test_real_remote_claim_progress_receipt_review_then_human_accept(fleet, tmp_path):
+    owner, project, _, _ = fleet
+    client = mapped(fleet, tmp_path)
+    employee = client.register_employee(project["id"], "Remote", "codex")
+    task = owner.create_task(project["id"], "Work", "Report result", employee["id"])
+    claimed = client.claim(project["id"])
+    assert claimed["run_id"] == task["run_id"]
+    with pytest.raises(WorkbenchError):
+        client.receipt(task["id"], task["run_id"], "review", "No started confirmation")
+    client.event(task["id"], task["run_id"], "started", "Worker started")
+    assert owner.get_task(task["id"])["status"] == "running"
+    client.event(task["id"], task["run_id"], "output", "Reported", {"text": "Done"})
+    receipt = client.receipt(task["id"], task["run_id"], "review", "Remote result")
+    assert receipt["status"] == "review"
+    assert owner.task_detail(task["id"])["events"][-1]["type"] == "review"
+    with pytest.raises(WorkbenchError):
+        client.receipt(task["id"], task["run_id"], "done", "Cannot self-approve")
+    assert owner.review_task(task["id"], "accept")["status"] == "done"
+
+
+def test_other_device_and_stale_run_cannot_submit_receipt(fleet, tmp_path):
+    owner, project, _, _ = fleet
+    first = mapped(fleet, tmp_path, "first")
+    second = mapped(fleet, tmp_path, "second")
+    employee = first.register_employee(project["id"], "Remote", "codex")
+    task = owner.create_task(project["id"], "Work", "Report", employee["id"])
+    first.claim(project["id"])
+    for client, run_id in ((second, task["run_id"]), (first, "run-stale")):
+        with pytest.raises(WorkbenchError) as error:
+            client.receipt(task["id"], run_id, "review", "Forged")
+        assert error.value.code == "permission_denied"
+    assert owner.get_task(task["id"])["status"] == "starting"
+
+
+def test_remote_can_report_denied_permission_failure_without_approval_api(fleet, tmp_path):
+    owner, project, _, _ = fleet
+    client = mapped(fleet, tmp_path)
+    employee = client.register_employee(project["id"], "Remote", "codex")
+    task = owner.create_task(project["id"], "Work", "Needs approval", employee["id"])
+    client.claim(project["id"])
+    client.event(task["id"], task["run_id"], "started", "Running")
+    result = client.receipt(
+        task["id"],
+        task["run_id"],
+        "failed",
+        error={
+            "code": "REMOTE_PERMISSION_DENIED",
+            "message": "Remote permissions default to deny.",
+        },
+    )
+    assert result["error"]["code"] == "REMOTE_PERMISSION_DENIED"
+    assert result["status"] == "failed"
+
+
+def test_coordinator_restart_preserves_tls_and_device_trust(fleet, tmp_path):
+    owner, project, _, old = fleet
+    client = paired(fleet, tmp_path)
+    port = old.server.server_address[1]
+    fingerprint = old.fingerprint
+    old.stop()
+    restarted = FleetCoordinator(owner)
+    try:
+        restarted.start(port=port)
+        assert restarted.fingerprint == fingerprint
+        assert client.context(project["id"])["project"]["id"] == project["id"]
+    finally:
+        restarted.stop()
+
+
+def test_listener_not_implicit_and_invite_validations(tmp_path):
+    owner = WorkbenchStore(tmp_path / "owner")
+    project = owner.create_project("Project", tmp_path)
+    coordinator = FleetCoordinator(owner)
+    assert coordinator.server is None
+    with pytest.raises(WorkbenchError):
+        coordinator.issue_invite([project["id"]])
+    for args in (("127.0.0.1", -1), ("127.0.0.1", True), ([], 0)):
+        with pytest.raises(WorkbenchError):
+            coordinator.start(*args)
+    try:
+        coordinator.start()
+        for projects, ttl in (
+            ([], 300),
+            (["missing"], 300),
+            ([project["id"]], 0),
+            ([project["id"]], 3601),
+            ([project["id"]], True),
+        ):
+            with pytest.raises(WorkbenchError):
+                coordinator.issue_invite(projects, ttl)
+    finally:
+        coordinator.stop()
+
+
+def test_blocking_claim_wakes_immediately_on_new_task_notification(fleet, tmp_path, monkeypatch):
+    owner, project, _, coordinator = fleet
+    client = mapped(fleet, tmp_path)
+    employee = client.register_employee(project["id"], "Remote", "codex")
+    observed_empty = threading.Event()
+    original = owner.claim_task
+
+    def claim(node_id, project_ids=None):
+        task = original(node_id, project_ids)
+        if task is None:
+            observed_empty.set()
+        return task
+
+    monkeypatch.setattr(owner, "claim_task", claim)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(client.claim, project["id"], 5)
+        assert observed_empty.wait(timeout=2)
+        assert not future.done()
+        task = owner.create_task(project["id"], "New", "Do work", employee["id"])
+        started = time.monotonic()
+        coordinator.notify()
+        assert future.result(timeout=2)["id"] == task["id"]
+        assert time.monotonic() - started < 2
+
+
+def test_remote_cannot_forge_approval_event_or_persist_device_token(fleet, tmp_path):
+    owner, project, _, _ = fleet
+    client = mapped(fleet, tmp_path)
+    employee = client.register_employee(project["id"], "Remote", "codex")
+    task = owner.create_task(project["id"], "Work", "Report", employee["id"])
+    client.claim(project["id"])
+    with pytest.raises(WorkbenchError):
+        client.event(task["id"], task["run_id"], "permission_resolved", "I approved myself")
+    token = client.credentials["token"]
+    event = client.event(
+        task["id"], task["run_id"], "output", "Token: " + token, {"text": token, "token": token}
+    )
+    assert token not in json.dumps(event)
+    client.receipt(
+        task["id"], task["run_id"], "failed", token, {"code": "FAILED", "message": token}
+    )
+    assert token not in json.dumps(owner.task_detail(task["id"]))
+    assert token not in json.dumps(owner.snapshot())
+
+
+def test_blocking_control_wakes_on_owner_cancel_and_returns_terminal(fleet, tmp_path, monkeypatch):
+    owner, project, _, coordinator = fleet
+    client = mapped(fleet, tmp_path)
+    employee = client.register_employee(project["id"], "Remote", "codex")
+    task = owner.create_task(project["id"], "Work", "Run", employee["id"])
+    client.claim(project["id"])
+    client.event(task["id"], task["run_id"], "started")
+    entered = threading.Event()
+    original = coordinator._task_scope
+
+    def task_scope(device, task_id, run_id):
+        result = original(device, task_id, run_id)
+        entered.set()
+        return result
+
+    monkeypatch.setattr(coordinator, "_task_scope", task_scope)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(client.control, task["id"], task["run_id"], 5)
+        assert entered.wait(timeout=2)
+        assert not future.done()
+        owner.cancel_task(task["id"])
+        coordinator.notify()
+        control = future.result(timeout=2)
+    assert control == {"status": "running", "cancel_requested": True}
+    client.receipt(task["id"], task["run_id"], "cancelled")
+    assert client.control(task["id"], task["run_id"], wait=0)["status"] == "cancelled"
+    with pytest.raises(WorkbenchError):
+        client.control(task["id"], "run-stale", wait=0)
+
+
+def test_remote_project_tools_context_notes_resources_and_team_dispatch(fleet, tmp_path):
+    owner, project, _, coordinator = fleet
+    client = paired(fleet, tmp_path)
+    employee = client.register_employee(project["id"], "Remote", "codex")
+    colleague = owner.create_employee("Local reviewer", "claude", project["id"])
+    changes = threading.Event()
+    coordinator.on_change = changes.set
+    context = client.project_tool(project["id"], employee["id"], "context", {})
+    assert {row["id"] for row in context["employees"]} == {employee["id"], colleague["id"]}
+    assert "path" not in context["project"]
+    note = client.project_tool(
+        project["id"],
+        employee["id"],
+        "note",
+        {"title": "Observation", "body": "Prefer clear tests"},
+    )
+    assert note["source"] == "employee:" + employee["id"]
+    search = client.project_tool(project["id"], employee["id"], "memory_search", {"query": "tests"})
+    assert search["memories"][0]["id"] == note["id"]
+    source = tmp_path / "resource.md"
+    source.write_text("Shared data")
+    resource = owner.add_resource(project["id"], "Brief", "document", source)
+    read = client.project_tool(
+        project["id"], employee["id"], "resource_read", {"resource_id": resource["id"]}
+    )
+    assert read["content"] == "Shared data"
+    assert "path" not in read["resource"]
+    assert read["source"].startswith("resource:")
+    receipt = client.project_tool(
+        project["id"],
+        employee["id"],
+        "team_message",
+        {
+            "recipient_id": colleague["id"],
+            "title": "Review",
+            "message": "Please review",
+            "permission_mode": "all-access",
+        },
+    )
+    assert receipt["status"] == "queued"
+    assert changes.is_set()
+    task = owner.get_task(receipt["task_id"])
+    assert task["assignee_id"] == colleague["id"]
+    assert task["permission_mode"] == "read-only"
+    assert owner.task_detail(task["id"])["events"][-1]["payload"]["from_id"] == employee["id"]
+
+
+def test_project_tools_deny_wrong_device_employee_project_self_and_tool(fleet, tmp_path):
+    owner, project, other, _ = fleet
+    client = paired(fleet, tmp_path)
+    employee = client.register_employee(project["id"], "Remote", "codex")
+    local = owner.create_employee("Local", "codex", project["id"])
+    outsider = owner.create_employee("Outsider", "claude", other["id"], node_id=employee["node_id"])
+    for employee_id, tool, args in (
+        (local["id"], "context", {}),
+        (outsider["id"], "context", {}),
+        (employee["id"], "shell", {"command": "echo nope"}),
+        (employee["id"], "context", {"project_id": other["id"]}),
+        (
+            employee["id"],
+            "team_message",
+            {"recipient_id": employee["id"], "title": "Self", "message": "Nope"},
+        ),
+        (
+            employee["id"],
+            "team_message",
+            {"recipient_id": outsider["id"], "title": "Other project", "message": "Nope"},
+        ),
+    ):
+        with pytest.raises(WorkbenchError) as error:
+            client.project_tool(project["id"], employee_id, tool, args)
+        assert error.value.code == "permission_denied"
+    assert owner.snapshot()["tasks"] == []
