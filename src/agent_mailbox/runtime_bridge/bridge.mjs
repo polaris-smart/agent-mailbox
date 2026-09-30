@@ -4,6 +4,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { randomUUID, createHash } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { resolveCodexPair } from "./codex_pair.mjs";
 
 const assetDir = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -159,7 +160,7 @@ function validateMcp(servers) {
   });
 }
 async function adapterCommand(agent) {
-  if (testCommand) return testCommand;
+  if (testCommand) return { command: testCommand, environment: {} };
   const packageName = agent === "codex" ? "codex-acp" : "claude-agent-acp";
   const packageDir = path.join(runtimeDir, "node_modules", "@agentclientprotocol", packageName);
   let metadata;
@@ -169,7 +170,9 @@ async function adapterCommand(agent) {
   if (!executable) fail("AGENT_UNAVAILABLE", `${agent} ACP adapter is unavailable; install the managed runtime`);
   const launcher = path.join(packageDir, executable);
   try { await fs.access(launcher); } catch { fail("AGENT_UNAVAILABLE", `${agent} ACP adapter launcher is missing`); }
-  return [process.execPath, launcher];
+  const nativeCli = agent === "codex" ? await resolveCodexPair(runtimeDir) : undefined;
+  return { command: [process.execPath, launcher],
+    environment: nativeCli ? { CODEX_PATH: nativeCli.path } : {}, nativeCli };
 }
 async function deadline(promise, duration, onTimeout) {
   let timer;
@@ -211,7 +214,8 @@ async function sessionFor(run, input) {
     if (binding?.backend_session_id && input.resume_session_id && binding.backend_session_id !== input.resume_session_id) {
       fail("SESSION_CONTEXT_MISMATCH", "Resume ID does not match this managed session");
     }
-    const command = await adapterCommand(input.agent);
+    const launch = await adapterCommand(input.agent);
+    entry.nativeCli = launch.nativeCli;
     const store = runtimeApi.createFileSessionStore({ stateDir });
     entry.runtime = runtimeApi.createAcpRuntime({
       cwd, sessionStore: {
@@ -229,10 +233,10 @@ async function sessionFor(run, input) {
           await store.save(record);
         },
       },
-      agentRegistry: { resolve: () => command, list: () => [input.agent] },
+      agentRegistry: { resolve: () => launch.command, list: () => [input.agent] },
       mcpServers: () => mcp,
       permissionMode: "deny-all", nonInteractivePermissions: "deny", fs: false, terminal: false,
-      agentProcessEnv: { INITIAL_AGENT_MODE: "read-only" },
+      agentProcessEnv: { INITIAL_AGENT_MODE: "read-only", ...launch.environment },
       timeoutMs: startupTimeout,
     });
     const resumeId = input.resume_session_id ?? binding?.backend_session_id;
@@ -303,7 +307,9 @@ function permission(run, request, { signal }) {
     timer = setTimeout(() => finish({ outcome: "reject_once" }), run.permissionTimeout);
     if (signal.aborted || run.terminal) abort();
     else emit(run, "permission_required", { request_id: requestId, request: request.raw,
-      options: request.raw.options, tool_call: request.raw.toolCall,
+      options: request.raw.options, tool_call: {
+        ...run.toolCalls.get(request.raw.toolCall.toolCallId), ...request.raw.toolCall,
+      },
       inferred_kind: request.inferredKind ?? null, timeout_ms: run.permissionTimeout });
   });
 }
@@ -341,6 +347,7 @@ async function execute(run, input) {
       signal: run.controller.signal }), "SANDBOX_UNSUPPORTED");
     emit(run, "session", { backend_session_id: handle.backendSessionId,
       acpx_record_id: handle.acpxRecordId, native_mode: run.nativeMode,
+      ...(entry.nativeCli ? { native_cli: entry.nativeCli } : {}),
       ...(input.model === undefined ? {} : { model: input.model }),
       ...(input.reasoning_effort === undefined ? {} : { reasoning_effort: input.reasoning_effort }) });
     const turn = entry.runtime.startTurn({ handle, text: input.prompt, mode: "prompt", requestId: run.id,
@@ -350,6 +357,15 @@ async function execute(run, input) {
     const started = turn.promptStarted.then(() => emit(run, "started"));
     started.catch(() => {});
     for await (const event of turn.events) {
+      if (event.type === "tool_call" && event.toolCallId) {
+        const server = event.rawInput?.server, tool = event.rawInput?.tool;
+        const mcpTitle = typeof server === "string" && typeof tool === "string"
+          && /^[\w.-]{1,128}$/.test(server) && /^[\w.-]{1,128}$/.test(tool)
+          ? `${server} / ${tool}` : undefined;
+        run.toolCalls.set(event.toolCallId, { ...run.toolCalls.get(event.toolCallId),
+          ...(mcpTitle ? { title: mcpTitle } : event.title && event.title !== "tool call" ? { title: event.title } : {}),
+          ...(event.rawInput === undefined ? {} : { rawInput: event.rawInput }) });
+      }
       if (event.type === "text_delta" && event.stream !== "thought") run.output.push(event.text);
       if (event.type === "error") run.streamError = errorInfo(event);
       emit(run, "event", { event });
@@ -387,7 +403,8 @@ function command(input) {
     catch (error) { return controlError(error.message, input); }
     if (usedRunIds.has(id)) return controlError("run_id has already been admitted", input);
     usedRunIds.add(id);
-    const run = { id, sessionId, output: [], permissions: new Map(), controller: new AbortController(), terminal: false };
+    const run = { id, sessionId, output: [], permissions: new Map(), toolCalls: new Map(),
+      controller: new AbortController(), terminal: false };
     runs.set(id, run);
     run.task = execute(run, input);
   } else if (input.op === "cancel") {

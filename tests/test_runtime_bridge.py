@@ -92,7 +92,23 @@ for line in sys.stdin:
             result(request, {"configOptions":configs()})
     elif method == "session/prompt":
         text = "".join(p.get("text", "") for p in params["prompt"])
-        if text in ("permission", "permission_cancel"):
+        if text in ("permission_mcp", "permission_other", "permission_no_event"):
+            if text != "permission_no_event":
+                out({"jsonrpc":"2.0", "method":"session/update", "params":{
+                    "sessionId":params["sessionId"], "update":{"sessionUpdate":"tool_call",
+                    "toolCallId":"mcp-one", "title":"MCP tool", "kind":"execute", "status":"in_progress",
+                    "rawInput":{"server":"agent-mailbox-project", "tool":"project_context", "arguments":{}}}}})
+            reqid = "ask-" + uuid.uuid4().hex
+            permissions[reqid] = request
+            pending[params["sessionId"]] = request
+            out({"jsonrpc":"2.0", "id":reqid, "method":"session/request_permission",
+                "params":{"sessionId":params["sessionId"],
+                    "toolCall":{"toolCallId":"mcp-other" if text == "permission_other" else "mcp-one",
+                        "kind":"execute", "status":"pending"},
+                    "options":[{"optionId":"allow", "name":"Allow", "kind":"allow_once"},
+                        {"optionId":"deny", "name":"Deny", "kind":"reject_once"}],
+                    "_meta":{"is_mcp_tool_approval":True}}})
+        elif text in ("permission", "permission_cancel"):
             reqid = "ask-" + uuid.uuid4().hex
             permissions[reqid] = request
             pending[params["sessionId"]] = request
@@ -545,3 +561,146 @@ def test_unknown_or_unadvertised_profile_is_rejected_before_execution(
     bridge.run(**profile)
     assert bridge.result()["error"]["code"] == code
     assert not any(r.get("method") == "session/prompt" for r in bridge.requests())
+
+
+FAKE_CODE_MODE_HOST = r"""
+import json, struct, sys
+
+def send(value):
+    data = json.dumps(value).encode()
+    sys.stdout.buffer.write(struct.pack('<I', len(data)) + data)
+    sys.stdout.buffer.flush()
+while True:
+    prefix = sys.stdin.buffer.read(4)
+    if len(prefix) != 4: break
+    value = json.loads(sys.stdin.buffer.read(struct.unpack('<I', prefix)[0]))
+    if value['type'] == 'connection/hello':
+        send({'type':'connection/ready','selectedVersion':1,'capabilities':[]})
+    elif value['request']['method'] == 'session/open':
+        send({'type':'operation/response','id':value['id'],'result':{'status':'ok',
+            'value':{'type':'session/ready','sessionId':value['request']['sessionId']}}})
+    else:
+        result = {'cell_id':'1','content_items':[{'type':'input_text','text':'4'}],
+            'error_text':None}
+        if not LEGACY:
+            result['code_mode_host_duration_ns'] = 12345
+        send({'type':'execute/initialResponse','id':value['id'],
+            'result':{'status':'ok','value':{'Result':result}}})
+"""
+
+
+def pair_runtime(directory, legacy=False, version="0.158.0"):
+    if os.name == "nt":
+        pytest.skip("Fixture executables use POSIX shebangs")
+    platform = subprocess.check_output(
+        [shutil.which("node"), "-p", "process.platform+'-'+process.arch"], text=True
+    ).strip()
+    targets = {
+        "darwin-arm64": "aarch64-apple-darwin",
+        "darwin-x64": "x86_64-apple-darwin",
+        "linux-arm64": "aarch64-unknown-linux-musl",
+        "linux-x64": "x86_64-unknown-linux-musl",
+    }
+    root = directory / "node_modules/@openai"
+    package = root / f"codex-{platform}"
+    bin_dir = package / "vendor" / targets[platform] / "bin"
+    bin_dir.mkdir(parents=True)
+    (root / "codex").mkdir()
+    (root / "codex/package.json").write_text(json.dumps({"version": "0.158.0"}))
+    (package / "package.json").write_text(json.dumps({"version": f"0.158.0-{platform}"}))
+    cli, host = bin_dir / "codex", bin_dir / "codex-code-mode-host"
+    cli.write_text(f"#!{sys.executable}\nprint('codex-cli {version}')\n")
+    host.write_text(f"#!{sys.executable}\nLEGACY={legacy!r}\n" + FAKE_CODE_MODE_HOST)
+    cli.chmod(0o755)
+    host.chmod(0o755)
+    return cli, host
+
+
+def resolve_pair(directory):
+    script = """
+const {resolveCodexPair}=await import(process.argv[1]);
+try { console.log(JSON.stringify({ok:true,pair:await resolveCodexPair(process.argv[2])})); }
+catch(error) { console.log(JSON.stringify({ok:false,code:error.code})); }
+"""
+    result = subprocess.run(
+        [
+            shutil.which("node"),
+            "--input-type=module",
+            "-e",
+            script,
+            (bridge_path().parent / "codex_pair.mjs").as_uri(),
+            str(directory),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    return json.loads(result.stdout)
+
+
+def test_managed_codex_uses_locked_cli_and_real_host_frames(tmp_path, runtime_dir, monkeypatch):
+    cli, host = pair_runtime(tmp_path)
+    monkeypatch.setenv("CODEX_PATH", "/incompatible/user/codex")
+    result = resolve_pair(tmp_path)
+    assert result == {
+        "ok": True,
+        "pair": {
+            "source": "managed-runtime",
+            "version": "0.158.0",
+            "path": str(cli),
+            "host_path": str(host),
+        },
+    }
+
+
+@pytest.mark.parametrize("fault", ["missing", "wrong_version", "legacy_host", "wrong_metadata"])
+def test_managed_codex_incomplete_or_old_v1_pair_fails_closed(tmp_path, runtime_dir, fault):
+    cli, host = pair_runtime(
+        tmp_path,
+        legacy=fault == "legacy_host",
+        version="0.157.0" if fault == "wrong_version" else "0.158.0",
+    )
+    if fault == "missing":
+        host.unlink()
+    if fault == "wrong_metadata":
+        (tmp_path / "node_modules/@openai/codex/package.json").write_text('{"version":"0.157.0"}')
+    assert resolve_pair(tmp_path) == {"ok": False, "code": "RUNTIME_INCOMPATIBLE"}
+    assert cli.exists()
+
+
+def test_mcp_permission_details_join_only_the_same_run_and_tool_id(launch):
+    bridge = launch()
+    bridge.run(prompt="permission_mcp")
+    request = bridge.until(lambda m: m["type"] == "permission_required")
+    assert "title" not in request["request"]["toolCall"]
+    assert "rawInput" not in request["request"]["toolCall"]
+    assert request["tool_call"]["title"] == "agent-mailbox-project / project_context"
+    assert request["tool_call"]["rawInput"] == {
+        "server": "agent-mailbox-project",
+        "tool": "project_context",
+        "arguments": {},
+    }
+    bridge.send(
+        op="permission", run_id="r1", request_id=request["request_id"], decision="allow_once"
+    )
+    assert bridge.result()["output_text"] == "allowed"
+    # Even the same session and same tool ID cannot reuse another run's details.
+    bridge.run(run_id="r2", prompt="permission_no_event")
+    next_request = bridge.until(lambda m: m["type"] == "permission_required")
+    assert "title" not in next_request["tool_call"]
+    assert "rawInput" not in next_request["tool_call"]
+    bridge.send(
+        op="permission", run_id="r2", request_id=next_request["request_id"], decision="deny"
+    )
+    assert bridge.result("r2")["output_text"] == "denied"
+
+
+def test_mcp_permission_does_not_join_a_different_tool_id(launch):
+    bridge = launch()
+    bridge.run(prompt="permission_other")
+    request = bridge.until(lambda m: m["type"] == "permission_required")
+    assert request["tool_call"]["toolCallId"] == "mcp-other"
+    assert "title" not in request["tool_call"] and "rawInput" not in request["tool_call"]
+    bridge.send(op="permission", run_id="r1", request_id=request["request_id"], decision="deny")
+    assert bridge.result()["output_text"] == "denied"

@@ -86,9 +86,14 @@ child.wait(timeout=15)
 ```
 
 The parent should drain stderr concurrently. Diagnostics are intentionally generic;
-actionable errors are protocol results. Supply the discovered Codex executable as
-child environment `CODEX_PATH` to reuse the installed binary and existing native
-authentication. Without it the installed adapter uses its bundled compatible Codex.
+actionable errors are protocol results. Managed Codex execution always uses the
+locked `@openai/codex@0.158.0` CLI and its matching code-mode host from this runtime.
+User `CODEX_PATH` is not an execution override: independently upgraded CLI/host
+files can share protocol v1 while disagreeing on required fields. Startup verifies
+package versions, the actual CLI version, and a local host arithmetic cell without
+a model. Missing or incompatible pairs fail with `RUNTIME_INCOMPATIBLE`.
+The session event reports `native_cli` source, version, CLI path and host path.
+The native authentication/settings home is preserved; no credentials are copied.
 The Claude adapter uses the native SDK's user/project settings and authentication.
 Credentials stay local. No login occurs in this bridge.
 
@@ -124,7 +129,11 @@ Operations after `run`:
 
 Permissions default to deny-all. A request waits for a parent reply, then defaults
 to one-time denial after 60 seconds. Configure `--permission-timeout-ms` or per-run
-`permission_timeout_ms`. UUID request IDs prevent reply confusion. Cancellation,
+`permission_timeout_ms`. UUID request IDs prevent reply confusion. Missing
+permission display details are joined only with actual tool events having the same
+run and tool-call ID; the raw approval request remains unchanged. MCP titles
+contain server/tool names and local `rawInput` contains arguments for review.
+This does not approve a tool. Cancellation,
 completion and timeout revoke pending decisions; a late allow cannot authorize a
 new action. No approve-all or allow-always mode is exposed.
 
@@ -159,7 +168,7 @@ filesystem and terminal callbacks are disabled. A validated cwd is a routing
 boundary, not an OS sandbox. Explicit human approval may allow an individual
 action under the native agent's permission mechanism.
 
-Failures include `RUNTIME_MISSING`, `AGENT_UNAVAILABLE`, `AUTH_REQUIRED`, `TIMEOUT`,
+Failures include `RUNTIME_MISSING`, `RUNTIME_INCOMPATIBLE`, `AGENT_UNAVAILABLE`, `AUTH_REQUIRED`, `TIMEOUT`,
 `SESSION_RESUME_FAILED`, `SESSION_CONTEXT_MISMATCH`, `PROJECT_BOUNDARY`,
 `SANDBOX_UNSUPPORTED`, `MODEL_UNSUPPORTED`, `CONFIG_UNSUPPORTED`, `PROVIDER_ERROR`,
 `INVALID_REQUEST` and `AGENT_FAILED`.

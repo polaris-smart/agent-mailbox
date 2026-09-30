@@ -203,8 +203,6 @@ class BridgeExecution:
         else:
             command = self.command
         env = os.environ.copy()
-        if task["kind"] == "codex" and (binary := executable("codex")):
-            env["CODEX_PATH"] = binary
         proc = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
