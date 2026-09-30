@@ -581,3 +581,29 @@ def test_knowledge_http_is_project_bound_and_authenticated(bench, monkeypatch, t
     assert result["provenance"]["freshness"] == "unknown"
     assert request(server, "projects/missing/knowledge/query", {"query": "Example"})[0] == 404
     assert len(calls) == 1
+
+
+def test_resource_versions_owner_routes_and_activity(bench, tmp_path):
+    server, project, employee = bench
+    source = tmp_path / "Architecture.html"
+    source.write_text("<h1>Old report</h1>")
+    resource = server.store.add_resource(project["id"], "Architecture", "archify", source)
+    route = f"projects/{project['id']}/resources/{resource['id']}/versions"
+    assert request(server, route)[1] == {"versions": []}
+    assert request(server, route, {"summary": "Baseline"}, token="wrong")[0] == 401
+    status, version = request(server, route, {"summary": "Baseline"})
+    assert status == 200 and version["status"] == "approved"
+    source.write_text("<h1>New report</h1>")
+    status, read = request(server, route + "/" + version["id"] + "/read")
+    assert status == 200 and read["content"] == "<h1>Old report</h1>"
+    assert read["preview_url"].startswith("/workbench-preview/")
+    proposal = server.store.capture_resource_version(
+        project["id"], resource["id"], "New", employee["id"]
+    )
+    assert proposal["status"] == "proposed"
+    assert request(server, route + "/" + proposal["id"] + "/approve", {})[1]["status"] == "approved"
+    other = server.store.create_project("Other", str(tmp_path))
+    assert request(server, f"projects/{other['id']}/resources/{resource['id']}/versions")[0] == 400
+    activity = request(server, f"projects/{project['id']}/activity")[1]
+    assert any(e["type"] == "resource_version_approved" for e in activity["events"])
+    assert request(server, f"projects/{project['id']}/activity", token="wrong")[0] == 401

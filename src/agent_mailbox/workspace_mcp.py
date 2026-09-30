@@ -10,6 +10,7 @@ from pathlib import Path
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
+from .workbench_execution_resources import execution_project_context
 from .workbench_store import WorkbenchError, WorkbenchStore
 
 
@@ -33,7 +34,7 @@ def build_server(store, employee_id, project_id, token, endpoint="", task_id="",
     def project_context() -> dict:
         """Read this project's shared resources, memory and employee membership."""
         guard()
-        return store.project_context(project_id, employee_id=employee_id)
+        return execution_project_context(store, project_id, employee_id, task_id, run_id)
 
     @server.tool()
     def project_memory_search(query: str) -> dict:
@@ -42,10 +43,38 @@ def build_server(store, employee_id, project_id, token, endpoint="", task_id="",
         return {"memories": store.search_memory(project_id, query)}
 
     @server.tool()
-    def project_resource_read(resource_id: str) -> dict:
-        """Read a registered text artifact in the assigned project."""
+    def project_resource_read(resource_id: str, version_id: str = "", live: bool = False) -> dict:
+        """Read the task's pinned resource; live=True explicitly opts into current source."""
         guard()
-        return store.read_resource(project_id, resource_id)
+        try:
+            if task_id:
+                return store.read_execution_resource(
+                    project_id, resource_id, task_id, run_id, version_id, live
+                )
+            if version_id and not live:
+                return store.read_resource_version(project_id, resource_id, version_id)
+            return store.read_resource(project_id, resource_id)
+        except WorkbenchError as exc:
+            raise ToolError(f"{exc.code}: {exc}") from None
+
+    @server.tool()
+    def project_resource_versions(resource_id: str) -> dict:
+        """List resource revisions and human approval status in this project."""
+        guard()
+        return store.resource_versions(project_id, resource_id)
+
+    @server.tool()
+    def project_resource_propose(
+        resource_id: str, summary: str = "", content: str | None = None
+    ) -> dict:
+        """Capture registered source as an employee proposal; only the human can approve."""
+        guard(write=True)
+        try:
+            return store.capture_resource_version(
+                project_id, resource_id, summary, employee_id, content=content
+            )
+        except WorkbenchError as exc:
+            raise ToolError(f"{exc.code}: {exc}") from None
 
     @server.tool()
     def project_code_search(query: str) -> dict:
@@ -187,9 +216,33 @@ def build_remote_server(client, employee_id, project_id, task_id="", run_id=""):
         return call("memory_search", {"query": query})
 
     @server.tool()
-    def project_resource_read(resource_id: str) -> dict:
-        """Read a registered project resource."""
-        return call("resource_read", {"resource_id": resource_id})
+    def project_resource_read(resource_id: str, version_id: str = "", live: bool = False) -> dict:
+        """Read coordinator's task-pinned resource, or explicitly select a live read."""
+        try:
+            return call(
+                "resource_read",
+                {"resource_id": resource_id, "version_id": version_id, "live": live},
+            )
+        except WorkbenchError as exc:
+            raise ToolError(f"{exc.code}: {exc}") from None
+
+    @server.tool()
+    def project_resource_versions(resource_id: str) -> dict:
+        """List shared resource revisions and approval status."""
+        return call("resource_versions", {"resource_id": resource_id})
+
+    @server.tool()
+    def project_resource_propose(
+        resource_id: str, summary: str = "", content: str | None = None
+    ) -> dict:
+        """Propose registered source, or explicitly submit up to 256 KiB of text for human approval."""
+        try:
+            return call(
+                "resource_propose",
+                {"resource_id": resource_id, "summary": summary, "content": content},
+            )
+        except WorkbenchError as exc:
+            raise ToolError(f"{exc.code}: {exc}") from None
 
     @server.tool()
     def project_code_search(query: str) -> dict:

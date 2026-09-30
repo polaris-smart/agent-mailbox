@@ -476,7 +476,7 @@ def test_literal_v5_migration_preserves_identity_tokens_history_and_private_back
     backup = store.migration_backup_path
     reopened = WorkbenchStore(root)
     assert reopened.migration_backup_path is None
-    assert len(list(store.directory.glob("state-v5-before-v6-*.sqlite"))) == 1
+    assert len(list(store.directory.glob(f"state-v5-before-v{SCHEMA_VERSION}-*.sqlite"))) == 1
     assert backup.exists()
 
 
@@ -495,7 +495,7 @@ def test_failed_migration_restores_v5_schema_and_rows_with_prechange_backup(tmp_
             "Historic result",
         )
         assert not db.execute("SELECT name FROM sqlite_master WHERE name='messages'").fetchone()
-    backups = list(path.parent.glob("state-v5-before-v6-*.sqlite"))
+    backups = list(path.parent.glob(f"state-v5-before-v{SCHEMA_VERSION}-*.sqlite"))
     assert len(backups) == 1
     with sqlite3.connect(backups[0]) as backup:
         assert backup.execute("PRAGMA user_version").fetchone()[0] == 5

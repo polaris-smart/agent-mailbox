@@ -1,6 +1,6 @@
 # agent-mailbox v0.8 产品基线
 
-版本：1.0 · 2026-09-30。依据：human 明确决定“v0.8 开始完全独立”。当前实现阶段为 0.8.0a9 alpha，未公开发版。旧 v0.7 正典仅作为[历史归档](archive/v07/PRD.md)，不约束本版运行架构。
+版本：1.1 · 2026-10-01。依据：human 明确决定“v0.8 开始完全独立”。当前实现阶段为 0.8.0b1 Beta 1，未公开发版。旧 v0.7 正典仅作为[历史归档](archive/v07/PRD.md)，不约束本版运行架构。
 
 ## 1. 定位
 
@@ -34,7 +34,7 @@
 | 任务执行与人工验收 | workbench_engine.py / workbench.py | Codex、Claude 受管 CLI；权限默认拒绝 |
 | 运行准备和模型发现 | workbench_runtime.py / runtime_bridge | 锁定依赖；发现与实际执行分开 |
 | 工作台 | workbench_assets | 本机浏览器；macOS app 可选包装 |
-| 项目共享工具 | workspace_mcp.py / workspace_remote.py | 指派任务自动注入；不接管所有既有对话 |
+| 项目共享工具 | workspace_mcp.py / workbench_execution_resources.py | 指派任务自动注入；不接管所有既有对话 |
 | 可选设备 | workbench_fleet.py / workbench_remote.py / workbench_node.py | pinned HTTPS；headless 节点；持久回执 |
 
 同种 agent 的多个员工名称默认共享该设备原生登录。app 自动控制、账号隔离、跨设备代码同步不是已实现能力。
@@ -47,7 +47,7 @@
 
 单机是默认产品路径，不为普通用户要求网络、服务器或常驻额外服务。远端节点仅执行被授权项目，在节点上映射已有目录；账号不经设备配对传输。公网服务器初期通过用户已有私网或 SSH 隧道接入，human 管理 API 始终 loopback。主控睡眠/断线影响派工和审批。
 
-源码与 CI 覆盖 macOS/Windows/Linux 的适用代码；不能以模拟协议或 CI 推断各系统实机体验。当前物理验证以本机 macOS 为主，香港/硅谷 Ubuntu 和真实 LAN 尚未连接验收。
+源码与 CI 覆盖 macOS/Windows/Linux 的适用代码；不能以模拟协议或 CI 推断各系统实机体验。本机 macOS 的 Codex→Claude 真实邮件交接、固定资料读取和人工验收已通过。Mac→Ubuntu 24.04 ARM64 Docker 用真实 HTTPS 验证节点协议、版本一致性和断线恢复，执行者为确定性 fixture，不能当作远端 LLM 已验证。香港/硅谷实体服务器和真实 LAN 尚未连接验收。
 
 ## 6. 后续顺序
 
@@ -65,16 +65,16 @@ dsh-devices 的产品线负责人考核、成员入组审批、派单时指定 p
 
 维护入口：[HANDOVER-CODEX.md](HANDOVER-CODEX.md)；独立边界：[设计记录](designs/2026-09-30-v080-independent.md)；审查：[独立性与可靠性审查](reviews/2026-09-30-v080-independence.md)。
 
-### 员工与信箱界面（0.8.0a9）
+### 员工与信箱界面（0.8.0b1）
 
 全局员工以响应式卡片呈现，支持搜索和入口类型过滤。每张卡及侧栏提供“员工信箱”：human 管理员可看收件、发件、当前项目群消息，并打开项目对话继续沟通。查看不会 ACK、唤醒或冒充员工；Agent 自己通过授权项目工具收发。v0.7 旧信箱不自动迁入此界面。
 
 员工侧 `project_messages()` 默认读取本人收件，可用 `folder="sent"` 与 `folder="group"` 读取发件和群消息；单次最多 100 条最近记录，返回 `has_older`，尚无历史分页。身份由项目工具绑定，不能传参数切换员工。员工启动上下文只附本人收发和群消息；这是相关性视图，不是端到端私密邮件承诺，human 管理员仍可查看全项目。读取不 ACK、不派工、不验收。项目授权工具是员工入口，目前没有独立员工网页登录。
 
-### 语言与产品信息（0.8.0a9）
+### 语言与产品信息（0.8.0b1）
 
 默认跟随浏览器，支持用户选择简体中文或英文；只翻译界面，不改项目原文。页脚集中 NoFox、版本、协议及 GitHub，连接状态只在顶栏。关于页提供样式化的协议/版权原文阅读与真实升级说明；不把发行页链接宣称为自动更新能力。目标用户可理解 MCP、skills、agent；workflow 用分工/交接示例解释。
 
-### 资料与工具（0.8.0a9）
+### 资料与工具（0.8.0b1）
 
-已实现登记资料的实时查看、内容校验值和单文件 HTML 隔离预览；可选 CodeGraph 已有索引的符号查询，经项目绑定的 MCP 提供给员工。未实现固定资料版本与审批同步；AOCI/Graft 完整整合仍属提案。Beta 发布前需通过 [验收边界](BETA-ACCEPTANCE.md)，当前继续标记 alpha。
+已实现登记资料的实时查看、内容校验值和单文件 HTML 隔离预览；可选 CodeGraph 已有索引的符号查询，经项目绑定的 MCP 提供给员工。已实现不可变版本、Human 批准、启动时资料清单固定及按版本远端读取；显式文本提案不覆盖源文件。返回捕获和实际内容 hash，额外脱敏改变内容时明确说明。工作日志聚合真实记录。AOCI/Graft 完整整合仍属提案。Beta 1 的证据与限制见 [验收边界](BETA-ACCEPTANCE.md)。

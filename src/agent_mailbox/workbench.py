@@ -19,6 +19,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from . import __version__
+from .workbench_activity import project_activity
 from .workbench_engine import WorkbenchEngine
 from .workbench_lock import WorkbenchLock
 from .workbench_runtime import available_models, discover_employees, runtime_status
@@ -573,6 +574,34 @@ class Handler(BaseHTTPRequestHandler):
                 "kind"
             ) in {"html", "archify"}:
                 result["preview_url"] = self.server.resource_preview(result["content"])
+        elif (
+            len(route) >= 5
+            and route[0] == "projects"
+            and route[2] == "resources"
+            and route[4] == "versions"
+        ):
+            if len(route) == 5 and method == "GET":
+                result = store.resource_versions(route[1], route[3])
+            elif len(route) == 5 and method == "POST":
+                result = store.capture_resource_version(route[1], route[3], data.get("summary", ""))
+            elif len(route) == 7 and route[6] == "read" and method == "GET":
+                result = store.read_resource_version(route[1], route[3], route[5])
+                resource = result["resource"]
+                if str(resource.get("path", "")).lower().endswith(
+                    (".html", ".htm")
+                ) or resource.get("kind") in {"html", "archify"}:
+                    result["preview_url"] = self.server.resource_preview(result["content"])
+            elif len(route) == 7 and route[6] == "approve" and method == "POST":
+                result = store.approve_resource_version(route[1], route[3], route[5])
+            else:
+                raise WorkbenchError("NOT_FOUND", "Unknown resource version action.")
+        elif (
+            method == "GET"
+            and len(route) == 3
+            and route[0] == "projects"
+            and route[2] == "activity"
+        ):
+            result = project_activity(store, route[1])
         elif (
             method == "GET"
             and len(route) == 3

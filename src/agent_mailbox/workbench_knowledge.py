@@ -15,11 +15,13 @@ import shutil
 import signal
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 from contextlib import closing
 from pathlib import Path
 
+from .workbench_runtime import executable
 from .workbench_store import WorkbenchError
 
 OUTPUT_LIMIT = 100 * 1024
@@ -41,7 +43,7 @@ def _project(value: str | Path) -> Path:
 
 def _binary() -> str | None:
     explicit = os.environ.get("AGENT_MAIL_CODEGRAPH_BIN")
-    candidate = explicit if explicit is not None else shutil.which("codegraph")
+    candidate = explicit if explicit is not None else executable("codegraph")
     if not candidate:
         return None
     try:
@@ -62,6 +64,13 @@ def _environment() -> dict[str, str]:
         for key in ("PATH", "HOME", "TMPDIR", "SYSTEMROOT")
         if key in os.environ
     }
+    # Finder starts with a minimal PATH. Resolve optional user-installed tools
+    # and their Node launcher using the same standard locations as discovery.
+    directories = [str(Path.home() / ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin"]
+    node = os.environ.get("AGENT_MAIL_NODE_BIN")
+    if node and Path(node).is_absolute() and Path(node).is_file():
+        directories.insert(0, str(Path(node).parent))
+    env["PATH"] = os.pathsep.join([env.get("PATH", ""), *directories])
     env.update(
         CODEGRAPH_NO_DOWNLOAD="1",
         CODEGRAPH_NO_DAEMON="1",
@@ -239,8 +248,9 @@ def _index(root: Path) -> Path:
 
 def knowledge_status(project_path: str | Path) -> dict:
     root = _project(project_path)
-    binary = _binary()
-    revision, dirty = _git(root)
+    supported = sys.platform != "win32"
+    binary = _binary() if supported else None
+    revision, dirty = _git(root) if supported else (None, None)
     result = {
         "provider": "codegraph",
         "version": None,
@@ -255,6 +265,12 @@ def knowledge_status(project_path: str | Path) -> dict:
         "working_tree_dirty_scope": "tracked_files",
         "error_code": None,
     }
+    if not supported:
+        result["error_code"] = "KNOWLEDGE_PLATFORM_UNSUPPORTED"
+        result["freshness_reason"] = (
+            "This beta's CodeGraph adapter supports macOS and Linux; Windows process isolation is not implemented."
+        )
+        return result
     if binary is None:
         result["error_code"] = "KNOWLEDGE_TOOL_UNAVAILABLE"
         return result

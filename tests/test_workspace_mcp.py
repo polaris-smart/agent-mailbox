@@ -23,6 +23,10 @@ def test_project_mcp_context_message_wakes_colleague(tmp_path, monkeypatch):
     bob = store.create_employee("Bob", "codex", project["id"])
     store.add_memory(project["id"], "Shared marker", "only-project-one")
     store.add_memory(other["id"], "Private marker", "only-project-two")
+    resource_file = tmp_path / "PRD.md"
+    resource_file.write_text("Approved shared marker")
+    resource = store.add_resource(project["id"], "PRD", "prd", resource_file)
+    approved = store.capture_resource_version(project["id"], resource["id"], "Baseline")
     bridge = tmp_path / "fake.py"
     bridge.write_text(
         "import sys,json\nr=json.loads(sys.stdin.readline())\nfor t,v in [('started',{}),('result',{'status':'completed','output_text':'Colleague responded'})]:\n print(json.dumps(dict(protocol=1,run_id=r['run_id'],session_id=r['session_id'],type=t,**v)),flush=True)\njson.loads(sys.stdin.readline())\n"
@@ -72,6 +76,8 @@ def test_project_mcp_context_message_wakes_colleague(tmp_path, monkeypatch):
                 "project_context",
                 "project_memory_search",
                 "project_resource_read",
+                "project_resource_versions",
+                "project_resource_propose",
                 "project_code_search",
                 "project_note",
                 "team_message",
@@ -85,6 +91,23 @@ def test_project_mcp_context_message_wakes_colleague(tmp_path, monkeypatch):
             assert bob["id"] in serialized
             assert "only-project-two" not in serialized
             assert creds["token"] not in serialized
+            resource_file.write_text("Updated source")
+            store.capture_resource_version(project["id"], resource["id"], "Next baseline")
+            pinned = await session.call_tool(
+                "project_resource_read", {"resource_id": resource["id"]}
+            )
+            pinned_data = json.loads(pinned.content[0].text)
+            assert pinned_data["content"] == "Approved shared marker"
+            assert pinned_data["version"]["id"] == approved["id"]
+            assert pinned_data["provenance"]["matches_frozen_content"]
+            proposal = await session.call_tool(
+                "project_resource_propose",
+                {"resource_id": resource["id"], "summary": "Review this"},
+            )
+            assert json.loads(proposal.content[0].text)["status"] == "proposed"
+            assert (
+                await session.call_tool("project_resource_approve", {"resource_id": resource["id"]})
+            ).is_error
             search = await session.call_tool("project_code_search", {"query": "Example"})
             assert search.is_error  # No index in this fixture; never create one silently.
             assert "KNOWLEDGE_" in json.dumps(search.model_dump())
@@ -145,6 +168,11 @@ def test_project_mcp_context_message_wakes_colleague(tmp_path, monkeypatch):
                 {"recipient_id": outsider["id"], "title": "Leak", "message": "Private"},
             )
             assert refused.is_error
+            store.cancel_task(source["id"])
+            assert (
+                await session.call_tool("project_resource_read", {"resource_id": resource["id"]})
+            ).is_error
+            assert (await session.call_tool("project_context", {})).is_error
 
     try:
         asyncio.run(client())

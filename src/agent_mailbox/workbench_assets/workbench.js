@@ -32,9 +32,9 @@ try { state.projectId = sessionStorage.getItem("agent-mailbox.workbench.project"
 try { if (sessionStorage.getItem("agent-mailbox.workbench.language-view") === "about") { state.view = "about"; sessionStorage.removeItem("agent-mailbox.workbench.language-view"); } } catch { /* optional */ }
 
 const navLabels = {
-  overview: t("项目概览", "Overview"), tasks: t("任务", "Tasks"),
+  overview: t("项目概览", "Overview"), tasks: t("任务", "Tasks"), activity: t("工作日志", "Work log"),
   employees: t("所有员工", "All employees"), members: t("项目成员", "Project members"), messages: t("项目消息", "Messages"), resources: t("资料与记忆", "Resources & memory"),
-  mailboxes: t("员工信箱", "Employee mailboxes"), devices: t("设备", "Devices"), about: t("关于与更新", "About & updates"),
+  mailboxes: t("员工信箱", "Employee mailboxes"), devices: t("设备", "Devices"), about: t("关于与设置", "About & settings"),
 };
 const statusLabels = {
   queued: t("排队中", "Queued"), starting: t("正在启动", "Starting"),
@@ -192,6 +192,9 @@ function setSidebar(open) {
   const sidebar = document.getElementById("sidebar");
   const returnFocus = !open && sidebar.contains(document.activeElement) && matchMedia("(max-width: 760px)").matches;
   sidebar.classList.toggle("open", open);
+  const modal = open && matchMedia("(max-width: 760px)").matches;
+  document.querySelector(".main-shell").inert = modal;
+  document.body.classList.toggle("drawer-open", modal);
   document.getElementById("sidebar-backdrop").hidden = !open;
   document.getElementById("sidebar-toggle").setAttribute("aria-expanded", String(open));
   if (open) sidebar.querySelector(".brand").focus();
@@ -199,6 +202,7 @@ function setSidebar(open) {
 }
 function selectProject(id) {
   if (!state.data?.projects.some((item) => item.id === id)) return;
+  document.getElementById("project-switcher").open = false;
   state.projectId = id;
   state.view = "overview";
   state.search = "";
@@ -231,7 +235,7 @@ function renderSidebar() {
     }, el("span", { class: "project-symbol", "aria-hidden": "true" }, (item.name || "P").slice(0, 1)), el("span", { class: "project-name" }, item.name))));
   } else list.replaceChildren(el("p", { class: "sidebar-empty" }, state.data ? t("还没有项目，点击 + 开始。", "No projects yet. Select + to begin.") : t("连接后显示你的项目。", "Your projects appear when connected.")));
   for (const control of document.querySelectorAll("[data-view]")) {
-    const active = control.dataset.view === state.view;
+    const active = control.classList.contains("nav-item") && control.dataset.view === state.view;
     control.classList.toggle("selected", active);
     if (active) control.setAttribute("aria-current", "page");
     else control.removeAttribute("aria-current");
@@ -259,7 +263,11 @@ function renderSidebar() {
     });
   }
   const current = project();
-  document.getElementById("breadcrumb-project").textContent = ["employees", "mailboxes", "about"].includes(state.view) ? t("工作台", "Workbench") : current?.name || t("工作台", "Workbench");
+  document.getElementById("current-project-name").textContent = current?.name || t("选择项目", "Select project");
+  document.getElementById("current-project-symbol").textContent = (current?.name || "P").slice(0, 1);
+  document.getElementById("project-switch-hint").textContent = t("切换项目", "Switch project");
+  for (const control of document.querySelectorAll(".project-nav [data-view]")) control.disabled = !current;
+  document.getElementById("breadcrumb-project").textContent = ["employees", "mailboxes", "about", "devices"].includes(state.view) ? t("工作台", "Workbench") : current?.name || t("工作台", "Workbench");
   document.getElementById("breadcrumb-page").textContent = navLabels[state.view];
   document.getElementById("task-nav-count").textContent = current ? String(projectTasks().filter((task) => task.status !== "done" && task.status !== "cancelled").length) : "";
 }
@@ -346,7 +354,7 @@ function renderTasks() {
   search.addEventListener("input", () => { state.search = search.value; renderTaskList(); });
   filterRow.append(search);
   const list = el("div", { id: "task-list-container" });
-  const result = [heading(navLabels.tasks, t("从交代目标到验收成果，每件工作都有记录。", "Every task records the path from goal to accepted outcome."), [button(t("新任务", "New task"), "new-task", { class: "primary", icon: "plus" })]), runtimeNotice(), filterRow, list];
+  const result = [heading(navLabels.tasks, t("分配任务 → 员工通过邮件交接 → Human 验收成果。全过程保留记录。", "Assign work → employees hand off through mail → Human accepts the outcome. Each step is recorded."), [button(t("新任务", "New task"), "new-task", { class: "primary", icon: "plus" })]), runtimeNotice(), filterRow, list];
   window.queueMicrotask(renderTaskList);
   return result;
 }
@@ -710,19 +718,21 @@ function memoryRow(memory) {
   return el("article", { class: "memory-row" }, el("header", {}, el("h3", {}, memory.title), remove), el("p", { class: "memory-body" }, memory.body), el("div", { class: "memory-meta" }, el("span", {}, source), el("span", {}, formatDate(memory.updated_at || memory.created_at))));
 }
 function resourceRow(resource, projectId) {
-  const read = button(t("查看资料", "View resource"), null, { class: "small", icon: "document" });
+  const read = button(t("实时文件", "Live file"), null, { class: "small", icon: "document" });
   read.addEventListener("click", () => openResourceReader(projectId, resource));
-  return el("article", { class: "resource-row" }, icon("document"), el("div", { class: "resource-row-main" }, el("h3", {}, resource.name), el("code", {}, resource.path), el("p", { class: "resource-kind" }, resource.kind), read));
+  const versions = button(t("固定版本", "Versions"), null, { class: "small" });
+  versions.addEventListener("click", () => openResourceVersions(projectId, resource));
+  return el("article", { class: "resource-row" }, icon("document"), el("div", { class: "resource-row-main" }, el("h3", {}, resource.name), el("code", {}, resource.path), el("p", { class: "resource-kind" }, resource.kind), el("div", { class: "resource-row-actions" }, read, versions)));
 }
-async function openResourceReader(projectId, resource) {
+async function openResourceReader(projectId, resource, version = null) {
   if (projectId !== state.projectId) return;
-  const body = openForm(resource.name || t("查看资料", "View resource"), t("实时读取登记的文件，显示本次内容与校验值。", "Read the registered file live and inspect its contents and checksum."));
+  const body = openForm(resource.name || t("查看资料", "View resource"), version ? t("查看已冻结的内容；当前文件的后续编辑不会改变这一版本。", "View frozen content. Later edits to the live file do not change this version.") : t("实时读取登记的文件，显示本次内容与校验值。", "Read the registered file live and inspect its contents and checksum."));
   if (!body) return;
   const output = el("div", { class: "resource-reader", role: "status" }, t("正在读取…", "Reading…"));
   body.append(output);
   const current = () => projectId === state.projectId && formDialog.open && body.isConnected;
   try {
-    const result = await api.readResource(projectId, resource.id);
+    const result = version ? await api.readResourceVersion(projectId, resource.id, version.id) : await api.readResource(projectId, resource.id);
     if (!current()) return;
     if (typeof result.content !== "string") throw new ApiError("invalid_response");
     const content = result.content;
@@ -730,6 +740,11 @@ async function openResourceReader(projectId, resource) {
     const raw = el("pre", { class: "resource-text", tabindex: "0", "aria-label": t("资料原文", "Resource source") }, content);
     const stage = el("div", { class: "resource-reader-stage" }, raw);
     const tools = el("div", { class: "resource-reader-actions" });
+    if (version) {
+      const back = button(t("返回版本列表", "Back to versions"), null, { class: "small" });
+      back.addEventListener("click", () => { if (current()) openResourceVersions(projectId, resource); });
+      tools.append(back);
+    }
     const html = /\.html?$/i.test(resource.path || result.source?.path || "") || /^\s*(?:<!doctype html|<html[\s>])/i.test(content);
     if (html) {
       const preview = button(t("隔离预览", "Isolated preview"), null, { class: "small" });
@@ -765,9 +780,58 @@ async function openResourceReader(projectId, resource) {
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
     tools.append(download);
-    output.replaceChildren(...[el("p", { class: "resource-provenance" }, provenance.mode === "live" ? t("本次为实时读取", "Read live for this request") : t("读取方式未确认", "Read mode unconfirmed"), " · ", formatDate(provenance.read_at, true)), el("code", { class: "resource-hash" }, `SHA-256: ${provenance.content_sha256 || t("未提供", "Not provided")}`), tools, html ? el("p", { class: "field-hint" }, t("预览允许内联脚本，阻止外部资源和网络连接。原文与下载不会执行脚本。", "Preview allows inline scripts and blocks external resources and network connections. Source view and download do not execute scripts.")) : null, stage].filter((item) => item !== null));
+    output.replaceChildren(...[provenance.redacted_since_capture ? el("p", { class: "field-hint" }, t("此版本返回时已额外脱敏，内容校验值与捕获时不同；请勿当作完全相同的副本。", "Additional redaction changed the returned checksum; this is not a byte-identical copy.")) : null, result.version ? el("p", { class: "field-hint" }, result.version.status === "approved" ? t("团队已确认版本", "Team-approved version") : result.version.status === "proposed" ? t("尚未确认的提案版本", "Proposed version, awaiting approval") : t("版本状态未确认", "Version status unconfirmed")) : null, el("p", { class: "resource-provenance" }, provenance.mode === "snapshot" ? t("固定版本", "Frozen version") : provenance.mode === "live" ? t("本次为实时读取", "Read live for this request") : t("读取方式未确认", "Read mode unconfirmed"), " · ", formatDate(result.version?.created_at || provenance.read_at, true)), el("code", { class: "resource-hash" }, `SHA-256: ${provenance.content_sha256 || t("未提供", "Not provided")}`), tools, html ? el("p", { class: "field-hint" }, t("预览允许内联脚本，阻止外部资源和网络连接。原文与下载不会执行脚本。", "Preview allows inline scripts and blocks external resources and network connections. Source view and download do not execute scripts.")) : null, stage].filter((item) => item !== null));
     formDialog.addEventListener("close", () => stage.replaceChildren(), { once: true });
   } catch (error) { if (current()) output.replaceChildren(el("p", { class: "form-error", role: "alert" }, errorText(error))); }
+}
+async function openResourceVersions(projectId, resource) {
+  if (projectId !== state.projectId) return;
+  const body = openForm(t(`${resource.name} · 固定版本`, `${resource.name} · Versions`), t("实时文件用于查看当前编辑；固定版本用于团队确认和追溯。冻结不代表已同步到其他设备。", "Live files show current edits. Frozen versions support team approval and traceability; freezing does not imply device synchronization."));
+  if (!body) return;
+  const summary = el("input", { type: "text", maxlength: 500, placeholder: t("本次版本摘要（可选）", "Version summary (optional)"), "aria-label": t("版本摘要", "Version summary") });
+  const create = button(t("冻结当前文件", "Freeze current file"), null, { class: "small primary" });
+  const list = el("div", { class: "version-list", role: "status" });
+  const errorBox = el("p", { class: "form-error", role: "alert", hidden: true });
+  body.append(el("div", { class: "version-toolbar" }, summary, create), errorBox, list);
+  const current = () => projectId === state.projectId && formDialog.open && body.isConnected;
+  const fail = (error) => { if (current()) { errorBox.hidden = false; errorBox.textContent = errorText(error); } };
+  const load = async () => {
+    list.textContent = t("正在读取版本…", "Loading versions…");
+    try {
+      const result = await api.resourceVersions(projectId, resource.id);
+      if (!current()) return;
+      if (!Array.isArray(result.versions)) throw new ApiError("invalid_response");
+      list.replaceChildren(...result.versions.map((version) => {
+        const status = version.status === "approved" ? t("已确认", "Approved") : version.status === "proposed" ? t("待确认提案", "Proposed") : t("状态未确认", "Status unconfirmed");
+        const view = button(t("查看版本", "View version"), null, { class: "small" });
+        view.addEventListener("click", () => { if (current()) openResourceReader(projectId, resource, version); });
+        const actions = el("div", { class: "resource-reader-actions" }, view);
+        if (version.status === "proposed") {
+          const approve = button(t("确认此版本", "Approve version"), null, { class: "small" });
+          approve.addEventListener("click", async () => {
+            approve.disabled = true;
+            try { await api.approveResourceVersion(projectId, resource.id, version.id); if (current()) await load(); }
+            catch (error) { fail(error); if (current()) approve.disabled = false; }
+          });
+          actions.append(approve);
+        }
+        return el("article", { class: "resource-version" }, el("h3", {}, status, " · ", formatDate(version.created_at, true)), el("p", {}, version.summary || t("无摘要", "No summary")), el("p", { class: "field-hint" }, version.approved_at ? `${t("确认时间", "Approved at")}: ${formatDate(version.approved_at, true)} · ${version.approved_by || ""}` : `${t("创建者", "Created by")}: ${version.created_by || t("未提供", "Not provided")}`), el("code", { class: "resource-hash" }, `SHA-256: ${version.content_sha256 || t("未提供", "Not provided")}`), actions);
+      }));
+      if (!result.versions.length) list.append(el("p", { class: "inline-empty" }, t("尚无固定版本。确认当前文件后，冻结一份供团队引用。", "No frozen versions yet. Review the live file and freeze a version for the team to reference.")));
+    } catch (error) { if (current()) list.replaceChildren(el("p", { class: "form-error", role: "alert" }, errorText(error))); }
+  };
+  create.addEventListener("click", async () => {
+    create.disabled = true; errorBox.hidden = true;
+    try {
+      const result = await api.createResourceVersion(projectId, resource.id, summary.value.trim());
+      if (!current()) return;
+      summary.value = "";
+      showToast(result.version?.status === "approved" || result.status === "approved" ? t("当前文件已冻结并确认。", "Current file frozen and approved.") : t("当前文件已冻结，请检查版本状态。", "Current file frozen. Check its version status."));
+      await load();
+    } catch (error) { fail(error); }
+    finally { if (current()) create.disabled = false; }
+  });
+  await load();
 }
 function renderKnowledgePanel(projectId) {
   const status = el("div", { class: "knowledge-status", role: "status" }, t("可选工具，尚未检查。只在你点击时检查或查询。", "Optional tool, not checked yet. Checks and queries run only when you click."));
@@ -813,6 +877,32 @@ function renderKnowledgePanel(projectId) {
   });
   panel.append(el("div", { class: "section-heading" }, el("h2", {}, t("CodeGraph 代码符号检索", "CodeGraph symbol search")), check), status, form, output);
   return panel;
+}
+function renderActivity() {
+  if (!project()) return renderWelcome();
+  const projectId = state.projectId;
+  const list = el("div", { class: "activity-list", role: "status" }, t("正在读取日志…", "Loading work log…"));
+  const nodes = [heading(t("工作日志", "Work log"), t("汇总已记录的任务、邮件、笔记和资料版本，不把打开页面计为完成。", "Recorded tasks, mail, notes and resource versions. Opening a page does not count as completed work.")), list];
+  const current = () => projectId === state.projectId && state.view === "activity" && list.isConnected;
+  api.projectActivity(projectId).then((result) => {
+    if (!current()) return;
+    if (!Array.isArray(result.events)) throw new ApiError("invalid_response");
+    list.replaceChildren(...result.events.map((event) => {
+      const rawActor = event.actor_name || event.actor;
+      const actor = rawActor === "human" ? "Human" : rawActor === "system" ? t("系统", "System") : rawActor || t("执行者未提供", "Actor not provided");
+      const source = event.type?.startsWith("task") ? t("任务", "Task") : event.type?.startsWith("message") ? t("邮件", "Mail") : event.type?.startsWith("resource") ? t("资料", "Resource") : event.type?.startsWith("memory") || event.type?.startsWith("note") ? t("笔记", "Note") : t("记录", "Record");
+      const row = el("article", { class: "activity-row" }, el("div", { class: "activity-meta" }, el("span", {}, source), el("time", { datetime: event.created_at || "" }, formatDate(event.created_at, true))), el("h3", {}, event.title === event.type ? ({ resource_version_created: t("资料版本已冻结", "Resource version frozen"), resource_version_approved: t("资料版本已确认", "Resource version approved"), employee_joined: t("员工已加入项目", "Employee joined the project"), employee_removed: t("员工已移出项目", "Employee removed from the project"), employee_lifecycle: t("员工状态已变更", "Employee status changed") }[event.type] || event.title) : event.title || event.type), event.summary ? el("p", {}, event.summary) : null, el("p", { class: "field-hint" }, actor));
+      if (event.task_id) {
+        const task = button(t("查看任务", "View task"), null, { class: "small" });
+        task.addEventListener("click", () => openTaskDetail(event.task_id));
+        row.append(task);
+      }
+      return row;
+    }));
+    if (!result.events.length) list.append(el("p", { class: "inline-empty" }, t("还没有项目记录。派发任务、发送邮件或登记资料后，记录会出现在这里。", "No project records yet. Assign a task, send mail, or register resources to start the work log.")));
+    if (result.has_older) list.append(el("p", { class: "field-hint" }, t("当前显示最近的记录；还有更早记录尚未显示。", "Showing recent records; older records are not displayed.")));
+  }).catch((error) => { if (current()) list.replaceChildren(el("p", { class: "form-error", role: "alert" }, errorText(error))); });
+  return nodes;
 }
 function renderResources() {
   if (!project()) return [heading(navLabels.resources, t("共享背景、决定和资料，让员工接着已有工作继续。", "Share context, decisions, and resources so employees can continue the work.")), empty(t("先选择一个项目", "Choose a project first"), t("资料和记忆按项目保存。", "Resources and memory are saved by project."), "new-project", t("选择项目", "Choose project"))];
@@ -915,7 +1005,7 @@ function renderAbout() {
   });
   return [heading(t("关于与更新", "About & updates"), "agent-mailbox · " + version), el("div", { class: "about-content" },
     section(t("界面语言", "Interface language"), el("p", {}, t("支持简体中文与英文。偏好保存在当前浏览器；切换会重新加载界面，不会改变任务或项目资料的语言。", "Simplified Chinese and English are available. Preferences are stored in this browser. Switching reloads the interface and does not translate tasks or project content.")), language),
-    section(t("版本与升级", "Version & updates"), el("p", {}, t("当前为本地 alpha，尚无公开 v0.8 安装包或应用内自动更新。GitHub 公开发行版可能仍是旧版本，请核对版本号。", "This is a local alpha. There is no public v0.8 installer or in-app automatic updater yet. Public GitHub releases may still be older versions; check their version numbers.")),
+    section(t("版本与升级", "Version & updates"), el("p", {}, t("当前为本地 Beta 1，尚未公开发布到 GitHub / PyPI，也没有应用内自动更新。GitHub 公开发行版可能仍是旧版本，请核对版本号。", "This is local Beta 1, not yet published to GitHub / PyPI. There is no in-app automatic updater. Public GitHub releases may still be older versions; check their version numbers.")),
       el("ol", {}, ...[
         t("先让运行中的任务结束，再退出应用。", "Let running tasks finish, then quit the application."),
         t("备份原数据目录，再替换同系统的新应用包；保留原数据目录。", "Back up your data directory, then replace the app with the new package for your OS. Keep the existing data directory."),
@@ -933,7 +1023,7 @@ function render() {
     root.setAttribute("aria-busy", "false");
     return;
   }
-  const renders = { overview: renderOverview, tasks: renderTasks, employees: renderEmployees, mailboxes: renderMailboxes, members: renderMembers, messages: renderMessages, resources: renderResources, devices: renderDevices, about: renderAbout };
+  const renders = { overview: renderOverview, tasks: renderTasks, employees: renderEmployees, mailboxes: renderMailboxes, members: renderMembers, messages: renderMessages, resources: renderResources, activity: renderActivity, devices: renderDevices, about: renderAbout };
   const content = state.data ? renders[state.view]() : renderDisconnected();
   root.replaceChildren(...content.flat(Infinity).filter((item) => item !== null && item !== undefined && item !== false));
   root.setAttribute("aria-busy", "false");
@@ -1586,7 +1676,15 @@ document.getElementById("theme-button").addEventListener("click", () => {
 });
 document.getElementById("sidebar-toggle").addEventListener("click", () => setSidebar(!document.getElementById("sidebar").classList.contains("open")));
 document.getElementById("sidebar-backdrop").addEventListener("click", () => setSidebar(false));
-document.addEventListener("keydown", (event) => { if (event.key === "Escape") setSidebar(false); });
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") setSidebar(false);
+  if (event.key !== "Tab" || formDialog.open || detailDialog.open || !document.body.classList.contains("drawer-open")) return;
+  const controls = [...document.getElementById("sidebar").querySelectorAll('a[href], button:not(:disabled), summary, [tabindex="0"]')].filter((node) => node.getClientRects().length);
+  const first = controls[0], last = controls.at(-1);
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+});
+matchMedia("(max-width: 760px)").addEventListener("change", () => setSidebar(false));
 detailDialog.addEventListener("close", () => { state.detailTaskId = null; ++state.detailRequest; state.detailFingerprint = ""; });
 for (const dialog of [formDialog, detailDialog]) {
   dialog.addEventListener("click", (event) => {
@@ -1601,7 +1699,17 @@ for (const control of document.querySelectorAll("[data-view]")) {
 }
 document.getElementById("version-label").setAttribute("aria-label", t("关于与更新", "About & updates"));
 document.querySelector(".brand small").textContent = t("团队工作台", "Team workbench");
-document.querySelector(".sidebar-heading > span").textContent = t("项目", "Projects");
+document.getElementById("project-nav-label").textContent = t("当前项目", "Current project");
+document.getElementById("team-nav-label").textContent = t("团队", "Team");
+document.getElementById("manage-nav-label").textContent = t("管理", "Manage");
+document.getElementById("sidebar").setAttribute("aria-label", t("团队与项目导航", "Team and project navigation"));
+document.querySelector(".global-nav").setAttribute("aria-label", t("团队", "Team"));
+document.querySelector(".project-nav").setAttribute("aria-label", t("当前项目工作区", "Current project workspace"));
+document.getElementById("project-list").setAttribute("aria-label", t("项目列表", "Projects"));
+document.getElementById("sidebar-toggle").setAttribute("aria-label", t("打开导航", "Open navigation"));
+document.getElementById("sidebar-backdrop").setAttribute("aria-label", t("关闭导航", "Close navigation"));
+document.querySelector(".brand").setAttribute("aria-label", t("agent-mailbox 工作台", "agent-mailbox workbench"));
+document.querySelector('[data-action="new-project"]').title = t("新建项目", "New project");
 document.querySelector("#quit-application-button > span").textContent = t("退出应用", "Quit application");
 document.querySelector(".skip-link").textContent = t("跳到工作区", "Skip to workspace");
 document.querySelector('[data-action="new-project"]').setAttribute("aria-label", t("新建项目", "New project"));

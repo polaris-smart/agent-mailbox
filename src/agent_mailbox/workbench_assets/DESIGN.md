@@ -12,7 +12,7 @@ System sans-serif including PingFang SC and Microsoft YaHei. Body 14px, compact 
 
 ## Layout
 
-224px desktop sidebar, 64px header, content capped at 1440px. Sidebar contains project selection and project pages, with device management at the bottom. Overview has status-grouped task rows and a narrower project-context rail. Tasks use dense rows. Employees use a responsive grid of identity cards: app/CLI identity, truthful execution state, project membership, a mailbox action, and collapsed connection/management details. Detail panel is a native dialog visually aligned to the right edge. At narrow widths the sidebar becomes a keyboard-accessible drawer and overview content stacks.
+224px desktop sidebar, 64px header, content capped at 1440px. Sidebar separates the global team registry and mailboxes, the selected project workspace, and device/about management. A native disclosure shows the current project name and opens the project list on demand, retaining drag-to-project membership. The whole sidebar scrolls at short heights; the project list has its own bounded overflow. Project navigation is disabled until a project exists. Overview has status-grouped task rows and a narrower project-context rail. Tasks use dense rows. Employees use a responsive grid of identity cards: app/CLI identity, truthful execution state, project membership, a mailbox action, and collapsed connection/management details. Detail panel is a native dialog visually aligned to the right edge. At narrow widths the sidebar becomes a keyboard-accessible drawer and overview content stacks.
 
 ## Components
 
@@ -37,3 +37,5 @@ Application quit is an explicit global footer action with a readable confirmatio
 Vanilla HTML/CSS/JavaScript with inline local SVG icons. No CDN, external font, frontend framework, tracking, or background browser dependency.
 
 Employee mailboxes are administrator views over existing project messages, with Inbox, Sent, and current-project broadcast filters. They do not impersonate employees or recreate the v0.7 mailbox store. Composing always identifies Human as sender. No read/ack/delivery flags are synthesized by opening a mailbox.
+
+Fixed resource versions are distinct from live reads. Humans can freeze the registered file, inspect status and content checksum, review proposals, and open an immutable version through the same inert source/isolated HTML preview. Freeze success follows the returned status; no device synchronization claim is made. The work log aggregates durable project events and links to related tasks, without treating a page view as progress.

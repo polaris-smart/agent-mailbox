@@ -10,6 +10,11 @@ import pytest
 from agent_mailbox import workbench_knowledge as knowledge
 from agent_mailbox.workbench_store import WorkbenchError
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX CodeGraph adapter tests; Windows reports explicit unsupported status",
+)
+
 
 @pytest.fixture
 def project(tmp_path):

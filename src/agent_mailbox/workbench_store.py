@@ -31,7 +31,7 @@ class WorkbenchError(Exception):
 ACTIVE = frozenset({"starting", "running", "waiting_approval"})
 FINISH = frozenset({"review", "failed", "cancelled", "interrupted"})
 MAX_TEXT = 1024 * 1024
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 EMPLOYEE_KINDS = frozenset(
     {
         "codex",
@@ -228,6 +228,10 @@ class WorkbenchStore:
                     for statement in SCHEMA.split(";"):
                         if statement.strip():
                             db.execute(statement)
+                    from .workbench_resources import RESOURCE_SCHEMA
+
+                    for statement in RESOURCE_SCHEMA:
+                        db.execute(statement)
                     columns = {row[1] for row in db.execute("PRAGMA table_info(devices)")}
                     if "last_seen" not in columns:
                         db.execute("ALTER TABLE devices ADD COLUMN last_seen TEXT")
@@ -1092,6 +1096,9 @@ class WorkbenchStore:
             db.execute(
                 "UPDATE tasks SET status='starting',updated_at=? WHERE id=?", (_now(), row["id"])
             )
+            from .workbench_resources import freeze
+
+            freeze(self, db, row)
             self._event(db, row["id"], "starting", "正在连接员工执行入口。")
             return self._entity(self._required(db, "tasks", row["id"]))
 
@@ -1645,6 +1652,58 @@ class WorkbenchStore:
             }
             return result
 
+    def resource_versions(self, project_id: str, resource_id: str) -> dict:
+        from .workbench_resources import versions
+
+        return versions(self, project_id, resource_id)
+
+    def capture_resource_version(
+        self,
+        project_id: str,
+        resource_id: str,
+        summary: str = "",
+        employee_id: str | None = None,
+        content: str | None = None,
+    ) -> dict:
+        from .workbench_resources import capture
+
+        return capture(self, project_id, resource_id, summary, employee_id, content)
+
+    def read_resource_version(self, project_id: str, resource_id: str, version_id: str) -> dict:
+        from .workbench_resources import read
+
+        return read(self, project_id, resource_id, version_id)
+
+    def approve_resource_version(self, project_id: str, resource_id: str, version_id: str) -> dict:
+        from .workbench_resources import approve
+
+        return approve(self, project_id, resource_id, version_id)
+
+    def resource_manifest(self, project_id: str) -> dict:
+        from .workbench_resources import manifest
+
+        with self._connection() as db:
+            db.execute("BEGIN")
+            return manifest(self, db, project_id)
+
+    def execution_resource_manifest(self, task_id: str, run_id: str) -> dict:
+        from .workbench_resources import execution_manifest
+
+        return execution_manifest(self, task_id, run_id)
+
+    def read_execution_resource(
+        self,
+        project_id: str,
+        resource_id: str,
+        task_id: str,
+        run_id: str,
+        version_id: str = "",
+        live: bool = False,
+    ) -> dict:
+        from .workbench_resources import execution_read
+
+        return execution_read(self, project_id, resource_id, task_id, run_id, version_id, live)
+
     def knowledge_status(self, project_id: str) -> dict:
         from .workbench_knowledge import knowledge_status
 
@@ -1740,6 +1799,9 @@ class WorkbenchStore:
                     for row in items:
                         row["body"] = row["body"][:8000]
                 result[table] = items
+            from .workbench_resources import manifest
+
+            result["resource_manifest"] = manifest(self, db, project_id)
             if employee_id:
                 self._message_member(db, project_id, employee_id)
             message_filter = (

@@ -860,3 +860,58 @@ def test_repeated_remote_receipt_respects_owner_cancel(fleet, tmp_path):
     owner.cancel_task(task["id"])
     assert client.receipt(task["id"], task["run_id"], "review", "Output")["status"] == "cancelled"
     assert client.receipt(task["id"], task["run_id"], "review", "Output")["status"] == "cancelled"
+
+
+def test_remote_text_proposal_stays_unapproved_and_bound_to_active_run(fleet, tmp_path):
+    owner, project, other, _ = fleet
+    client = mapped(fleet, tmp_path)
+    employee = client.register_employee(project["id"], "Remote writer", "codex")
+    source = tmp_path / "PRD.md"
+    source.write_text("Original coordinator brief")
+    resource = owner.add_resource(project["id"], "PRD", "prd", source)
+    approved = owner.capture_resource_version(project["id"], resource["id"])
+    task = owner.create_task(project["id"], "Propose", "Propose text", employee["id"])
+    client.claim(project["id"], wait=0)
+    run = {"task_id": task["id"], "run_id": task["run_id"]}
+    proposal = client.project_tool(
+        project["id"],
+        employee["id"],
+        "resource_propose",
+        {"resource_id": resource["id"], "content": "Remote text proposal", "summary": "Review"},
+        **run,
+    )
+    assert proposal["status"] == "proposed" and proposal["approved_by"] is None
+    assert source.read_text() == "Original coordinator brief"
+    assert owner.resource_manifest(project["id"])["resources"][0]["version_id"] == approved["id"]
+    assert (
+        owner.read_resource_version(project["id"], resource["id"], proposal["id"])["content"]
+        == "Remote text proposal"
+    )
+    assert "source" not in proposal
+    with pytest.raises(WorkbenchError):
+        client.project_tool(
+            project["id"], employee["id"], "resource_approve", {"version_id": proposal["id"]}, **run
+        )
+    with pytest.raises(WorkbenchError):
+        client.project_tool(
+            other["id"],
+            employee["id"],
+            "resource_propose",
+            {"resource_id": resource["id"], "content": "leak"},
+            **run,
+        )
+    owner.approve_resource_version(project["id"], resource["id"], proposal["id"])
+    pinned = client.project_tool(
+        project["id"], employee["id"], "resource_read", {"resource_id": resource["id"]}, **run
+    )
+    assert pinned["content"] == "Original coordinator brief"
+    owner.cancel_task(task["id"])
+    for tool, args in [
+        ("context", {}),
+        ("resource_read", {"resource_id": resource["id"]}),
+        ("code_search", {"query": "Example"}),
+        ("messages", {}),
+    ]:
+        with pytest.raises(WorkbenchError) as error:
+            client.project_tool(project["id"], employee["id"], tool, args, **run)
+        assert error.value.code == "permission_denied"

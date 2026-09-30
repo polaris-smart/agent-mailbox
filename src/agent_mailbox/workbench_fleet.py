@@ -24,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
+from .workbench_execution_resources import execution_project_context
 from .workbench_store import ACTIVE, WorkbenchError, WorkbenchStore
 
 MAX_BODY = 1024 * 1024
@@ -502,8 +503,8 @@ class FleetCoordinator:
                     return {"status": "pending", "decision": None}
                 self.condition.wait(timeout=remaining)
 
-    def _context(self, project_id, employee_id=None):
-        result = self.store.project_context(project_id, employee_id=employee_id)
+    def _context(self, project_id, employee_id=None, task_id="", run_id=""):
+        result = execution_project_context(self.store, project_id, employee_id, task_id, run_id)
         result["project"].pop("path", None)
         for resource in result["resources"]:
             resource.pop("path", None)
@@ -549,8 +550,26 @@ class FleetCoordinator:
             and args["employee_id"] != employee_id
         ):
             raise WorkbenchError("permission_denied", "工具不能切换到其他项目或员工身份。")
+        source_task_id = None
+        # Once a session identifies a task, every read and write is scoped to
+        # that active run. Ended runs cannot fall back to device-wide read access.
+        if body.get("task_id") or body.get("run_id"):
+            source_task_id = _identifier(body.get("task_id"), "来源任务编号")
+            source = self._task_scope(device, source_task_id, body.get("run_id"))
+            if (
+                source["assignee_id"] != employee_id
+                or source["project_id"] != project_id
+                or source["status"] not in ACTIVE
+                or source["cancel_requested"]
+            ):
+                raise WorkbenchError("permission_denied", "工具必须属于当前员工的有效执行会话。")
         if tool == "context":
-            return self._context(project_id, employee_id=employee_id)
+            return self._context(
+                project_id,
+                employee_id=employee_id,
+                task_id=source_task_id or "",
+                run_id=body.get("run_id", ""),
+            )
         if tool == "code_search":
             result = self.store.query_knowledge(project_id, args.get("query"))
             # A remote employee receives a coordinator snapshot, not proof that
@@ -564,15 +583,36 @@ class FleetCoordinator:
         if tool == "memory_search":
             return {"memories": self.store.search_memory(project_id, args.get("query", ""))}
         if tool == "resource_read":
-            result = self.store.read_resource(project_id, args.get("resource_id"))
+            if source_task_id:
+                result = self.store.read_execution_resource(
+                    project_id,
+                    args.get("resource_id"),
+                    source_task_id,
+                    body.get("run_id"),
+                    args.get("version_id", ""),
+                    args.get("live", False),
+                )
+            elif args.get("version_id") and not args.get("live", False):
+                result = self.store.read_resource_version(
+                    project_id, args.get("resource_id"), args["version_id"]
+                )
+            else:
+                result = self.store.read_resource(project_id, args.get("resource_id"))
             result["resource"].pop("path", None)
+            if "version" in result:
+                result["version"].pop("source", None)
             result["source"] = f"resource:{result['resource']['id']}:{result['resource']['name']}"
+            return result
+        if tool == "resource_versions":
+            result = self.store.resource_versions(project_id, args.get("resource_id"))
+            for version in result["versions"]:
+                version.pop("source", None)
             return result
         if tool == "messages":
             return self.store.employee_messages(
                 project_id, employee_id, args.get("folder", "inbox"), args.get("limit", 100)
             )
-        if tool in {"note", "message", "team_message"}:
+        if tool in {"note", "message", "team_message", "resource_propose"}:
             if not body.get("task_id") or not body.get("run_id"):
                 raise WorkbenchError("permission_denied", "写入工具需要当前执行会话。")
             source_task_id = _identifier(body.get("task_id"), "来源任务编号")
@@ -585,6 +625,17 @@ class FleetCoordinator:
                 raise WorkbenchError(
                     "permission_denied", "工具写入必须属于当前员工的有效执行会话。"
                 )
+        if tool == "resource_propose":
+            result = self.store.capture_resource_version(
+                project_id,
+                args.get("resource_id"),
+                args.get("summary", ""),
+                employee_id,
+                content=args.get("content"),
+            )
+            result.pop("source", None)
+            self.notify()
+            return result
         if tool == "note":
             return self.store.add_memory(
                 project_id, args.get("title"), args.get("body"), source=f"employee:{employee_id}"

@@ -6,6 +6,7 @@ import threading
 import time
 from pathlib import Path
 
+from .workbench_execution_resources import execution_project_context
 from .workbench_runtime import BridgeExecution, context_prompt, workspace_server_command
 from .workbench_store import WorkbenchStore
 
@@ -80,7 +81,10 @@ class WorkbenchEngine:
             task = {**task, "kind": employee["kind"]}
             if self.execution.command is None:
                 task["prompt"] = context_prompt(
-                    task, self.store.project_context(project["id"], employee_id=task["assignee_id"])
+                    task,
+                    execution_project_context(
+                        self.store, project["id"], task["assignee_id"], task["id"], task["run_id"]
+                    ),
                 )
             creds = self.store.execution_credentials(task["id"])
             command, args = workspace_server_command()

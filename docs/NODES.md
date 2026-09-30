@@ -1,6 +1,6 @@
 # 可选设备：LAN 与无界面 Ubuntu 节点
 
-单机用户不用做这些步骤。此指南对应独立 0.8.0a3；本机隔离 HTTPS/子进程验证不代表真实 Ubuntu、LAN 或香港/硅谷服务器已经验收。
+单机用户不用做这些步骤。此指南对应独立 v0.8。Mac 主控到 Ubuntu 24.04 Docker 节点已完成隔离的真实 HTTPS 与子进程协议验收；执行者是确定性测试 worker，不是真实 LLM 员工。这不代表 LAN 实体设备、香港或硅谷服务器已验收。
 
 ## 接入准备
 
@@ -49,3 +49,29 @@ agent-mailbox node --home ~/.agent-mailbox-node join --invite ~/agent-mailbox-in
 ## 常驻运行
 
 完成前台真实任务、审批和重启验收后，再按服务器已有运维方式托管 `agent-mailbox node --home ABSOLUTE_HOME run`。进程必须使用同一 OS 用户、原生登录环境、固定 home 和私网连接。当前不自动安装 systemd、远程 SSH 服务或网络组件。
+
+## 可复验的节点协议验收
+
+在安装本项目及依赖的 Ubuntu 上，从源码目录运行：
+
+```sh
+python scripts/check-node-beta.py --output /tmp/agent-mailbox-node-evidence
+```
+
+脚本创建全新私有 home，启动独立节点进程，验证邀请配对、TLS 指纹、明确目录映射、员工登记、确定性子进程执行、human 验收、未确认 claim 的重启恢复、监听断开与重连，以及撤销后拒绝启动。另验证任务领取时固定已批准资料：即使源文件更新并批准新版，远端默认读取仍与主控固定版本的正文、hash 和 context manifest 一致；执行结束、取消或撤销后，带旧 task/run 身份的 context、资料读取、代码检索和邮件读取全部拒绝。它只使用测试 worker，不调用模型、不读取用户现有登录，不接触真实项目或已有服务器。证据中不会输出邀请码、设备 bearer 或 TLS 私钥，结束时删除临时可复用凭据。
+
+Mac 也可以使用已有 Ubuntu 容器：容器将源码只读挂到 `/repo`，证据目录挂到 `/evidence`，并在 `/venv/bin/python` 准备本项目 Python 依赖。然后运行：
+
+```sh
+python scripts/check-node-beta.py --output ABSOLUTE_EVIDENCE_DIRECTORY --docker-container YOUR_TEST_CONTAINER
+```
+
+这一方式通过 `host.docker.internal` 连接 Mac 的测试协调器。只用于已有的隔离测试容器；脚本不安装 Docker、配置防火墙或访问远程服务器。模型登录、真实模型执行、SSH 隧道部署与 systemd 托管是另外的验收项。
+
+## 断线、睡眠与身份边界
+
+主控 Mac 睡眠、进程退出或隧道断开时，节点无法领取新任务；正在等待的授权不会转为允许。失去任务控制连接的执行会请求停止，不会猜测 human 已同意继续。网络恢复后继续使用原设备身份与映射，不需要重新邀请。
+
+最终结果先保存到节点的私有持久回执箱，再发送给主控。回包丢失时重发同一个 run 的结果；没有确定结果的已领取任务会标记中断，需要 human 决定下一步，不能自动重跑付费模型工作。节点磁盘故障仍可能妨碍保存，请按界面失败提示恢复磁盘或备份。
+
+设备、项目、员工和任务 run 共同限制协议权限。Agent 使用同一套凭据创建的 subagent，仍代表该父员工执行，协议无法证明每段回复具体由父进程还是内部 subagent 撰写。若 subagent 要作为独立员工署名、接收邮件或承担任务，须单独登记和授权；不要让它共享其他员工的凭据。

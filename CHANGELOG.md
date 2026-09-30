@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.0b1 — local Beta 1 (not publicly released)
+
+- Separate global employees, current-project navigation and management in the sidebar; add a real project work log and accessible mobile navigation.
+- Add immutable resource revisions, explicit human approval and task-run manifests. Default employee reads use pinned versions; explicit remote text proposals cannot overwrite coordinator files.
+- Enforce active task identity on remote reads as well as writes. Finished, cancelled or revoked sessions are rejected.
+- Verify real Codex-to-Claude mailbox handoff and approved resource retrieval on macOS; verify Mac-to-Ubuntu Docker pinned HTTPS, version consistency, recovery and revocation with a deterministic worker.
+- Preserve existing data with private schema migration backups. Optional CodeGraph retrieval and isolated self-contained HTML previews remain supported; Windows CodeGraph is explicitly unavailable in this beta.
+- Public GitHub/PyPI release, Windows physical validation, server deployment and automatic updates are separate work.
+
+
 ## 0.8.0a3 — independent foundation (unpublished)
 
 - Remove v0.7 mail runtime, background services, installation scripts and legacy tests from the v0.8 distribution; default CLI and Python module open the workbench.
