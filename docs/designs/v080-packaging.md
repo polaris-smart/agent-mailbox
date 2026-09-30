@@ -25,7 +25,7 @@ uv pip install --python /tmp/mailbox-build-env/bin/python pyinstaller==6.22.3 -e
 Build independently on each target OS/architecture. This initial script supports
 macOS and does not produce Windows/Linux artifacts from a Mac. Node must match the
 host architecture and be >=22.13; the current local build uses Node 22.23.1.
-The script verifies exact ACPX/adapter versions and records a build manifest with
+The script verifies exact ACPX/Codex/adapter versions and the CLI/sibling-host protocol pair and records a build manifest with
 the dependency-lock digest and architecture.
 
 Output:
@@ -73,3 +73,20 @@ notarized distribution. It is a local build artifact requiring a separate releas
 process before public distribution. The installer and build do not implement
 automatic updates or rollout/rollback, and must not be described
 as delivering those features. The product store performs its own additive SQLite schema migrations. A future updater must preserve the external home.
+
+## GitHub-first alpha2 delivery
+
+[GitHub quickstart](../GITHUB-QUICKSTART.md) is the primary onboarding guide. The
+`.app` is optional; source/CLI and GitHub hosting require no Apple Developer account.
+GitHub hosting does not bypass macOS first-launch checks. The local alpha2 wheel,
+source archive and App are unpublished development artifacts.
+
+Build versions come from installed package metadata; numeric macOS bundle fields
+are `0.8.0`, while `AgentMailboxVersion`, get-info text and manifest retain
+`0.8.0a2`. Bundle metadata is set before the ad-hoc seal, not patched afterward.
+The build explicitly supplies PyInstaller 6.22.3's shorthand-manifest option and
+inserts plist keywords after the bundle's positional collection argument.
+
+`release-workbench.py inspect` reads local signature/runtime facts; `plan` only
+prints a future signing/notarization command plan. Neither action signs, uploads
+or publishes. See [optional release steps](../../scripts/RELEASE-workbench.md).

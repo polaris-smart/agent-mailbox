@@ -1,0 +1,15 @@
+{
+  "version": "0.8.0a2",
+  "isolated_wheel_install": true,
+  "source_import": false,
+  "http_assets": true,
+  "mcp_tools": 5,
+  "context_read": true,
+  "employee_note_attribution": true,
+  "retirement_revokes_mcp": true,
+  "pause_resume": true,
+  "governance": true,
+  "owner_quit": true,
+  "restart_preserves_state": true,
+  "model_calls": 0
+}

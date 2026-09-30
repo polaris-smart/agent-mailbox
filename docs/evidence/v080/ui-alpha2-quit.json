@@ -1,0 +1,15 @@
+{
+  "passed": [
+    "actual main refuses unauthorized quit and remains reachable",
+    "readable quit confirmation can be cancelled without stopping instance",
+    "actual authenticated quit returns 200, exits main process, removes owned instance state and renders reopening instructions",
+    "intentional quit stops event stream; no reconnect requests or error toasts after 6.5 seconds",
+    "another independently owned test instance and browser page remain open"
+  ],
+  "consoleErrors": [],
+  "screenshots": [
+    "agent-mailbox-v080-ui-quit-confirm.png",
+    "agent-mailbox-v080-ui-quit-stopped.png"
+  ],
+  "limits": "Actual workbench main, real HTTP quit, isolated empty home and no tasks. No real native AI sessions or physical devices were started. Existing port 52250 was not accessed."
+}

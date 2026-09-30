@@ -1,0 +1,19 @@
+{
+  "passed": [
+    "real project team preserves retired history and separates lifecycle from tool connection; scoped governance displays actual human/employee/device actors",
+    "assignment selector excludes paused/retired; actual owner-authenticated HTTP bypass attempts are rejected by backend",
+    "real expired permission is unavailable and HTTP rejected; advancing only browser Date proves click-time expiry blocks request without polling",
+    "real pause preserves executing and queued tasks while rejecting new assignment; real resume restores active identity",
+    "retirement requires reason and explicit readable confirmation; actual retirement cancels queue, requests running stop, retains identity/history, and rejects direct resume",
+    "all inactive team routes to management; replacement enrollment uses a new name/identity while retired employee and task history remain",
+    "management rows, actions and history at 390px have no horizontal overflow"
+  ],
+  "consoleErrors": [],
+  "screenshots": [
+    "agent-mailbox-v080-ui-lifecycle-team.png",
+    "agent-mailbox-v080-ui-lifecycle-expiry.png",
+    "agent-mailbox-v080-ui-lifecycle-retirement.png",
+    "agent-mailbox-v080-ui-lifecycle-mobile.png"
+  ],
+  "limits": "Actual isolated HTTP/SQLite core lifecycle and permission APIs; runtime/discovery/engine are explicitly labeled fixtures. Browser Date only is advanced for expiry click test. No real AI execution, physical LAN or automatic update tested."
+}

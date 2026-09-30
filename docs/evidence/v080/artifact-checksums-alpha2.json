@@ -1,0 +1,17 @@
+[
+  {
+    "name": "agent-mailbox-v080-alpha2-macos-arm64.zip",
+    "bytes": 312979335,
+    "sha256": "bd5fb192f2fdb514a83df9f71dabb7b9808c4d14c9ad35a8f4bb666366da1f47"
+  },
+  {
+    "name": "agent_mailbox-0.8.0a2-py3-none-any.whl",
+    "bytes": 333870,
+    "sha256": "660ffe63825b20085cfc5e612d36d436935a28451b02d9850c8d550404cb13b0"
+  },
+  {
+    "name": "agent_mailbox-0.8.0a2.tar.gz",
+    "bytes": 7344369,
+    "sha256": "3ad6f1a5143e88ab29a46914895753414fe54c0ded6d54dde892fe3ba16cbc58"
+  }
+]

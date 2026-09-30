@@ -15,7 +15,7 @@ uv run python scripts/release-workbench.py inspect \
 ```
 
 The local check on 2026-09-30 found zero valid signing identities and no Developer
-ID Application identity. Team ID was not configured. The alpha1 test app has an
+ID Application identity. Team ID was not configured. The alpha2 test app has an
 ad-hoc signature whose local integrity check passed; this is not a Developer ID
 signature or notarization. No signing account is needed to continue development.
 

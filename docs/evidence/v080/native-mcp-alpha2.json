@@ -1,0 +1,51 @@
+{
+  "root_cause": "Standalone CLI and older sibling code-mode host disagree on required code_mode_host_duration_ns despite protocol version 1.",
+  "managed_runtime": {
+    "source": "managed-runtime",
+    "version": "0.158.0",
+    "model": "gpt-6-luna",
+    "reasoning_effort": "low",
+    "native_mode": "read-only"
+  },
+  "actual_tool_calls": [
+    {
+      "tool_call_id": "exec-396f5b7c-faa6-44f4-b8fc-7250bd791bfc",
+      "server": "agent-mailbox-project",
+      "tool": "project_context",
+      "status": "completed",
+      "marker_returned_by_tool": true
+    },
+    {
+      "tool_call_id": "exec-62caa539-4fb4-42db-b889-408c5953366a",
+      "server": "agent-mailbox-project",
+      "tool": "project_note",
+      "status": "completed"
+    }
+  ],
+  "permission_decisions": [
+    {
+      "tool_call_id": "exec-396f5b7c-faa6-44f4-b8fc-7250bd791bfc",
+      "server": "agent-mailbox-project",
+      "tool": "project_context",
+      "decision": "allow_once",
+      "same_run_event_matched": true
+    },
+    {
+      "tool_call_id": "exec-62caa539-4fb4-42db-b889-408c5953366a",
+      "server": "agent-mailbox-project",
+      "tool": "project_note",
+      "decision": "allow_once",
+      "same_run_event_matched": true
+    }
+  ],
+  "persisted_note": {
+    "title": "Seam verified",
+    "body": "seam-note-native-20260930",
+    "source": "employee:employee_dcff0e5b223f415bb68ba0295773fd42"
+  },
+  "terminal_status": "completed",
+  "end_to_end_verified": true,
+  "isolated_project": true,
+  "global_config_modified": false,
+  "process_tests": 36
+}
