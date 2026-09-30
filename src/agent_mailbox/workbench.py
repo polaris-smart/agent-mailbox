@@ -7,6 +7,7 @@ import hmac
 import ipaddress
 import json
 import secrets
+import signal
 import subprocess
 import sys
 import threading
@@ -555,6 +556,12 @@ def main(argv=None):
         if not args.no_browser:
             webbrowser.open(url)
         return
+
+    def stop_on_signal(_signal, _frame):
+        raise KeyboardInterrupt
+
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGTERM, stop_on_signal)
     server.engine.start()
     url = server.endpoint + "/#token=" + server.token
     if sys.stdout is not None:
