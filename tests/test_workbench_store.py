@@ -398,3 +398,36 @@ def test_future_schema_rejected(tmp_path):
     with pytest.raises(WorkbenchError) as error:
         WorkbenchStore(root)
     assert error.value.code == "incompatible_version"
+
+
+def test_claim_scope_filters_before_claiming_without_losing_other_work(
+    store, project, employee, tmp_path
+):
+    other = store.create_project("Other", tmp_path)
+    store.create_employee("Codex", "codex", other["id"])
+    first = queued(store, project, employee)
+    second = queued(store, other, employee)
+    node = store.local_node()["id"]
+    assert store.claim_task(node, project_ids=[]) is None
+    assert store.claim_task(node, project_ids=[other["id"]])["id"] == second["id"]
+    assert store.get_task(first["id"])["status"] == "queued"
+    with pytest.raises(WorkbenchError):
+        store.claim_task(node, project_ids="invalid")
+
+
+def test_v2_migration_preserves_tasks_and_adds_optional_model(tmp_path):
+    import sqlite3
+
+    store = WorkbenchStore(tmp_path / "state")
+    project = store.create_project("Migration", str(tmp_path))
+    employee = store.create_employee("Codex", "codex", project["id"])
+    task = store.create_task(project["id"], "Before", "Existing work", employee["id"])
+    with sqlite3.connect(store.db_path) as db:
+        db.execute("ALTER TABLE tasks DROP COLUMN model")
+        db.execute("PRAGMA user_version=2")
+    restored = WorkbenchStore(store.root)
+    assert restored.get_task(task["id"])["model"] is None
+    selected = restored.create_task(
+        project["id"], "After", "New work", employee["id"], model="advertised-model"
+    )
+    assert selected["model"] == "advertised-model"

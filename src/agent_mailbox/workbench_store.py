@@ -30,7 +30,7 @@ class WorkbenchError(Exception):
 ACTIVE = frozenset({"starting", "running", "waiting_approval"})
 FINISH = frozenset({"review", "failed", "cancelled", "interrupted"})
 MAX_TEXT = 1024 * 1024
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 EMPLOYEE_STATUSES = frozenset({"installed", "auth_required", "available", "unavailable", "unknown"})
 SECRET_KEYS = frozenset(
     {"token", "secret_token", "password", "authorization", "api_key", "access_token"}
@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     node_id TEXT NOT NULL REFERENCES devices(id), permission_mode TEXT NOT NULL,
     run_id TEXT NOT NULL UNIQUE, session_id TEXT NOT NULL UNIQUE,
     status TEXT NOT NULL DEFAULT 'queued', cancel_requested INTEGER NOT NULL DEFAULT 0,
-    result TEXT NOT NULL DEFAULT '', error TEXT,
+    result TEXT NOT NULL DEFAULT '', error TEXT, model TEXT,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS tasks_queue ON tasks(node_id, status, created_at);
@@ -164,6 +164,9 @@ class WorkbenchStore:
                                 "WHERE employee_id=? AND project_id=?",
                                 (row[2], row[0], row[1]),
                             )
+                    columns = {row[1] for row in db.execute("PRAGMA table_info(tasks)")}
+                    if "model" not in columns:
+                        db.execute("ALTER TABLE tasks ADD COLUMN model TEXT")
                     db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                     db.commit()
                 except BaseException:
@@ -377,7 +380,10 @@ class WorkbenchStore:
         prompt: str,
         assignee_id: str,
         permission_mode: str = "read-only",
+        model: str | None = None,
     ) -> dict:
+        if model is not None:
+            model = _text(model, "模型", 200).strip()
         title = _text(title, "任务名称", 300).strip()
         prompt = _text(prompt, "任务说明")
         _choice(
@@ -393,8 +399,8 @@ class WorkbenchStore:
             task_id, timestamp = _id("task"), _now()
             db.execute(
                 "INSERT INTO tasks(id,project_id,title,prompt,assignee_id,node_id,"
-                "permission_mode,run_id,session_id,created_at,updated_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "permission_mode,run_id,session_id,created_at,updated_at,model) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     task_id,
                     project_id,
@@ -407,20 +413,36 @@ class WorkbenchStore:
                     _id("session"),
                     timestamp,
                     timestamp,
+                    model,
                 ),
             )
             self._event(db, task_id, "queued", "任务已进入队列。")
             return self._entity(self._required(db, "tasks", task_id))
 
-    def claim_task(self, node_id: str) -> dict | None:
+    def claim_task(self, node_id: str, project_ids: list[str] | None = None) -> dict | None:
+        if project_ids is not None and (
+            not isinstance(project_ids, list)
+            or len(project_ids) > 100
+            or not all(isinstance(value, str) and 0 < len(value) <= 128 for value in project_ids)
+        ):
+            raise WorkbenchError("invalid_field", "请提供有效的授权项目列表。")
         with self._transaction() as db:
             self._required(db, "devices", node_id)
+            if project_ids == []:
+                return None
+            scope_clause = ""
+            params: list[str] = [node_id]
+            if project_ids is not None:
+                placeholders = ",".join("?" for _ in project_ids)
+                scope_clause = f" AND t.project_id IN ({placeholders}) "
+                params.extend(project_ids)
             row = db.execute(
                 "SELECT t.* FROM tasks t WHERE t.node_id=? AND t.status='queued' "
-                "AND NOT EXISTS (SELECT 1 FROM tasks a WHERE a.assignee_id=t.assignee_id "
+                + scope_clause
+                + "AND NOT EXISTS (SELECT 1 FROM tasks a WHERE a.assignee_id=t.assignee_id "
                 "AND a.status IN ('starting','running','waiting_approval')) "
                 "ORDER BY t.created_at,t.rowid LIMIT 1",
-                (node_id,),
+                params,
             ).fetchone()
             if row is None:
                 return None
@@ -822,7 +844,16 @@ class WorkbenchStore:
         with self._connection() as db:
             db.execute("BEGIN")
             project = self._entity(self._required(db, "projects", project_id))
-            result: dict[str, Any] = {"project": project}
+            team = db.execute(
+                "SELECT e.* FROM employees e JOIN memberships m ON m.employee_id=e.id WHERE m.project_id=? ORDER BY e.name,e.id",
+                (project_id,),
+            ).fetchall()
+            result: dict[str, Any] = {
+                "project": project,
+                "employees": [
+                    {k: row[k] for k in ("id", "name", "kind", "node_id", "status")} for row in team
+                ],
+            }
             for table in ("tasks", "resources", "memories"):
                 rows = db.execute(
                     f"SELECT * FROM {table} WHERE project_id=? "
