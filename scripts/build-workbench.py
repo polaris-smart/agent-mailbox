@@ -16,6 +16,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -72,6 +73,30 @@ def build(runtime_dir: Path, node: Path, output: Path, name: str) -> dict:
         raise ValueError("Choose an isolated build output directory")
     node_version = validate_runtime(runtime_dir, node)
     output.mkdir(parents=True, exist_ok=True)
+    # Preserve dependency notices in the frozen distribution, including Python
+    # distributions whose metadata PyInstaller would otherwise omit.
+    notices = output / "third-party-licenses"
+    notices.mkdir(exist_ok=True)
+    inventory = []
+    for distribution in importlib.metadata.distributions():
+        copied = []
+        distribution_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", distribution.metadata["Name"])
+        for filename in distribution.files or []:
+            source = Path(distribution.locate_file(filename))
+            if not source.is_file() or not any(
+                source.name.upper().startswith(prefix)
+                for prefix in ("LICENSE", "COPYING", "NOTICE")
+            ):
+                continue
+            destination = notices / distribution_name / str(len(copied)) / source.name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+            copied.append(str(destination.relative_to(notices)))
+        if copied:
+            inventory.append(
+                {"name": distribution_name, "version": distribution.version, "notices": copied}
+            )
+    (notices / "inventory.json").write_text(json.dumps(inventory, indent=2) + "\n")
     from PyInstaller.building.makespec import main as make_spec
 
     version = importlib.metadata.version("agent-mailbox")
@@ -98,6 +123,10 @@ def build(runtime_dir: Path, node: Path, output: Path, name: str) -> dict:
             copy_metadata=["agent-mailbox"],
             collect_submodules=["mcp.server"],
             datas=[
+                (str(REPOSITORY / "LICENSE"), "licenses"),
+                (str(REPOSITORY / "NOTICE"), "licenses"),
+                (str(REPOSITORY / "LICENSES"), "licenses/legacy"),
+                (str(notices), "licenses/python-dependencies"),
                 (str(SOURCE / "runtime_bridge"), "agent_mailbox/runtime_bridge"),
                 (str(SOURCE / "workbench_assets"), "agent_mailbox/workbench_assets"),
                 (str(runtime_dir / "node_modules"), "runtime/deps/node_modules"),
@@ -147,6 +176,9 @@ def build(runtime_dir: Path, node: Path, output: Path, name: str) -> dict:
         "runtime_lock_sha256": hashlib.sha256(
             (runtime_dir / "package-lock.json").read_bytes()
         ).hexdigest(),
+        "product_license": "Apache-2.0",
+        "copyright": "2026 NoFox and contributors",
+        "python_dependency_notice_inventory": inventory,
         "distribution_signed": False,
         "notarized": False,
         "automatic_updates": False,

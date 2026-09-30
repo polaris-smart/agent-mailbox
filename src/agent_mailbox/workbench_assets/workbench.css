@@ -422,3 +422,10 @@ dialog::backdrop { background: rgb(15 23 36 / 30%); }
 .employee-registry-row[draggable="true"] { cursor: grab; }
 .employee-registry-row.dragging { opacity: .65; }
 .project-item.drag-target { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-soft-ink); }
+
+.legal-footer { padding: 8px 12px; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.legal-footer a { color: inherit; text-underline-offset: 3px; }
+.connection-guide { padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.connection-guide h3 { margin: 0 0 8px; }
+.connection-guide p { margin: 8px 0; }
+.connection-guide code { overflow-wrap: anywhere; white-space: pre-wrap; }

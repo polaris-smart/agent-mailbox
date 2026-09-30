@@ -4,17 +4,17 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-mailbox"
-version = "0.8.0a4"
+version = "0.8.0a5"
 description = "Manage AI employees, project work and shared knowledge locally, with optional paired execution nodes."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
-authors = [{ name = "polaris-smart" }]
+license = { text = "Apache-2.0" }
+authors = [{ name = "NoFox and contributors" }]
 keywords = ["mcp", "agent", "mailbox", "multi-agent", "local-first", "workbench"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: MIT License",
+  "License :: OSI Approved :: Apache Software License",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -46,10 +46,10 @@ src = ["src", "tests"]
 [tool.hatch.build.targets.sdist]
 include = [
   "/src", "/tests", "/pyproject.toml", "/uv.lock", "/README.md", "/README.zh-CN.md",
-  "/LICENSE", "/SECURITY.md", "/CHANGELOG.md", "/docs/PRD.md",
+  "/LICENSE", "/NOTICE", "/LICENSES", "/SECURITY.md", "/CHANGELOG.md", "/docs/PRD.md",
   "/docs/WORKBENCH.md", "/docs/GITHUB-QUICKSTART.md", "/docs/NODES.md",
   "/docs/HANDOVER-CODEX.md", "/docs/archive/v07/PRD.md", "/docs/reviews/2026-09-30-v080-independence.md",
-  "/docs/designs/2026-09-30-v080-independent.md", "/docs/designs/v080-packaging.md",
+  "/docs/designs/2026-09-30-v080-independent.md", "/docs/designs/2026-09-30-connection-guidance.md", "/docs/evidence/v080/connection-guidance.md", "/docs/designs/v080-packaging.md",
   "/docs/evidence/v080-independent", "/scripts/build-workbench.py", "/scripts/release-workbench.py",
   "/scripts/RELEASE-workbench.md",
 ]

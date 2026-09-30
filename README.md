@@ -2,7 +2,7 @@
 
 A local workbench for managing AI employees around projects: assign work, share project knowledge, inspect progress, approve operations and accept results.
 
-**v0.8 is an independent implementation.** It keeps the product name and release line, with its own runtime, private database and project tools. v0.7 mail commands and background services are not part of the v0.8 package. The current build is **0.8.0a4, a local alpha**; no v0.8 release has been published to GitHub or PyPI yet.
+**v0.8 is an independent implementation.** It keeps the product name and release line, with its own runtime, private database and project tools. v0.7 mail commands and background services are not part of the v0.8 package. The current build is **0.8.0a5, a local alpha**; no v0.8 release has been published to GitHub or PyPI yet.
 
 [中文](README.zh-CN.md) · [Product baseline](docs/PRD.md) · [Quick start](docs/GITHUB-QUICKSTART.md) · [Optional devices](docs/NODES.md) · [Security](SECURITY.md)
 
@@ -42,4 +42,4 @@ The workbench normally runs on one computer. Remote Ubuntu workers are optional 
 
 Application files and the selected data home are separate. Replacing a compatible v0.8 build with the same home preserves projects, employee identities, scopes and device identity; back up the home while stopped. Automatic download/update/rollback, general workflow editing, isolated edit workspaces, universal app control and AI ERP are not implemented.
 
-MIT licensed. macOS public distribution still requires a signing/notarization decision; GitHub hosting does not remove operating-system checks.
+Apache-2.0 licensed, by NoFox and contributors. Prior MIT notices are preserved in LICENSES/MIT-Legacy.txt. macOS public distribution still requires a signing/notarization decision; GitHub hosting does not remove operating-system checks.

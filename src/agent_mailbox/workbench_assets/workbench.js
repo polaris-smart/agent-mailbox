@@ -141,6 +141,7 @@ function errorText(error) {
 }
 function humanDetail(value) {
   const messages = {
+    "The managed execution adapter requires authentication; native sign-in alone is not execution verification.": t("后台执行认证未通过；原生登录正常也不代表执行已接通。请查看接入指引。", "Managed execution authentication failed. Native sign-in alone does not verify execution; see Connection guide."),
     "Execution runtime is ready.": t("执行环境已准备好。", "Execution runtime is ready."),
     "Install the execution runtime before starting an employee.": t("完成一次准备后，员工就可以在项目里执行任务。", "Set up execution once before starting employees."),
     "Install this supported agent to use it here.": t("需要先安装这个 AI 工具。", "Install this AI tool first."),
@@ -358,6 +359,49 @@ function renderTaskList() {
   else if (projectTasks().length) container.replaceChildren(empty(t("没有匹配的任务", "No matching tasks"), t("试试其他状态或关键词。", "Try another status or search term."), null, null, "search"));
   else container.replaceChildren(empty(t("交代第一件事", "Assign the first task"), assignableEmployees().length ? t("描述目标和验收标准，选择员工，接下来的进度会自动记录。", "Describe the goal and acceptance criteria, then choose an employee. Progress will be recorded.") : t("先加入在岗员工，或恢复已暂停员工，再分配工作。", "Connect an active employee or resume a paused employee before assigning work."), "new-task", assignableEmployees().length ? t("创建任务", "Create task") : t("准备项目员工", "Prepare employees"), "task"));
 }
+
+function executionGuide(employee, error = null) {
+  const code = error?.code;
+  let title, explanation, next;
+  if (!employee?.execution_supported) {
+    title = t("已登记，自动执行尚未接入", "Registered; execution not connected");
+    explanation = t("发现 app 或 CLI 只证明它已安装。这个入口可以加入项目，目前没有自动触发适配器。", "Discovery confirms installation. This entry can join projects, but has no automatic execution adapter yet.");
+    next = t("可先整理项目资料；执行任务请选择已有适配器的 CLI 员工。", "Organize project resources now; choose a CLI employee with an execution adapter for tasks.");
+  } else if (code === "AUTH_REQUIRED" || employee.status === "auth_required" || employee.auth_status === "auth_required") {
+    title = t("执行认证未通过", "Execution authentication failed");
+    explanation = employee.auth_status === "authenticated" ? t("原生登录检查正常，但后台执行进程没有取得可用授权。这可能是执行适配或凭据读取问题，不能据此判断你没登录。", "Native sign-in is confirmed, but the managed execution process could not authenticate. This may be an adapter or credential-access issue; it does not prove you are signed out.") : t("后台执行没有可用授权。先检查原生工具是否能正常使用；登录状态未知时，不会猜测凭据是否有效。", "Managed execution could not authenticate. Check whether the native tool works; an unknown sign-in state does not prove credentials are valid.");
+    next = employee.auth_status === "authenticated" ? t("先在原生工具中完成一个简单请求，再点“检查连接”。若原生能执行、这里仍失败，请保留错误和入口路径用于排查接入；无需复制 key。", "Try a simple request in the native tool, then Check connection. If native execution works but this still fails, keep the error and entry path for adapter diagnosis. Do not copy keys.") : t("在终端完成原生登录，再点“检查连接”。这只复查登录状态；首次任务成功后才算执行已验证。", "Sign in using the native terminal command, then Check connection. This only rechecks sign-in; a successful task verifies execution.");
+  } else if (code === "MODEL_UNSUPPORTED") {
+    title = t("当前模型不可用", "Selected model unavailable");
+    explanation = t("执行接口拒绝了任务所选模型；这与未登录是两种问题。", "The execution service rejected the selected model; this is different from a sign-in failure.");
+    next = t("新建任务时选择模型列表中服务提供的模型。原任务保留，不会自动换模型或重跑。", "Create a new task with a model advertised by the service. The original task stays recorded; no automatic model switch or retry.");
+  } else if (["RUNTIME_MISSING", "AGENT_UNAVAILABLE"].includes(code)) {
+    title = t("执行组件尚未就绪", "Execution components unavailable");
+    explanation = t("员工安装与执行环境是两个独立检查。", "Employee installation and execution runtime are separate checks.");
+    next = t("先使用“准备执行环境”，完成后重新检查连接，再创建任务。", "Use Set up execution, then check the connection and create a task.");
+  } else if (code) {
+    title = t("这次执行没有完成", "This execution did not complete");
+    explanation = t("请结合任务记录中的原始错误判断原因，不把超时、权限拒绝或断线都当成登录失败。", "Use the recorded error to identify the cause. Timeouts, permission denials and disconnections are not all sign-in failures.");
+    next = t("权限问题查看授权记录；超时或断线先确认工具与服务可用，再决定是否创建新任务。不会自动重跑。", "For permission issues, inspect the approval record. For timeouts or disconnections, check tool and service availability before assigning new work. No automatic retry.");
+  } else {
+    title = employee.execution_verified ? t("已有成功执行记录", "Successful execution recorded") : t("等待首次执行验证", "First execution not verified");
+    explanation = t("检查连接只确认入口和原生登录，不会调用模型或重跑任务。执行验证表示历史成功记录，不保证下一次请求成功。", "Check connection checks installation and native sign-in only; it does not call a model or rerun tasks. Verification records past success, not a guarantee for the next request.");
+    next = t("加入项目后，派一个小任务；完成并返回结果后再人工验收。", "Join a project and assign a small task, then review the returned result.");
+  }
+  return el("section", { class: "connection-guide" }, el("h3", {}, title), el("p", {}, explanation), el("p", {}, next), code ? el("p", { class: "field-hint" }, t("诊断代码", "Diagnostic code"), " · ", el("code", {}, code)) : null);
+}
+function openConnectionGuide(employee) {
+  const body = openForm(t(`${employee.name} · 接入指引`, `${employee.name} · Connection guide`), t("分清安装、登录与受管执行，按实际结果处理。", "Installation, sign-in and managed execution are separate checks."));
+  if (!body) return;
+  const latest = (state.data.tasks || []).filter(task => task.assignee_id === employee.id).sort((a,b) => String(b.created_at).localeCompare(String(a.created_at)))[0];
+  body.append(executionGuide(employee, latest?.error), el("p", {}, t("连接入口", "Entry point"), " · ", el("code", {}, employee.entrypoint || t("旧身份入口尚未绑定", "Legacy identity has no bound entry point"))));
+  if (employee.execution_supported && ["claude", "codex"].includes(employee.kind) && employee.auth_status !== "authenticated") {
+    const command = employee.kind === "claude" ? "claude auth login" : "codex login";
+    body.append(el("p", {}, t("在本机终端执行", "Run in a terminal on this device"), " · ", el("code", {}, command)));
+  }
+  const done = button(t("知道了", "Done"), null); done.addEventListener("click", () => formDialog.close()); body.append(done);
+}
+
 function employeeRow(employee, { membership = false } = {}) {
   const lifecycle = employee.lifecycle || "active";
   const controls = el("div", { class: "employee-actions" });
@@ -367,7 +411,9 @@ function employeeRow(employee, { membership = false } = {}) {
     try { await api.checkEmployee(employee.id); await refresh(); showToast(t("连接与登录状态已重新检查；执行验证保持原记录。", "Connection and sign-in were rechecked; execution verification keeps its existing record.")); }
     catch (error) { showToast(errorText(error), true); check.disabled = false; }
   });
-  controls.append(check);
+  const guide = button(t("接入指引", "Connection guide"), null, { class: "small" });
+  guide.addEventListener("click", () => openConnectionGuide(employee));
+  controls.append(check, guide);
   if (lifecycle !== "retired") {
     const change = button(lifecycle === "paused" ? t("恢复接任务", "Resume assignments") : t("暂停接任务", "Pause assignments"), null, { class: "small" });
     change.addEventListener("click", () => openLifecycleForm(employee, lifecycle === "paused" ? "active" : "paused"));
@@ -1234,6 +1280,7 @@ function renderTaskDetail({ task, events, permissions }) {
   if (task.result) content.append(el("section", { class: "detail-section" }, el("h3", {}, t("员工交付", "Employee output")), el("div", { class: "result-block" }, el("p", { class: "prose" }, typeof task.result === "string" ? task.result : JSON.stringify(task.result, null, 2)))));
   if (task.error) content.append(el("section", { class: "detail-section" }, el("h3", {}, t("需要处理的问题", "Issue to resolve")), el("p", { class: "prose" }, typeof task.error === "string" ? task.error : task.error.message || JSON.stringify(task.error))));
   if (task.error?.code === "MODEL_UNSUPPORTED") content.append(el("p", { class: "field-hint" }, t("这个模型不适用于员工当前的登录方式。新建任务时，从模型列表选择服务实际提供的模型；原任务保留为失败，不会自动换模型重跑。", "This model is not supported by the employee's current sign-in method. Create a new task and select a model advertised by the service. The failed task is retained and is not automatically retried with another model.")));
+  if (task.error) content.append(executionGuide(state.data.employees.find(item => item.id === task.assignee_id), task.error));
   if (task.status === "review") {
     const note = el("textarea", { id: "review-note", placeholder: t("可选：写下验收意见；退回时说明还需要完成什么。", "Optional review note. When returning work, explain what still needs to be done."), "aria-label": t("验收意见", "Review note") });
     const accept = button(t("通过验收", "Accept work"), null, { class: "primary", icon: "check" });

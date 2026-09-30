@@ -390,6 +390,46 @@ def stop_process(proc: subprocess.Popen) -> None:
         proc.wait(timeout=3)
 
 
+# The ACP harness intentionally excludes user settings (hooks, permission
+# overrides, plugins). Reuse only the native Claude model-routing/auth env in
+# the owned child process; never persist or return credential values.
+CLAUDE_ROUTING_ENV = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "CLAUDE_CODE_SUBAGENT_MODEL",
+        "API_TIMEOUT_MS",
+    }
+)
+
+
+def native_execution_environment(kind: str, environment: dict[str, str]) -> dict[str, str]:
+    env = environment.copy()
+    if kind != "claude":
+        return env
+    directory = Path(env.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude"))
+    filename = directory / "settings.json"
+    try:
+        if filename.stat().st_size > 1024 * 1024:
+            return env
+        config = json.loads(filename.read_text())
+        routing = config.get("env", {}) if isinstance(config, dict) else {}
+        if not isinstance(routing, dict):
+            return env
+        for name in CLAUDE_ROUTING_ENV:
+            value = routing.get(name)
+            if isinstance(value, str) and len(value) <= 65536 and "\0" not in value:
+                env.setdefault(name, value)
+    except (OSError, ValueError):
+        pass  # Existing authentication remains authoritative; no invented login.
+    return env
+
+
 class BridgeExecution:
     """One owned bridge process. The terminal record, not exit=0, decides success."""
 
@@ -433,7 +473,7 @@ class BridgeExecution:
             ]
         else:
             command = self.command
-        env = os.environ.copy()
+        env = native_execution_environment(task["kind"], dict(os.environ))
         proc = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,

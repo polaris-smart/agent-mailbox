@@ -503,3 +503,15 @@ def test_quit_main_stops_owned_execution_and_preserves_external_state(tmp_path):
         if process.poll() is None:
             process.terminate()
             process.wait(timeout=8)
+
+
+def test_distribution_notices_are_available_without_owner_credentials(bench):
+    server, _, _ = bench
+    for name, expected in (
+        ("LICENSE.txt", "Version 2.0, January 2004"),
+        ("NOTICE.txt", "NoFox and contributors"),
+        ("MIT-Legacy.txt", "polaris-smart contributors"),
+    ):
+        with urllib.request.urlopen(server.endpoint + "/workbench-assets/" + name) as response:
+            assert response.headers["Content-Type"] == "text/plain; charset=utf-8"
+            assert expected in response.read().decode()

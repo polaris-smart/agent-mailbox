@@ -2,7 +2,7 @@
 
 在本机围绕项目管理 AI 员工：派工、共享资料、查看进度、审批操作、验收结果。
 
-**v0.8 从实现开始完全独立**：继续叫 agent-mailbox、继续版本线，但使用自己的入口、数据库、运行组件和项目工具。v0.7 的邮箱命令和后台服务不再随包发行。当前为 **0.8.0a4 本地 alpha**，尚未发布到 GitHub Release 或 PyPI。
+**v0.8 从实现开始完全独立**：继续叫 agent-mailbox、继续版本线，但使用自己的入口、数据库、运行组件和项目工具。v0.7 的邮箱命令和后台服务不再随包发行。当前为 **0.8.0a5 本地 alpha**，尚未发布到 GitHub Release 或 PyPI。
 
 [English](README.md) · [PRD 正典](docs/PRD.md) · [上手指南](docs/GITHUB-QUICKSTART.md) · [可选设备](docs/NODES.md) · [维护入口](docs/HANDOVER-CODEX.md)
 
@@ -36,4 +36,4 @@ agent-mailbox --home ~/.agent-mailbox-v08
 
 应用文件与数据目录分开。同一数据目录的兼容 v0.8 更新保留身份和项目；停机后备份数据。自动更新/回滚、拖拽 workflow、独立编辑工作区、任意 app 自动唤醒、完整成本治理和 AI ERP 尚未实现。Windows/Linux 实机发行验收也仍待完成。
 
-MIT 开源。GitHub 用来发现、讨论和下载；macOS 的签名、公证是发行身份验证，当前可选 app 尚无 Developer ID 签名。
+Apache-2.0 开源，由 NoFox 与贡献者维护；原有 MIT 声明保留在 LICENSES/MIT-Legacy.txt。GitHub 用来发现、讨论和下载；macOS 的签名、公证是发行身份验证，当前可选 app 尚无 Developer ID 签名。

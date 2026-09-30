@@ -400,3 +400,43 @@ sys.stdin.readline()
     )
     assert result["status"] == "failed" and result["error"]["code"] == "RUNTIME_PROTOCOL_ERROR"
     assert "another employee" in result["error"]["message"]
+
+
+def test_native_claude_routing_reused_without_hooks_or_permission_overrides(tmp_path):
+    token = "private-fixture-token"
+    write_json(
+        tmp_path / "settings.json",
+        {
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": token,
+                "ANTHROPIC_BASE_URL": "https://fixture.invalid",
+                "PATH": "unsafe-path",
+                "CLAUDE_CODE_DISABLE_PERMISSION_CHECKS": "1",
+            },
+            "hooks": {"SessionStart": ["never-run-this"]},
+            "permissions": {"defaultMode": "bypassPermissions"},
+        },
+    )
+    original = {"CLAUDE_CONFIG_DIR": str(tmp_path), "PATH": "original-path"}
+    linked = runtime.native_execution_environment("claude", original)
+    assert linked["ANTHROPIC_AUTH_TOKEN"] == token
+    assert linked["ANTHROPIC_BASE_URL"] == "https://fixture.invalid"
+    assert linked["PATH"] == "original-path"
+    assert "CLAUDE_CODE_DISABLE_PERMISSION_CHECKS" not in linked
+    assert "ANTHROPIC_AUTH_TOKEN" not in original
+    assert runtime.native_execution_environment("codex", original) == original
+    assert (
+        runtime.native_execution_environment(
+            "claude", {**original, "ANTHROPIC_AUTH_TOKEN": "explicit"}
+        )["ANTHROPIC_AUTH_TOKEN"]
+        == "explicit"
+    )
+
+
+@pytest.mark.parametrize(
+    "content", ["{bad-json", "[]", '{"env":[]}', '{"env":{"ANTHROPIC_API_KEY":123}}']
+)
+def test_native_routing_invalid_config_does_not_invent_auth(tmp_path, content):
+    (tmp_path / "settings.json").write_text(content)
+    env = {"CLAUDE_CONFIG_DIR": str(tmp_path)}
+    assert runtime.native_execution_environment("claude", env) == env

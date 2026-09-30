@@ -318,6 +318,9 @@ class Handler(BaseHTTPRequestHandler):
             )
             allowed = {
                 "index.html": "text/html; charset=utf-8",
+                "LICENSE.txt": "text/plain; charset=utf-8",
+                "NOTICE.txt": "text/plain; charset=utf-8",
+                "MIT-Legacy.txt": "text/plain; charset=utf-8",
                 "workbench.js": "text/javascript; charset=utf-8",
                 "api.js": "text/javascript; charset=utf-8",
                 "workbench.css": "text/css; charset=utf-8",
