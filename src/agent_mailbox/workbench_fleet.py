@@ -332,7 +332,10 @@ class FleetCoordinator:
                 raise WorkbenchError("invite_used", "邀请码已使用，请生成新的邀请码。")
             if invitation["expires_at"] <= time.time():
                 raise WorkbenchError("invite_expired", "邀请码已过期，请生成新的邀请码。")
-            if device_id == self.store.local_node()["id"] or device_id in self.state["devices"]:
+            existing = self.state["devices"].get(device_id)
+            if device_id == self.store.local_node()["id"] or (
+                existing is not None and not existing.get("revoked", False)
+            ):
                 raise WorkbenchError("permission_denied", "该设备已有身份，请使用现有凭据。")
             token = secrets.token_urlsafe(32)
             self.store.upsert_device(
@@ -594,6 +597,14 @@ class FleetCoordinator:
             record = self.state["devices"][device_id]
             self.store.upsert_device(device_id, record["name"], "offline")
         self.notify()
+
+    def public_devices(self):
+        """Owner UI metadata; no token hashes, secrets or invitation records."""
+        with self.lock:
+            return [
+                {"id": device_id, "revoked": bool(record.get("revoked", False))}
+                for device_id, record in self.state["devices"].items()
+            ]
 
 
 class FleetClient:

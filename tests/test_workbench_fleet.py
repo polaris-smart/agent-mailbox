@@ -490,3 +490,44 @@ def test_active_reconciliation_lists_only_authorized_device_runs(fleet, tmp_path
     with pytest.raises(WorkbenchError) as error:
         first.active_runs()
     assert error.value.code == "permission_denied"
+
+
+def test_revoked_device_can_explicitly_repair_with_rotated_token_and_new_scope(fleet, tmp_path):
+    _, project, other, coordinator = fleet
+    old = paired(fleet, tmp_path)
+    device_id = old.credentials["device_id"]
+    old_token = old.credentials["token"]
+    coordinator.revoke_device(device_id)
+    assert coordinator.public_devices() == [{"id": device_id, "revoked": True}]
+    with pytest.raises(WorkbenchError):
+        old.context(project["id"])
+    # The human explicitly leaves before applying a fresh invite. Constructor
+    # reuse must never silently overwrite an existing device credential.
+    invite = coordinator.issue_invite([other["id"]])
+    old.credentials_path.unlink()
+    repaired = FleetClient(old.store.root, invite)
+    assert repaired.credentials["device_id"] == device_id
+    assert repaired.credentials["token"] != old_token
+    assert repaired.context(other["id"])["project"]["id"] == other["id"]
+    with pytest.raises(WorkbenchError):
+        repaired.context(project["id"])
+    with pytest.raises(WorkbenchError):
+        old.context(other["id"])
+    assert coordinator.public_devices() == [{"id": device_id, "revoked": False}]
+    metadata = json.dumps(coordinator.public_devices())
+    assert old_token not in metadata and repaired.credentials["token"] not in metadata
+    assert "token_hash" not in metadata and "secret_hash" not in metadata
+    unused = coordinator.issue_invite([other["id"]])
+    with pytest.raises(WorkbenchError):
+        repaired._request(
+            "POST",
+            "/v1/pair",
+            {
+                "invite_id": unused["invite_id"],
+                "invite_secret": unused["invite_secret"],
+                "device_id": device_id,
+                "name": "Do not overwrite active identity",
+            },
+            authenticated=False,
+        )
+    assert coordinator.state["invites"][unused["invite_id"]]["used"] is False
