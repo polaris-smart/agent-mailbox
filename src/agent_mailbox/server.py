@@ -679,10 +679,12 @@ def main() -> None:
     argv = sys.argv[1:]
     if argv and argv[0] == "workbench":
         from .workbench import main as workbench_main
+
         workbench_main(argv[1:])
         return
     if argv == ["--workspace-mcp"]:
         from .workspace_mcp import main as workspace_main
+
         workspace_main()
         return
     # `agent-mailbox wake <sub>` dispatches to the wake-daemon CLI; everything

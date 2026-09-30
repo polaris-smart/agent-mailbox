@@ -1,4 +1,4 @@
-> **开发预览：** 本分支新增 **v0.8.0a1 项目工作台**，尚未公开发版。使用方式、实测与待解决项见[工作台说明](docs/WORKBENCH.md)。以下保留已有信箱文档。
+> **开发预览：** 本分支新增 **v0.8.0a2 项目工作台**，尚未公开发版。GitHub 仍是源码与版本入口，本地浏览器工作台可独立于 `.app` 使用。先看 [GitHub 上手路径](docs/GITHUB-QUICKSTART.md)、[工作台说明](docs/WORKBENCH.md)与[验证记录](docs/evidence/v080/verification.md)。以下保留旧版信箱界面的文档。
 
 <!-- mcp-name: io.github.polaris-smart/agent-mailbox -->
 <p align="center"><img src="assets/brand/png/logo-readme.png" width="360" alt="agent-mailbox"></p>

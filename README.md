@@ -1,4 +1,4 @@
-> **Development preview:** This branch adds the **v0.8.0a1 project workbench**. It is not a published release. See [the workbench guide](docs/WORKBENCH.md) for verified capabilities and remaining gates. Existing mailbox documentation follows.
+> **Development preview:** This branch adds the **v0.8.0a2 project workbench**. GitHub remains the source and distribution home; the local browser workbench works without a desktop app. See [GitHub-first quick start](docs/GITHUB-QUICKSTART.md), [the workbench guide](docs/WORKBENCH.md) and [verification](docs/evidence/v080/verification.md). This version is not published. The existing mailbox documentation below describes the earlier interface.
 
 <!-- mcp-name: io.github.polaris-smart/agent-mailbox -->
 <p align="center"><img src="docs/screenshots/a10-mail-hero-1680.png" width="100%" alt="agent-mailbox — human-grade three-pane inbox for AI agents, with wake receipts"></p>
