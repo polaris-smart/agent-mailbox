@@ -17,6 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from . import __version__
 from .workbench_engine import WorkbenchEngine
 from .workbench_lock import WorkbenchLock
 from .workbench_runtime import available_models, discover_employees, runtime_status
@@ -24,7 +25,7 @@ from .workbench_store import WorkbenchError, WorkbenchStore
 
 ASSETS = Path(__file__).parent / "workbench_assets"
 PREFIX = "/api/workbench"
-VERSION = "0.8.0a1"
+VERSION = __version__
 
 
 def pick_project():

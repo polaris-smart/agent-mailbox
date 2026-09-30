@@ -96,6 +96,7 @@ def build(runtime_dir: Path, node: Path, output: Path, name: str) -> dict:
             name=name,
             console=False,
             onefile=False,
+            shorthand_manifest=None,
             bundle_identifier="com.polaris-smart.agent-mailbox",
             specpath=str(output),
             pathex=[str(REPOSITORY / "src")],
