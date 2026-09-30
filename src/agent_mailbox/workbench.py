@@ -340,6 +340,12 @@ class Handler(BaseHTTPRequestHandler):
         result = None
         if method == "GET" and route == ["changes"]:
             return self.changes()
+        if method == "POST" and route == ["application", "quit"]:
+            # Respond before shutting down this instance; main's finally owns
+            # worker cleanup. Browser tabs and unrelated agents remain external.
+            self.send_value(200, {"stopping": True})
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
         if method == "GET" and route == ["bootstrap"]:
             runtime = runtime_status(store.root)
             runtime["install"] = self.server.install_status

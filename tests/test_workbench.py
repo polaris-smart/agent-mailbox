@@ -292,3 +292,44 @@ def test_owner_lifecycle_api_revokes_access_and_stops_owned_child(bench):
     assert code == 200
     assert any(event["type"] == "employee_lifecycle" for event in ledger["events"])
     assert creds["token"] not in json.dumps(ledger)
+
+
+def test_application_quit_is_owner_only_and_main_cleans_up(tmp_path):
+    import subprocess
+
+    root = tmp_path / "app-home"
+    process = subprocess.Popen(
+        [sys.executable, "-m", "agent_mailbox.workbench", "--home", str(root), "--no-browser"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        url = process.stdout.readline().strip()
+        endpoint, token = url.split("/#token=")
+        request_url = endpoint + "/api/workbench/application/quit"
+        denied = urllib.request.Request(
+            request_url, data=b"{}", headers={"Authorization": "Bearer wrong"}
+        )
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(denied, timeout=3)
+        assert error.value.code == 401
+        allowed = urllib.request.Request(
+            request_url, data=b"{}", headers={"Authorization": "Bearer " + token}
+        )
+        with urllib.request.urlopen(allowed, timeout=3) as response:
+            assert json.load(response) == {"stopping": True}
+        assert process.wait(timeout=5) == 0
+        assert not (root / "workbench/instance.json").exists()
+        # The lock is released and external state survives a replacement launch.
+        from agent_mailbox.workbench_lock import WorkbenchLock
+
+        lock = WorkbenchLock(root)
+        try:
+            assert (root / "workbench/state.db").is_file()
+        finally:
+            lock.close()
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)
