@@ -293,9 +293,11 @@ def _entry_plist_body(agent_id: str, entry_id: str, wrapper: str, root: Path) ->
         f"    <string>{_html.escape(wrapper)}</string>\n"
         "  </array>\n"
         "  <key>EnvironmentVariables</key>\n  <dict>\n"
-        f"    <string>HOME</string>\n    <string>{_html.escape(str(Path.home()))}</string>\n"
-        f"    <string>AGENT_MAIL_HOME</string>\n    <string>{_html.escape(str(Path(root)))}</string>\n"
-        f"    <string>AGENT_MAIL_ID</string>\n    <string>{_html.escape(agent_id)}</string>\n"
+        "    <key>HOME</key>\n    <string>" + _html.escape(str(Path.home())) + "</string>\n"
+        "    <key>AGENT_MAIL_HOME</key>\n    <string>"
+        + _html.escape(str(Path(root)))
+        + "</string>\n"
+        "    <key>AGENT_MAIL_ID</key>\n    <string>" + _html.escape(agent_id) + "</string>\n"
         "  </dict>\n"
         "  <key>RunAtLoad</key>\n  <true/>\n"
         "</dict>\n</plist>\n"
@@ -353,6 +355,26 @@ DEFAULT_PROMPT_TEMPLATE = (
     "完成后给每封的发件人写回执（agent_mailbox.store 的 MailStore.send），"
     "并把信的状态更新为 done（store.set_status）。最后一行输出：处理 N 封。"
 )
+
+_ENTRY_ENV_READER_BODY = """#!/bin/bash
+# agent-mailbox 入口档 env 读取器（G-6 运行时刷新）——安装生成物，非手写脚本。
+# 用法: wake-cmd-entry-env.sh <mail_root> <agent> <entry>
+# 输出: export 行（该入口的 config_env）；任何异常静默 exit 0（回退烘焙值）。
+set -u
+ROOT="${1:?}"; AGENT="${2:?}"; ENTRY="${3:?}"
+[ -f "$ROOT/wake.json" ] || exit 0
+python3 - "$ROOT" "$AGENT" "$ENTRY" <<'AGENT_MAIL_ENV_PY'
+import json, shlex, sys
+try:
+    d = json.load(open(sys.argv[1] + "/wake.json"))["agents"][sys.argv[2]]
+    env = d["entries"][sys.argv[3]].get("config_env", {})
+    for k, v in sorted(env.items()):
+        print("export %s=%s" % (k, shlex.quote(str(v))))
+except Exception:
+    pass
+AGENT_MAIL_ENV_PY
+"""
+
 
 ENTRY_KINDS = ("app", "cli")
 ENTRY_WAKE_MODES = ("unattended", "manual_confirm")
@@ -659,11 +681,24 @@ def entry_wrapper_body(
         "# 非交互 shell 一定丢 app 导出的 env，绝不指望环境继承）。",
         "set -u",
         f"export AGENT_MAIL_HOME={_sh_quote(str(Path(root)))}",
+        f"export AGENT_MAIL_ID={_sh_quote(agent_id)}",
     ]
     if profile.config_env:
         lines.append("# --- 入口档 config_env（配置家显式入单元, G-6/G-7）---")
         for k in sorted(profile.config_env):
             lines.append(f"export {_sh_key(k)}={_sh_quote(profile.config_env[k])}")
+    lines.append(
+        "# --- 入口档 config_env 运行时刷新（配置页/手改 wake.json 即生效, G-6）---\n"
+        "# wake-cmd-entry-env.sh = 安装生成的读取器；读不到静默回退上面的烘焙值。"
+    )
+    lines.append(
+        '_ovr="$(bash "$AGENT_MAIL_HOME/wake-cmd-entry-env.sh" "$AGENT_MAIL_HOME" '
+        + _sh_quote(agent_id)
+        + " "
+        + _sh_quote(entry_id)
+        + ' 2>/dev/null)" '
+        '&& [ -n "$_ovr" ] && eval "$_ovr"'
+    )
     if member_key in ZCODE_FAMILY:
         lines.append(provider_injection_bash(""))
     if profile.prompt_template:
@@ -720,6 +755,7 @@ def install_entry_unit(
         exe = app_executable(binary)
         if exe:
             binary = exe
+            profile.binary = binary  # 解析结果回写：wrapper 用的是 profile.binary
         else:
             notes.append(
                 f"app 入口 {entry_id}: bundle 可执行文件解析不到（{binary}）→ "
@@ -736,8 +772,14 @@ def install_entry_unit(
         return out
     wrapper = entry_wrapper_path(root, agent_id, entry_id)
     _write_executable(wrapper, entry_wrapper_body(agent_id, entry_id, root, profile, member=member))
+    # 入口档 env 读取器（G-6 运行时刷新）：配置页/手改 wake.json 即生效，
+    # 读不到回退包装脚本里的烘焙值——两份都是生成物，非手写。
+    reader = Path(root) / "wake-cmd-entry-env.sh"
+    if not reader.exists():
+        _write_executable(reader, _ENTRY_ENV_READER_BODY)
     out["wrapper"] = str(wrapper)
     out["command"] = ["/bin/bash", str(wrapper)]
+    out["wake_mode"] = profile.wake_mode
     return out
 
 

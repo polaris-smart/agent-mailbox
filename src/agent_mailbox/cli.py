@@ -224,7 +224,10 @@ def _setup_install_one(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     adapter = str(getattr(args, "adapter", "") or "")
     command_raw = str(getattr(args, "command", "") or "")
     webhook_url = str(getattr(args, "webhook_url", "") or "")
-    if not adapter:
+    entry_id = str(getattr(args, "entry", "") or "")
+    if not adapter and not entry_id:
+        # G-6: --entry 给了就进入口档流程（installer 探测补齐二进制/配置家/模型），
+        # 不再要求显式通道参数——按名字+入口重装 = 配置页负例复绿的 CLI 面。
         if webhook_url:
             adapter = "generic-webhook"
         else:

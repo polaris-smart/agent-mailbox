@@ -34,9 +34,9 @@ if [ ! -f "$SRC/agent_mailbox/cli.py" ]; then
 fi
 
 # ------------------------------------------------ 1. 自造干净环境
-SBX="$(mktemp -d "${TMPDIR:-/tmp}/agent-mailbox-accept.XXXXXX")"
+SBX="$(mktemp -d "${TMPDIR:-/tmp}/agent-mailbox-accept.XXXXXX")"; SBX="$(cd "$SBX" && pwd -P)"  # 物理规格化（TMPDIR 尾斜杠会产生内部双斜杠→路径比对假红）
 trap 'rm -rf "$SBX"' EXIT
-HOME_SBX="$(cd "$SBX/home" 2>/dev/null && pwd || echo "$SBX/home")"  # 规格化（双斜杠会让路径比对假红）
+HOME_SBX="${SBX%/}/home"  # 规格化（剥 SBX 尾斜杠；双斜杠会让路径比对假红）
 MAIL_ROOT="$HOME_SBX/.agent-mail"
 BIN_SBX="$HOME_SBX/bin"
 LA_DIR="$HOME_SBX/Library/LaunchAgents"
@@ -50,7 +50,7 @@ CLEAN_ENV=(env -i HOME="$HOME_SBX" PATH="$BIN_SBX:/usr/bin:/bin"
 
 mb() { "${CLEAN_ENV[@]}" "$PY" -m agent_mailbox.cli "$@"; }      # 产品 CLI（用户位置）
 mbwake() { "${CLEAN_ENV[@]}" "$PY" -m agent_mailbox.wake "$@"; } # 产品唤醒器
-mbpy() { "${CLEAN_ENV[@]}" "$PY" -c "$1"; }                      # store 断言面
+mbpy() { "${CLEAN_ENV[@]}" "$PY" -c "$1" "${@:2}"; }                              # 透传断言参数                      # store 断言面
 
 # ------------------------------------------------ 2. 断言器
 FAILS=0
