@@ -131,15 +131,24 @@ class WorkbenchHTTP(ThreadingHTTPServer):
             raise WorkbenchError(
                 "INVALID_ADDRESS", "Enter this device's local network IP address."
             ) from exc
-        if not (ip.is_private or ip.is_loopback) or ip.version != 4:
-            raise WorkbenchError("INVALID_ADDRESS", "This preview supports private IPv4 networks.")
+        private_networks = (
+            ipaddress.ip_network("10.0.0.0/8"),
+            ipaddress.ip_network("172.16.0.0/12"),
+            ipaddress.ip_network("192.168.0.0/16"),
+            ipaddress.ip_network("100.64.0.0/10"),
+        )
+        if ip.version != 4 or not (
+            ip.is_loopback or any(ip in network for network in private_networks)
+        ):
+            raise WorkbenchError(
+                "INVALID_ADDRESS",
+                "Choose this device's LAN, private overlay or loopback IPv4 address.",
+            )
         if self.fleet:
             raise WorkbenchError("ALREADY_STARTED", "The device listener is already running.")
         fleet = FleetCoordinator(self.store)
         fleet.on_change = self.engine.notify
-        result = fleet.start(
-            host="127.0.0.1" if ip.is_loopback else "0.0.0.0", port=port, advertised_host=address
-        )
+        result = fleet.start(host=str(ip), port=port, advertised_host=str(ip))
         self.fleet = fleet
         config = {"enabled": True, "address": address, "port": fleet.server.server_port}
         self.listener_path.write_text(json.dumps(config))
@@ -271,20 +280,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def body(self):
         if self.headers.get("Transfer-Encoding"):
+            self.close_connection = True
             raise WorkbenchError("INVALID_REQUEST", "Chunked requests are not supported.")
         try:
             size = int(self.headers.get("Content-Length", "0"))
             if size < 0 or size > 1024 * 1024:
+                self.close_connection = True
                 raise WorkbenchError("BODY_TOO_LARGE", "Requests must be smaller than 1 MiB.")
             value = json.loads(self.rfile.read(size) or b"{}")
             if not isinstance(value, dict):
                 raise TypeError()
             return value
         except (ValueError, TypeError, UnicodeDecodeError) as exc:
+            self.close_connection = True
             raise WorkbenchError("INVALID_REQUEST", "Expected a JSON object.") from exc
 
     def handle_request(self):
         if not self.safe_origin():
+            self.close_connection = True
             self.send_value(
                 403,
                 {
@@ -369,7 +382,7 @@ class Handler(BaseHTTPRequestHandler):
             result = pick_project()
         elif method == "GET" and route == ["models"]:
             query = parse_qs(url.query)
-            result = {"models": available_models(query.get("kind", [""])[0])}
+            result = {"models": available_models(query.get("kind", [""])[0], store.root)}
         elif method == "GET" and route == ["discover"]:
             result = {"employees": discover_employees()}
         elif method == "POST" and route == ["employees"]:
@@ -549,7 +562,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Open the agent-mailbox project workbench.")
+    parser = argparse.ArgumentParser(
+        description="Open the independent agent-mailbox project workbench.",
+        epilog="Optional commands: agent-mailbox prepare --help; agent-mailbox node --help.",
+    )
     parser.add_argument("--home", type=Path, default=Path.home() / ".agent-mailbox")
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--no-browser", action="store_true")

@@ -6,6 +6,7 @@ are short lived, so workers, browser requests and MCP sessions can share it.
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import os
@@ -30,7 +31,7 @@ class WorkbenchError(Exception):
 ACTIVE = frozenset({"starting", "running", "waiting_approval"})
 FINISH = frozenset({"review", "failed", "cancelled", "interrupted"})
 MAX_TEXT = 1024 * 1024
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 PERMISSION_TIMEOUT = 120
 LIFECYCLES = frozenset({"active", "paused", "retired"})
 EMPLOYEE_STATUSES = frozenset({"installed", "auth_required", "available", "unavailable", "unknown"})
@@ -137,6 +138,10 @@ CREATE TABLE IF NOT EXISTS governance_events (
     payload TEXT, created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS governance_project ON governance_events(project_id,created_at);
+CREATE TABLE IF NOT EXISTS remote_receipts (
+    task_id TEXT NOT NULL REFERENCES tasks(id), run_id TEXT NOT NULL,
+    digest TEXT NOT NULL, PRIMARY KEY(task_id, run_id)
+);
 """
 
 
@@ -706,29 +711,68 @@ class WorkbenchStore:
             (_now(), task_id),
         )
 
+    def _finish_task(self, db, task_id, status, result, error):
+        task = self._required(db, "tasks", task_id)
+        if task["status"] not in ACTIVE:
+            raise WorkbenchError("invalid_state", "这次执行已结束或尚未开始。")
+        if task["cancel_requested"] and status in {"review", "failed"}:
+            status = "cancelled"
+        db.execute(
+            "UPDATE tasks SET status=?,result=?,error=?,updated_at=? WHERE id=?",
+            (status, result, None if error is None else _json(error), _now(), task_id),
+        )
+        self._expire_permissions(db, task_id)
+        self._event(
+            db,
+            task_id,
+            status,
+            "执行已结束，等待验收。" if status == "review" else "执行已结束。",
+            {"error": error},
+        )
+        return self._entity(self._required(db, "tasks", task_id))
+
     def finish_task(self, task_id: str, status: str, result: str = "", error: Any = None) -> dict:
         _choice(status, FINISH, "请选择待验收、失败、取消或中断状态。")
         result = _text(result, "任务结果", empty=True)
-        serialized_error = None if error is None else _json(error)
+        with self._transaction() as db:
+            return self._finish_task(db, task_id, status, result, error)
+
+    def finish_remote_task(self, task_id, run_id, status, result="", error=None):
+        """Persist the final receipt and its replay proof in the same transaction.
+
+        Only an identical receipt for the same execution can be acknowledged
+        again. A replay never changes a human's acceptance or cancellation.
+        """
+        _choice(status, FINISH, "请选择待验收、失败、取消或中断状态。")
+        result = _text(result, "任务结果", empty=True)
+        digest = hashlib.sha256(
+            json.dumps(
+                json.loads(_json({"status": status, "result": result, "error": error})),
+                sort_keys=True,
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode()
+        ).hexdigest()
         with self._transaction() as db:
             task = self._required(db, "tasks", task_id)
-            if task["status"] not in ACTIVE:
-                raise WorkbenchError("invalid_state", "这次执行已结束或尚未开始。")
-            if task["cancel_requested"] and status in {"review", "failed"}:
-                status = "cancelled"
+            if task["run_id"] != run_id:
+                raise WorkbenchError("permission_denied", "这次执行已过期。")
+            previous = db.execute(
+                "SELECT digest FROM remote_receipts WHERE task_id=? AND run_id=?",
+                (task_id, run_id),
+            ).fetchone()
+            if previous:
+                if not hmac.compare_digest(previous["digest"], digest):
+                    raise WorkbenchError("invalid_state", "这次执行已收到不同的回执。")
+                return self._entity(task)
+            if status == "review" and task["status"] != "running":
+                raise WorkbenchError("invalid_state", "尚未确认员工开始执行，不能提交完成回执。")
+            result_task = self._finish_task(db, task_id, status, result, error)
             db.execute(
-                "UPDATE tasks SET status=?,result=?,error=?,updated_at=? WHERE id=?",
-                (status, result, serialized_error, _now(), task_id),
+                "INSERT INTO remote_receipts(task_id,run_id,digest) VALUES(?,?,?)",
+                (task_id, run_id, digest),
             )
-            self._expire_permissions(db, task_id)
-            self._event(
-                db,
-                task_id,
-                status,
-                "执行已结束，等待验收。" if status == "review" else "执行已结束。",
-                {"error": error},
-            )
-            return self._entity(self._required(db, "tasks", task_id))
+            return result_task
 
     def review_task(self, task_id: str, decision: str, note: str = "") -> dict:
         _choice(decision, {"accept", "reject"}, "请选择通过或退回验收。")

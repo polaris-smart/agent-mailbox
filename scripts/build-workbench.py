@@ -20,13 +20,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-PINNED = {
-    "acpx": "0.19.3",
-    "@openai/codex": "0.158.0",
-    "@agentclientprotocol/codex-acp": "2.0.0",
-    "@agentclientprotocol/claude-agent-acp": "0.84.0",
-}
-
 
 def validate_runtime(runtime_dir: Path, node: Path) -> str:
     version = subprocess.run([str(node), "--version"], capture_output=True, text=True, check=True)
@@ -34,7 +27,9 @@ def validate_runtime(runtime_dir: Path, node: Path) -> str:
     if tuple(int(part) for part in node_version.removeprefix("v").split(".")) < (22, 13, 0):
         raise ValueError("Node.js >=22.13 is required")
     subprocess.run([str(node), "--check", str(SOURCE / "runtime_bridge/bridge.mjs")], check=True)
-    for name, expected in PINNED.items():
+    for name, expected in json.loads((SOURCE / "runtime_bridge/package.json").read_text())[
+        "dependencies"
+    ].items():
         filename = runtime_dir / "node_modules" / name / "package.json"
         if not filename.is_file() or json.loads(filename.read_text())["version"] != expected:
             raise ValueError(f"Install pinned {name}@{expected} before building")
@@ -146,7 +141,9 @@ def build(runtime_dir: Path, node: Path, output: Path, name: str) -> dict:
         "bundle_version": short_version,
         "pyinstaller_version": importlib.metadata.version("pyinstaller"),
         "node_version": node_version,
-        "runtime_dependencies": PINNED,
+        "runtime_dependencies": json.loads((SOURCE / "runtime_bridge/package.json").read_text())[
+            "dependencies"
+        ],
         "runtime_lock_sha256": hashlib.sha256(
             (runtime_dir / "package-lock.json").read_bytes()
         ).hexdigest(),

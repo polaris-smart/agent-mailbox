@@ -19,6 +19,7 @@ const state = {
   changesPending: false, changeTimer: null, streamError: false,
   governance: null, governanceError: null, governanceLoading: false, governanceQueued: false,
   applicationStopping: false, applicationStopped: false,
+  taskFormUpdate: null,
 };
 try { state.projectId = sessionStorage.getItem("agent-mailbox.workbench.project") || ""; } catch { /* optional */ }
 
@@ -231,8 +232,10 @@ function renderSidebar() {
 function heading(title, description, actions = []) {
   return el("div", { class: "page-heading" }, el("div", {}, el("h1", {}, title), description ? el("p", { class: "subheading" }, description) : null), actions.length ? el("div", { class: "page-heading-actions" }, actions) : null);
 }
-function runtimeNotice() {
+function runtimeNotice({ force = false } = {}) {
   const runtime = state.data?.runtime;
+  const people = assignableEmployees();
+  if (!force && people.length && people.every((employee) => employee.node_id && employee.node_id !== state.data.node?.id)) return null;
   if (!runtime || (runtime.installed && runtime.node_available)) return null;
   const installation = runtime.install;
   const installing = state.runtimeInstalling || installation?.status === "installing";
@@ -282,16 +285,16 @@ function renderOverview() {
   if (!project()) return renderWelcome();
   const current = project();
   const tasks = projectTasks().slice().sort((a, b) => String(b.updated_at || b.created_at).localeCompare(String(a.updated_at || a.created_at)));
-  const people = projectEmployees();
+  const people = assignableEmployees();
   const finished = tasks.filter((task) => task.status === "done");
   const running = tasks.filter((task) => ["queued", "starting", "running"].includes(task.status));
   const reviewing = tasks.filter((task) => task.status === "review");
   const blocked = tasks.filter((task) => attentionStatuses.has(task.status));
   const firstRun = tasks.length === 0;
-  return [heading(current.name, t("把目标、进度和成果放在同一个项目里。", "Keep goals, progress, and outcomes in one project."), [button(t("新任务", "New task"), people.length ? "new-task" : "discover", { class: "primary", icon: "plus", disabled: !state.data })]), runtimeNotice(),
+  return [heading(current.name, t("把目标、进度和成果放在同一个项目里。", "Keep goals, progress, and outcomes in one project."), [button(t("新任务", "New task"), "new-task", { class: "primary", icon: "plus", disabled: !state.data })]), runtimeNotice(),
     firstRun ? el("div", { class: "overview-layout" }, el("div", {}, el("section", { class: "onboarding-panel" },
       el("div", { class: "onboarding-step" }, el("span", { class: "step-number complete", "aria-hidden": "true" }, icon("check")), el("div", { class: "step-body" }, el("h2", {}, t("项目已准备好", "Your project is ready")), el("p", {}, el("code", {}, current.path)))),
-      el("div", { class: "onboarding-step" }, el("span", { class: `step-number ${people.length ? "complete" : "active"}`, "aria-hidden": "true" }, people.length ? icon("check") : "2"), el("div", { class: "step-body" }, el("h2", {}, people.length ? t("员工已加入项目", "Employees are connected") : t("把已有员工加入项目", "Connect existing employees")), el("p", {}, people.length ? t(`${people.length} 位员工已加入，可以分配第一件工作。`, `${people.length} employees are connected. Assign their first task.`) : t("无需逐个配置通信工具，先发现这台设备上的员工。", "Discover employees on this computer without configuring communication tools one by one.")), !people.length ? button(t("发现员工", "Discover employees"), "discover", { class: "primary", icon: "users" }) : null)),
+      el("div", { class: "onboarding-step" }, el("span", { class: `step-number ${people.length ? "complete" : "active"}`, "aria-hidden": "true" }, people.length ? icon("check") : "2"), el("div", { class: "step-body" }, el("h2", {}, people.length ? t("在岗员工已加入项目", "Active employees are connected") : t("准备项目员工", "Prepare project employees")), el("p", {}, people.length ? t(`${people.length} 位在岗员工已加入，可以分配第一件工作。`, `${people.length} active employees are connected. Assign their first task.`) : projectEmployees().length ? t("当前员工已暂停或退役。恢复已暂停员工，或为新员工建立身份。", "Current employees are paused or retired. Resume a paused employee or create a new identity.") : t("无需逐个配置通信工具，先发现这台设备上的员工。", "Discover employees on this computer without configuring communication tools one by one.")), !people.length ? button(projectEmployees().length ? t("管理员工", "Manage employees") : t("发现员工", "Discover employees"), projectEmployees().length ? "new-task" : "discover", { class: "primary", icon: "users" }) : null)),
       el("div", { class: "onboarding-step" }, el("span", { class: `step-number${people.length ? " active" : ""}`, "aria-hidden": "true" }, "3"), el("div", { class: "step-body" }, el("h2", {}, t("交代第一件事", "Assign the first task")), el("p", {}, t("写清目标与验收标准，员工的执行记录会出现在任务里。", "Describe the goal and acceptance criteria. The task will record the employee's work.")), button(t("创建第一个任务", "Create your first task"), "new-task", { class: people.length ? "primary" : "", icon: "plus", disabled: !people.length })))),
       el("p", { class: "welcome-footnote" }, t("默认只读资料。需要修改项目文件时，你可以在创建任务时选择。", "Tasks start read-only. Choose project write access when a task needs to edit files."))), projectContext()) :
     el("div", { class: "overview-layout" }, el("div", {},
@@ -309,7 +312,7 @@ function renderTasks() {
   search.addEventListener("input", () => { state.search = search.value; renderTaskList(); });
   filterRow.append(search);
   const list = el("div", { id: "task-list-container" });
-  const result = [heading(navLabels.tasks, t("从交代目标到验收成果，每件工作都有记录。", "Every task records the path from goal to accepted outcome."), [button(t("新任务", "New task"), projectEmployees().length ? "new-task" : "discover", { class: "primary", icon: "plus" })]), runtimeNotice(), filterRow, list];
+  const result = [heading(navLabels.tasks, t("从交代目标到验收成果，每件工作都有记录。", "Every task records the path from goal to accepted outcome."), [button(t("新任务", "New task"), "new-task", { class: "primary", icon: "plus" })]), runtimeNotice(), filterRow, list];
   window.queueMicrotask(renderTaskList);
   return result;
 }
@@ -326,7 +329,7 @@ function renderTaskList() {
   }).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
   if (tasks.length) container.replaceChildren(el("div", { class: "task-list" }, tasks.map(taskRow)));
   else if (projectTasks().length) container.replaceChildren(empty(t("没有匹配的任务", "No matching tasks"), t("试试其他状态或关键词。", "Try another status or search term."), null, null, "search"));
-  else container.replaceChildren(empty(t("交代第一件事", "Assign the first task"), t("描述目标和验收标准，选择员工，接下来的进度会自动记录。", "Describe the goal and acceptance criteria, then choose an employee. Progress will be recorded."), projectEmployees().length ? "new-task" : "discover", projectEmployees().length ? t("创建任务", "Create task") : t("先加入员工", "Connect employees"), "task"));
+  else container.replaceChildren(empty(t("交代第一件事", "Assign the first task"), assignableEmployees().length ? t("描述目标和验收标准，选择员工，接下来的进度会自动记录。", "Describe the goal and acceptance criteria, then choose an employee. Progress will be recorded.") : t("先加入在岗员工，或恢复已暂停员工，再分配工作。", "Connect an active employee or resume a paused employee before assigning work."), "new-task", assignableEmployees().length ? t("创建任务", "Create task") : t("准备项目员工", "Prepare employees"), "task"));
 }
 function renderEmployees() {
   if (!project()) return [heading(navLabels.employees, t("员工围绕项目工作，先选择一个项目。", "Employees work within a project. Select one first.")), empty(t("先准备项目", "Create a project first"), t("项目建立后，可以发现并加入这台设备上的已有员工。", "Once the project is ready, discover and connect existing employees on this computer."), "new-project", t("选择项目", "Choose project"), "users")];
@@ -433,7 +436,7 @@ function renderDevices() {
   const mappings = remote?.mappings || {};
   const errors = remote?.worker?.errors || {};
   const pairCards = el("div", { class: "fleet-options" },
-    el("section", { class: "fleet-card" }, el("span", { class: "eyebrow" }, t("在主控设备上", "On the coordinator")), el("h2", {}, t("邀请另一台设备", "Invite another device")), el("p", {}, t("启用局域网接入，选择共享项目，生成一次性邀请。在这里统一派单和验收。", "Enable local network connections, select projects, and create a single-use invitation. Assign and review work here.")),
+    el("section", { class: "fleet-card" }, el("span", { class: "eyebrow" }, t("在主控设备上", "On the coordinator")), el("h2", {}, t("邀请另一台设备", "Invite another device")), el("p", {}, t("按需启用局域网或私网接入，选择共享项目，生成一次性邀请。在这里统一派单和验收。", "Optionally enable local or private network connections, select projects, and create a single-use invitation. Assign and review work here.")),
       fleet?.listener ? el("div", { class: "fleet-actions" }, button(t("生成设备邀请", "Create device invitation"), "fleet-invite", { class: "primary small", disabled: !state.data.projects.length }), button(t("暂停设备接入", "Pause device connections"), "fleet-stop", { class: "small" })) : button(t("启用设备接入", "Enable device connections"), "fleet-start", { class: "primary small", icon: "link" }),
       fleet?.listener ? el("p", { class: "fleet-address" }, t("接入地址", "Connection address"), " · ", el("code", {}, fleet.listener.base_url)) : null),
     el("section", { class: "fleet-card" }, el("span", { class: "eyebrow" }, t("在另一台设备上", "On the other device")), el("h2", {}, remote?.paired ? t("已加入主控", "Connected to coordinator") : t("加入已有团队", "Join an existing team")), el("p", {}, remote?.paired ? t("为共享项目选择这台设备的工作目录，再加入已安装的员工。主控就能把任务交给它。", "Choose this device's working folder for a shared project, then connect an installed employee. The coordinator can assign work to it.") : t("在另一台设备打开工作台，粘贴主控生成的邀请。项目文件需要提前准备在这台设备上。", "Open the workbench on the other device and paste the coordinator's invitation. Prepare the project files on that device first.")),
@@ -452,10 +455,10 @@ function renderDevices() {
     revoke?.addEventListener("click", () => confirmFleetAction("revoke", device));
     return el("div", { class: "device-row" }, el("span", { class: "device-icon", "aria-hidden": "true" }, icon("monitor")), el("div", { class: "device-row-main" }, el("h2", {}, device.name), el("p", {}, local ? t("当前工作台所在设备", "This workbench's device") : t("已登记设备", "Registered device")), device.last_seen ? el("p", {}, `${t("最近连接", "Last seen")} · ${formatDate(device.last_seen, true)}`) : null), tag(device.revoked ? "revoked" : device.status), revoke);
   });
-  return [heading(navLabels.devices, t("项目由你管理，工作可以分布在局域网的多台设备上。", "Manage projects here and distribute work across devices on your local network.")),
+  return [heading(navLabels.devices, t("单机使用无需配置设备。需要更多执行节点时，可连接局域网或私网中的设备；远处设备需先通过私网或隧道可达。", "Single-computer use needs no device setup. Add execution nodes on a local or private network when needed; distant devices must first be reachable through a private network or tunnel.")),
     fleet?.error ? el("div", { class: "runtime-notice error", role: "status" }, icon("warning"), el("span", {}, fleet.error.message || t("设备连接需要重新检查。", "Check the device connection.")), button(t("重新检查", "Check again"), "refresh", { class: "small" })) : null,
     fleet === undefined ? el("p", { class: "device-info" }, t("当前服务未提供设备配对。请更新工作台服务后重试。", "This service does not provide device pairing. Update the workbench service and try again.")) : pairCards,
-    remote ? runtimeNotice() : null,
+    remote ? runtimeNotice({ force: true }) : null,
     remoteProjects,
     errors.recovery ? el("p", { class: "fleet-error" }, errors.recovery) : null,
     el("section", { class: "device-list" }, el("div", { class: "section-heading" }, el("h2", {}, t("设备状态", "Device status"))), rows.length ? rows : el("p", { class: "inline-empty" }, t("还没有可显示的设备。", "No devices to display."))),
@@ -468,7 +471,7 @@ function renderDisconnected() {
 function render() {
   renderSidebar();
   if (state.applicationStopped) {
-    root.replaceChildren(heading(t("应用已退出", "Application closed"), t("任务、成果和项目记录仍然保留。", "Tasks, deliverables, and project records are retained.")), empty(t("双击 Agent Mailbox 重新打开", "Double-click Agent Mailbox to reopen"), t("可以关闭这个浏览器页面。重新打开应用后，请使用它提供的新入口。", "You can close this browser page. Reopen the application and use the new link it provides."), null, null, "monitor"));
+    root.replaceChildren(heading(t("应用已退出", "Application closed"), t("任务、成果和项目记录仍然保留。", "Tasks, deliverables, and project records are retained.")), empty(t("重新启动 Agent Mailbox", "Restart Agent Mailbox"), t("可以关闭这个浏览器页面。使用原来的应用入口或启动命令重新启动，再打开它提供的新地址。", "You can close this browser page. Restart using your application launcher or original command, then open its new address."), null, null, "monitor"));
     root.setAttribute("aria-busy", "false");
     return;
   }
@@ -494,6 +497,7 @@ async function refresh({ silent = false } = {}) {
     state.error = null;
     if (!result.projects.some((item) => item.id === state.projectId)) state.projectId = result.projects[0]?.id || "";
     if (result.runtime?.installed || ["ready", "failed"].includes(result.runtime?.install?.status)) state.runtimeInstalling = false;
+    state.taskFormUpdate?.();
     updateConnection(true);
     setNotice(null);
     const activeElement = document.activeElement;
@@ -512,6 +516,7 @@ async function refresh({ silent = false } = {}) {
 
 function openForm(title, description) {
   if (!state.data) { showToast(errorText(state.error || new ApiError("connection_failed")), true); return null; }
+  state.taskFormUpdate = null;
   formContent.replaceChildren();
   const close = el("button", { class: "icon-button", type: "button", "aria-label": t("关闭", "Close") }, icon("close"));
   close.addEventListener("click", () => formDialog.close());
@@ -587,7 +592,7 @@ function openQuitForm() {
   const end = footer(t("确认退出应用", "Confirm quit"));
   body.append(el("div", { class: "quit-explanation" }, el("p", { class: "quit-description" }, t("正在执行的任务会请求停止，任务记录和尚未验收的成果保留。只停止本应用启动的执行器。", "Running tasks will be asked to stop. Task history and work awaiting review are retained. Only executors started by this application are stopped.")),
     running ? el("p", { class: "quit-running-note" }, t(`当前记录中有 ${running} 个任务正在启动、执行或等待授权。`, `${running} recorded tasks are starting, running, or awaiting permission.`)) : null,
-    el("p", { class: "field-hint" }, t("退出后，双击 Agent Mailbox 可以重新打开。这个页面不会关闭其他 AI 会话或浏览器标签页。", "Double-click Agent Mailbox to reopen. Other AI sessions and browser tabs remain open."))));
+    el("p", { class: "field-hint" }, t("退出后，使用原来的应用入口或启动命令重新启动。这个页面不会关闭其他 AI 会话或浏览器标签页。", "Restart using your application launcher or original command. Other AI sessions and browser tabs remain open."))));
   const form = el("form", {}, box, end.node);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -614,12 +619,12 @@ function openQuitForm() {
   body.append(form);
 }
 function openFleetStartForm() {
-  const body = openForm(t("启用设备接入", "Enable device connections"), t("把这台设备作为主控。输入它的局域网 IPv4 地址，其他设备需要能访问这个地址。", "Use this device as coordinator. Enter its local network IPv4 address, reachable from the other devices."));
+  const body = openForm(t("启用设备接入（可选）", "Enable device connections (optional)"), t("单机使用无需开启。连接其他设备时，输入这台主控在局域网或私有网络中的 IPv4 地址；远处设备需先通过私网或隧道访问它。", "Single-computer use needs no setup here. Enter this coordinator's IPv4 address on a local or private network. Distant devices must first reach it through a private network or tunnel."));
   if (!body) return;
   const address = el("input", { id: "fleet-address", required: true, placeholder: "192.168.1.100", autocomplete: "off", spellcheck: "false" });
   const box = errorBox();
   const end = footer(t("启用设备接入", "Enable device connections"));
-  const form = el("form", {}, formField(t("这台设备的局域网地址", "This device's local network address"), address, t("可在系统网络设置中查看。仅支持私有 IPv4；不要填写公网地址。", "Find it in the system's network settings. Private IPv4 only; use a local network address.")), box, end.node);
+  const form = el("form", {}, formField(t("这台设备的私网地址", "This device's private network address"), address, t("可在系统网络设置中查看。仅支持私有 IPv4；公网直接接入未提供，工作台不会代你建立隧道。", "Find it in system network settings. Private IPv4 only. Direct public access is not provided, and the workbench does not create a tunnel for you.")), box, end.node);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     submitAction(end.submit, box, () => api.startFleet({ address: address.value.trim(), port: 0 }), async () => {
@@ -810,18 +815,24 @@ async function openEmployeeForm() {
         return;
       }
       for (const employee of result.employees) {
-        const connected = state.data.employees.some((item) => item.lifecycle !== "retired" && item.kind === employee.kind && (item.project_id === projectId || item.project_ids?.includes(projectId)) && (!item.node_id || item.node_id === state.data.node?.id));
         const unavailable = ["missing", "not_installed", "unsupported", "unavailable"].includes(employee.status);
-        const needsNewIdentity = !connected && state.data.employees.some((item) => item.lifecycle === "retired" && item.kind === employee.kind && (!item.node_id || item.node_id === state.data.node?.id));
-        const newName = needsNewIdentity ? el("input", { id: `new-employee-name-${employee.kind}`, maxlength: 160, autocomplete: "off", placeholder: t("为新身份填写不同的名称", "Choose a different name for the new identity"), "aria-label": t("新员工名称", "New employee name") }) : null;
-        const add = button(connected ? t("已加入", "Connected") : t("加入项目", "Add to project"), null, { class: connected ? "small" : "small primary", disabled: connected || unavailable });
+        const identities = state.data.employees.filter((item) => item.kind === employee.kind && (!item.node_id || item.node_id === state.data.node?.id));
+        const newName = el("input", { id: `new-employee-name-${employee.kind}`, maxlength: 160, autocomplete: "off", value: identities.some((item) => item.name === employee.name && item.lifecycle === "retired") ? "" : employee.name, placeholder: t("例如：代码审查员", "For example: Code reviewer"), "aria-label": t("员工名称", "Employee name") });
+        const identityHint = el("p", { class: "field-hint" });
+        const add = button(t("加入项目", "Add to project"), null, { class: "small primary", disabled: unavailable });
         add.removeAttribute("data-action");
-        if (newName) {
-          add.disabled = true;
-          newName.addEventListener("input", () => { add.disabled = unavailable || !newName.value.trim(); });
-        }
+        const updateIdentity = () => {
+          const existing = identities.find((item) => item.name === newName.value.trim());
+          const connected = existing && (existing.project_id === projectId || existing.project_ids?.includes(projectId));
+          const retired = existing?.lifecycle === "retired";
+          add.disabled = unavailable || !newName.value.trim() || connected || retired;
+          add.textContent = retired ? t("身份已退役", "Identity retired") : connected ? t("已加入", "Connected") : t("加入项目", "Add to project");
+          identityHint.textContent = retired ? t("此身份已退役，不能复用。请填写不同名称，原历史记录会保留。", "This identity is retired. Choose a different name; its history is retained.") : t("不同名称代表不同员工身份；同一工具默认共享本机原生登录与配置，名称不会创建独立账号。", "Different names create distinct employee identities. The same tool shares this computer's native sign-in and configuration by default; names do not create separate accounts.");
+        };
+        newName.addEventListener("input", updateIdentity);
+        updateIdentity();
         add.addEventListener("click", () => {
-          const name = newName ? newName.value.trim() : employee.name;
+          const name = newName.value.trim();
           if (!name) return;
           submitAction(add, box, () => api.addEmployee({ name, kind: employee.kind, project_id: projectId, node_id: state.data.node?.id }), async () => {
           add.textContent = t("已加入", "Connected");
@@ -832,7 +843,7 @@ async function openEmployeeForm() {
           });
         });
         list.append(el("div", { class: "discovery-row" }, avatar(employee.name), el("div", {}, el("h3", {}, employee.name), tag(employee.status), employee.detail ? el("p", {}, humanDetail(employee.detail)) : null,
-          newName ? el("div", { class: "new-identity-field" }, formField(t("新员工名称", "New employee name"), newName, t("已有身份已退役，不能复用。请用新名称建立身份，原记录会保留。", "The previous identity is retired and cannot be reused. Use a new name; the original history is retained."))) : null), add));
+          el("div", { class: "new-identity-field" }, formField(t("员工名称", "Employee name"), newName), identityHint)), add));
       }
     } catch (error) {
       if (!list.isConnected) return;
@@ -888,7 +899,6 @@ function openTaskForm() {
       modelHint.textContent = `${t("模型列表未确认，不会自动替换员工设置。", "The model list is unconfirmed. Employee settings will not be silently replaced.")} ${errorText(error)}`;
     } finally { if (requestId === modelRequest) model.disabled = false; }
   }
-  assignee.addEventListener("change", loadModels);
   const readOnly = el("input", { type: "radio", name: "permission", value: "read-only", checked: true });
   const write = el("input", { type: "radio", name: "permission", value: "workspace-write" });
   const permissions = el("fieldset", { class: "radio-group" }, el("legend", { class: "sr-only" }, t("任务权限", "Task permissions")),
@@ -897,15 +907,22 @@ function openTaskForm() {
   const box = errorBox();
   const form = el("form", {}, formField(t("任务名称", "Task title"), title), formField(t("交给谁", "Assign to"), assignee), el("div", { class: "form-field" }, el("label", { for: model.id }, t("模型（可选）", "Model (optional)")), model, modelHint), formField(t("工作说明", "Instructions"), prompt), el("div", { class: "form-field" }, el("span", { class: "field-hint" }, t("这次任务的权限", "Permissions for this task")), permissions), box);
   const end = footer(t("派发任务", "Assign task"));
-  const runtimeReady = state.data.runtime?.installed && state.data.runtime?.node_available;
-  if (!runtimeReady) {
-    form.append(el("div", { class: "notice warning" }, el("span", {}, t("执行环境准备好后才能派发任务。", "Prepare the execution environment before assigning tasks.")), button(t("准备执行环境", "Set up execution"), "install-runtime", { class: "small", disabled: state.runtimeInstalling })));
-    end.submit.disabled = true;
-  }
+  const runtimeBox = el("div", { id: "task-runtime-status", role: "status" });
+  const isRemote = () => { const employee = people.find((item) => item.id === assignee.value); return Boolean(employee?.node_id && employee.node_id !== state.data.node?.id); };
+  const canAssign = () => isRemote() || Boolean(state.data.runtime?.installed && state.data.runtime?.node_available);
+  const updateRuntime = () => {
+    if (!formDialog.open || !body.isConnected) return;
+    end.submit.disabled = !canAssign() || Boolean(end.submit.dataset.loading);
+    if (isRemote()) runtimeBox.replaceChildren(el("p", { class: "field-hint" }, t("这项工作在员工所在设备执行，不需要准备主控的执行环境。远端是否能执行将在任务状态中确认。", "Work runs on the employee's device, without setting up execution on the coordinator. The task status will confirm whether remote execution succeeds.")));
+    else runtimeBox.replaceChildren(runtimeNotice({ force: true }) || el("p", { class: "field-hint" }, t("本机执行环境已准备好。", "Local execution environment is ready.")));
+  };
+  state.taskFormUpdate = updateRuntime;
+  assignee.addEventListener("change", () => { loadModels(); updateRuntime(); });
+  form.append(runtimeBox);
   form.append(end.node);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!title.value.trim() || !prompt.value.trim() || !assignee.value || !runtimeReady) return;
+    if (!title.value.trim() || !prompt.value.trim() || !assignee.value || !canAssign()) return;
     submitAction(end.submit, box, () => api.createTask({ project_id: projectId, title: title.value.trim(), prompt: prompt.value.trim(), assignee_id: assignee.value, model: model.value || null, permission_mode: write.checked ? "workspace-write" : "read-only" }), async (result) => {
       formDialog.close();
       state.view = "tasks";
@@ -917,6 +934,7 @@ function openTaskForm() {
     });
   });
   body.append(form);
+  updateRuntime();
   title.focus();
   loadModels();
 }
@@ -1088,7 +1106,7 @@ async function installRuntime(control) {
   try {
     await api.installRuntime();
     showToast(t("正在准备执行环境，完成后状态会自动更新。", "Preparing the execution environment. Its state will update automatically."));
-    if (formDialog.open) formDialog.close();
+    if (formDialog.open && !state.taskFormUpdate) formDialog.close();
     await refresh();
   } catch (error) { state.runtimeInstalling = false; showToast(errorText(error), true); render(); }
 }
@@ -1147,7 +1165,7 @@ applyTheme(theme);
 refresh();
 async function applyChanges() {
   if (state.applicationStopping || state.applicationStopped) return;
-  if (document.visibilityState !== "visible" || formDialog.open) { state.changesPending = true; return; }
+  if (document.visibilityState !== "visible" || (formDialog.open && !state.taskFormUpdate)) { state.changesPending = true; return; }
   if (state.refreshing) { queueChanges(); return; }
   state.changesPending = false;
   state.streamError = false;
@@ -1171,6 +1189,7 @@ function connectChanges() { return api.subscribeChanges(queueChanges, (error) =>
 }); }
 let stopChanges = connectChanges();
 formDialog.addEventListener("close", () => {
+  state.taskFormUpdate = null;
   if (!formDialog.open) {
     const invitation = formContent.querySelector("#fleet-invitation, #fleet-join-invitation");
     if (invitation) invitation.value = "";

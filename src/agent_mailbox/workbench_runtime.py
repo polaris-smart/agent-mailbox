@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import platform
 import queue
 import shutil
 import signal
@@ -16,8 +15,95 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from . import __version__
+
 SUPPORTED = {"codex": "Codex", "claude": "Claude Code"}
 BRIDGE = Path(__file__).parent / "runtime_bridge" / "bridge.mjs"
+
+
+def runtime_dependencies() -> dict[str, str]:
+    """Use the shipped manifest as Python's source of pinned runtime versions."""
+    manifest = json.loads(BRIDGE.with_name("package.json").read_text(encoding="utf-8"))
+    dependencies = manifest.get("dependencies") if isinstance(manifest, dict) else None
+    required = {
+        "acpx",
+        "@openai/codex",
+        "@agentclientprotocol/codex-acp",
+        "@agentclientprotocol/claude-agent-acp",
+    }
+    if (
+        not isinstance(dependencies, dict)
+        or not required.issubset(dependencies)
+        or any(not isinstance(v, str) or not v for v in dependencies.values())
+    ):
+        raise ValueError("The managed runtime dependency manifest is invalid")
+    return dependencies
+
+
+def runtime_directory(root: Path | None = None) -> Path:
+    root = Path(root) if root is not None else Path.home() / ".agent-mailbox"
+    return (
+        Path(os.environ.get("AGENT_MAIL_RUNTIME_DIR", str(root / "workbench/runtime/deps")))
+        .expanduser()
+        .resolve()
+    )
+
+
+def package_version(runtime_dir: Path, package: str) -> str | None:
+    try:
+        metadata = json.loads(
+            (runtime_dir / "node_modules" / package / "package.json").read_text(encoding="utf-8")
+        )
+        return metadata.get("version") if isinstance(metadata, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def managed_codex(runtime_dir: Path, node_binary: str | None = None) -> str | None:
+    """Locate the bridge's locked CLI/host pair, without claiming protocol validation."""
+    node = node_binary or os.environ.get("AGENT_MAIL_NODE_BIN") or executable("node")
+    if not node:
+        return None
+    try:
+        # The bridge selects by Node's architecture, which can differ from
+        # Python's under Rosetta or another architecture-specific installation.
+        node_platform = subprocess.run(
+            [node, "-p", "process.platform + '-' + process.arch"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    targets = {
+        "darwin-arm64": "aarch64-apple-darwin",
+        "darwin-x64": "x86_64-apple-darwin",
+        "linux-arm64": "aarch64-unknown-linux-musl",
+        "linux-x64": "x86_64-unknown-linux-musl",
+        "win32-arm64": "aarch64-pc-windows-msvc",
+        "win32-x64": "x86_64-pc-windows-msvc",
+    }
+    target = targets.get(node_platform)
+    if target is None:
+        return None
+    try:
+        expected = runtime_dependencies()["@openai/codex"]
+    except (OSError, ValueError):
+        return None
+    native_package = f"@openai/codex-{node_platform}"
+    if (
+        package_version(runtime_dir, "@openai/codex") != expected
+        or package_version(runtime_dir, native_package) != f"{expected}-{node_platform}"
+    ):
+        return None
+    binary_dir = runtime_dir / "node_modules" / native_package / "vendor" / target / "bin"
+    suffix = ".exe" if node_platform.startswith("win32-") else ""
+    cli = binary_dir / f"codex{suffix}"
+    host = binary_dir / f"codex-code-mode-host{suffix}"
+    if all(p.is_file() and os.access(p, os.X_OK) for p in (cli, host)):
+        return str(cli)
+    return None
 
 
 def executable(name: str) -> str | None:
@@ -30,30 +116,7 @@ def executable(name: str) -> str | None:
     runtime = os.environ.get("AGENT_MAIL_RUNTIME_DIR")
     if not runtime:
         return None
-    architecture = "arm64" if platform.machine().lower() in {"arm64", "aarch64"} else "x64"
-    targets = {
-        ("darwin", "arm64"): "aarch64-apple-darwin",
-        ("darwin", "x64"): "x86_64-apple-darwin",
-        ("linux", "arm64"): "aarch64-unknown-linux-musl",
-        ("linux", "x64"): "x86_64-unknown-linux-musl",
-        ("win32", "arm64"): "aarch64-pc-windows-msvc",
-        ("win32", "x64"): "x86_64-pc-windows-msvc",
-    }
-    target = targets.get((sys.platform, architecture))
-    package_platform = {"win32": "win32", "darwin": "darwin", "linux": "linux"}.get(sys.platform)
-    if target:
-        candidate = (
-            Path(runtime)
-            / "node_modules/@openai"
-            / f"codex-{package_platform}-{architecture}"
-            / "vendor"
-            / target
-            / "bin"
-            / ("codex.exe" if os.name == "nt" else "codex")
-        )
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    return None
+    return managed_codex(runtime_directory())
 
 
 def discover_employees() -> list[dict]:
@@ -84,27 +147,18 @@ def discover_employees() -> list[dict]:
 
 
 def runtime_status(root: Path) -> dict:
-    runtime_dir = Path(
-        os.environ.get("AGENT_MAIL_RUNTIME_DIR", str(root / "workbench/runtime/deps"))
-    )
+    runtime_dir = runtime_directory(root)
     node = os.environ.get("AGENT_MAIL_NODE_BIN") or executable("node")
-    versions = {
-        "acpx": "0.19.3",
-        "@agentclientprotocol/codex-acp": "2.0.0",
-        "@agentclientprotocol/claude-agent-acp": "0.84.0",
-    }
-    installed = True
-    for package, version in versions.items():
-        try:
-            installed = (
-                installed
-                and json.loads(
-                    (runtime_dir / "node_modules" / package / "package.json").read_text()
-                )["version"]
-                == version
-            )
-        except (OSError, ValueError, KeyError):
-            installed = False
+    try:
+        versions = runtime_dependencies()
+        metadata_installed = all(
+            package_version(runtime_dir, package) == version
+            for package, version in versions.items()
+        )
+    except (OSError, ValueError):
+        metadata_installed = False
+    native_codex_available = managed_codex(runtime_dir, node) is not None
+    installed = metadata_installed and native_codex_available
     node_available = False
     if node:
         try:
@@ -119,12 +173,16 @@ def runtime_status(root: Path) -> dict:
         except (OSError, ValueError, subprocess.SubprocessError):
             pass
     detail = (
-        "Execution runtime is ready."
+        "Pinned dependencies and native Codex executables are installed; "
+        "the first task will validate agent compatibility and execution."
         if installed and node_available
         else "Install the execution runtime (Node.js >=22.13) before starting an employee."
     )
     return {
         "installed": installed,
+        "metadata_installed": metadata_installed,
+        "native_codex_available": native_codex_available,
+        "execution_verified": False,
         "node_available": node_available,
         "node_binary": node,
         "runtime_dir": str(runtime_dir),
@@ -367,19 +425,22 @@ def workspace_server_command() -> tuple[str, list[str]]:
     return sys.executable, ["-m", "agent_mailbox.workspace_mcp"]
 
 
-def available_models(kind: str) -> list[dict]:
-    """Read native model metadata without starting a model turn or exposing config."""
-    if kind != "codex" or not (binary := executable("codex")):
+def available_models(kind: str, root: Path | None = None) -> list[dict]:
+    """Read models from the managed execution CLI; never fall back to a PATH CLI."""
+    if kind != "codex" or not (binary := managed_codex(runtime_directory(root))):
         return []
-    proc = subprocess.Popen(
-        [binary, "app-server"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        encoding="utf-8",
-        start_new_session=os.name != "nt",
-    )
+    try:
+        proc = subprocess.Popen(
+            [binary, "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            start_new_session=os.name != "nt",
+        )
+    except OSError:
+        return []
     responses = queue.Queue()
 
     def read():
@@ -409,7 +470,7 @@ def available_models(kind: str) -> list[dict]:
             {
                 "id": 1,
                 "method": "initialize",
-                "params": {"clientInfo": {"name": "agent-mailbox", "version": "0.8.0a1"}},
+                "params": {"clientInfo": {"name": "agent-mailbox", "version": __version__}},
             }
         )
         if "error" in receive(1):

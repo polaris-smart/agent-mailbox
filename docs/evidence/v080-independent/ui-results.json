@@ -1,0 +1,22 @@
+{
+  "passed": [
+    "Inactive-only first-use team is not marked assignment-ready; management action leads to retained historical identities",
+    "Distinct named local identities coexist; matching existing identity stays idempotent and retired identity is rejected by UI and actual API; shared native login is explicit",
+    "Real HTTP creates queued remote assignment while owner runtime is absent and remote readiness remains unconfirmed; no borrowed owner models",
+    "Switching assignee in the same draft recalculates local versus remote runtime gate without borrowing owner models",
+    "Authenticated change events update only task setup controls while dialog stays open; failed setup and successful retry preserve complete draft; real API receives same prompt/model/permissions/assignee",
+    "Device setup remains optional and private-network/tunnel reachability is explicit; direct public access is not promised",
+    "Narrow device layout has no horizontal overflow",
+    "Actual owner quit shuts isolated server; reopening instructions support application launcher and CLI, without macOS-only double-click wording"
+  ],
+  "consoleErrors": [],
+  "screenshots": [
+    "agent-mailbox-v080-ui-independent-employees.png",
+    "agent-mailbox-v080-ui-independent-remote.png",
+    "agent-mailbox-v080-ui-independent-draft.png",
+    "agent-mailbox-v080-ui-independent-private-network.png",
+    "agent-mailbox-v080-ui-independent-mobile.png",
+    "agent-mailbox-v080-ui-independent-quit.png"
+  ],
+  "limits": "Real isolated owner-authenticated HTTP/SQLite APIs. Discovery, runtime installation, advertised model and remote device records are explicitly labelled fixtures; no download, model call, physical network or remote execution. Token-free evidence."
+}

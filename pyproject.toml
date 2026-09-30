@@ -4,36 +4,30 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-mailbox"
-version = "0.8.0a2"
-description = "Give every local AI agent its own mailbox — one MCP server, register once, message any agent on this machine."
+version = "0.8.0a3"
+description = "Manage AI employees, project work and shared knowledge locally, with optional paired execution nodes."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "polaris-smart" }]
-keywords = ["mcp", "agent", "mailbox", "multi-agent", "local-first", "message"]
+keywords = ["mcp", "agent", "mailbox", "multi-agent", "local-first", "workbench"]
 classifiers = [
-  "Development Status :: 4 - Beta",
+  "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
-  "Topic :: Communications :: Email",
+  "Topic :: Office/Business",
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = ["mcp>=2.1", "cryptography>=46,<51"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-timeout>=2.4", "ruff>=0.16.6,<0.17.0"]
-# Jev routing is pure stdlib (urllib) — zero hard dependency. The extra is a
-# forward-compat slot so `pip install agent-mailbox[jev]` already works today
-# and can grow a native client later without a breaking change.
-jev = []
-
 [project.scripts]
-agent-mailbox = "agent_mailbox.server:main"
-agent-mailbox-watch = "agent_mailbox.watch:main"
+agent-mailbox = "agent_mailbox.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/polaris-smart/agent-mailbox"
@@ -49,10 +43,13 @@ addopts = "-q --timeout=30"
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
-# v02-proposals/ = design-proto directory (design prototypes), NOT release
-# material — tracked since ce8954b but never shipped; keep it out of the
-# repo-wide lint gate so prototypes cannot turn CI red (HS ruling 2026-09-29).
-extend-exclude = ["v02-proposals"]
-
 [tool.hatch.build.targets.sdist]
-exclude = [".aoci", "aoci.txt", "aoci.code.txt", "aoci.meta.txt", "aoci.database.txt", "AGENTS.md", "scripts/wake-zc.sh"]
+include = [
+  "/src", "/tests", "/pyproject.toml", "/uv.lock", "/README.md", "/README.zh-CN.md",
+  "/LICENSE", "/SECURITY.md", "/CHANGELOG.md", "/docs/PRD.md",
+  "/docs/WORKBENCH.md", "/docs/GITHUB-QUICKSTART.md", "/docs/NODES.md",
+  "/docs/HANDOVER-CODEX.md", "/docs/archive/v07/PRD.md", "/docs/reviews/2026-09-30-v080-independence.md",
+  "/docs/designs/2026-09-30-v080-independent.md", "/docs/designs/v080-packaging.md",
+  "/docs/evidence/v080-independent", "/scripts/build-workbench.py", "/scripts/release-workbench.py",
+  "/scripts/RELEASE-workbench.md",
+]

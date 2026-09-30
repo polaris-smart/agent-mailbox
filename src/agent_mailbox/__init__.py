@@ -1,3 +1,3 @@
-"""agent-mailbox: give every local AI agent its own mailbox."""
+"""agent-mailbox: local AI employee and project workbench."""
 
-__version__ = "0.8.0a2"
+__version__ = "0.8.0a3"

@@ -361,26 +361,53 @@ class FleetCoordinator:
             }
 
     def _pair(self, body):
+        import base64
+
         invite_id = _identifier(body.get("invite_id"), "邀请码编号")
         secret = _string(body.get("invite_secret"), "邀请码", 200)
         device_id = _identifier(body.get("device_id"), "设备编号")
         name = _string(body.get("name"), "设备名称", 200)
+        pair_token = body.get("pair_token")
+        if pair_token is not None:
+            if not isinstance(pair_token, str) or not re.fullmatch(
+                r"[A-Za-z0-9_-]{43}", pair_token
+            ):
+                raise WorkbenchError("invalid_field", "配对凭据需要是 256 位随机密钥。")
+            raw_token = base64.urlsafe_b64decode(pair_token + "=")
+            if (
+                len(raw_token) != 32
+                or base64.urlsafe_b64encode(raw_token).decode().rstrip("=") != pair_token
+            ):
+                raise WorkbenchError("invalid_field", "配对凭据格式无效。")
         with self.lock:
             invitation = self.state["invites"].get(invite_id)
             expected = invitation["secret_hash"] if invitation else "0" * 64
             valid = hmac.compare_digest(expected, _digest(secret))
             if not invitation or not valid:
                 raise WorkbenchError("permission_denied", "邀请码验证失败。")
+            existing = self.state["devices"].get(device_id)
             if invitation["used"]:
+                if (
+                    pair_token is not None
+                    and existing is not None
+                    and not existing.get("revoked", False)
+                    and existing.get("pair_invite_id") == invite_id
+                    and hmac.compare_digest(existing["token_hash"], _digest(pair_token))
+                ):
+                    return {
+                        "device_id": device_id,
+                        "token": pair_token,
+                        "project_ids": list(existing["project_ids"]),
+                        "coordinator_id": self.store.local_node()["id"],
+                    }
                 raise WorkbenchError("invite_used", "邀请码已使用，请生成新的邀请码。")
             if invitation["expires_at"] <= time.time():
                 raise WorkbenchError("invite_expired", "邀请码已过期，请生成新的邀请码。")
-            existing = self.state["devices"].get(device_id)
             if device_id == self.store.local_node()["id"] or (
                 existing is not None and not existing.get("revoked", False)
             ):
                 raise WorkbenchError("permission_denied", "该设备已有身份，请使用现有凭据。")
-            token = secrets.token_urlsafe(32)
+            token = pair_token or secrets.token_urlsafe(32)
             self.store.upsert_device(
                 device_id, name, "online", datetime.now(timezone.utc).isoformat()
             )
@@ -388,6 +415,7 @@ class FleetCoordinator:
                 "device_id": device_id,
                 "name": name,
                 "token_hash": _digest(token),
+                "pair_invite_id": invite_id if pair_token is not None else None,
                 "project_ids": invitation["project_ids"],
                 "paired_at": time.time(),
                 "revoked": False,
@@ -676,9 +704,9 @@ class FleetCoordinator:
                                 "cancel_requested": task["cancel_requested"],
                             }
                         self.condition.wait(timeout=remaining)
-            if task["status"] not in ACTIVE:
-                raise WorkbenchError("invalid_state", "这次执行已结束，不能再提交进度。")
             if action == "events":
+                if task["status"] not in ACTIVE:
+                    raise WorkbenchError("invalid_state", "这次执行已结束，不能再提交进度。")
                 event_type = body.get("type")
                 if not isinstance(event_type, str) or event_type not in REMOTE_EVENTS:
                     raise WorkbenchError("invalid_field", "这个事件不能由远端设备提交。")
@@ -687,12 +715,15 @@ class FleetCoordinator:
                 event = self.store.add_event(
                     task_id, event_type, body.get("message", ""), body.get("payload")
                 )
+                self.notify()
                 return {"event": event}
-            if body.get("status") == "review" and task["status"] != "running":
-                raise WorkbenchError("invalid_state", "尚未确认员工开始执行，不能提交完成回执。")
             receipt = {
-                "task": self.store.finish_task(
-                    task_id, body.get("status"), body.get("result", ""), body.get("error")
+                "task": self.store.finish_remote_task(
+                    task_id,
+                    body.get("run_id"),
+                    body.get("status"),
+                    body.get("result", ""),
+                    body.get("error"),
                 )
             }
             self.notify()
@@ -761,17 +792,67 @@ class FleetClient:
             )
         if self.credentials is None:
             node = self.store.local_node()
-            paired = self._request(
-                "POST",
-                "/v1/pair",
-                {
-                    "invite_id": invite.get("invite_id"),
-                    "invite_secret": invite.get("invite_secret"),
-                    "device_id": node["id"],
-                    "name": node["name"],
-                },
-                authenticated=False,
-            )
+            attempt_path = self.directory / "pair-attempt.json"
+            attempt = _load(attempt_path, None)
+            binding = {
+                "base_url": self.base_url,
+                "fingerprint": self.fingerprint,
+                "invite_id": _identifier(invite.get("invite_id"), "邀请码编号"),
+                "device_id": node["id"],
+            }
+            if (
+                isinstance(attempt, dict)
+                and all(
+                    attempt.get(key) == value for key, value in binding.items() if key != "base_url"
+                )
+                and attempt.get("base_url") != self.base_url
+            ):
+                # Changing an SSH tunnel address must preserve the pinned
+                # coordinator, invitation and previously persisted proof.
+                attempt = {**attempt, "base_url": self.base_url}
+                _write_private(attempt_path, json.dumps(attempt).encode("utf-8"))
+            if attempt is not None and (
+                not isinstance(attempt, dict)
+                or any(attempt.get(key) != value for key, value in binding.items())
+                or not isinstance(attempt.get("pair_token"), str)
+            ):
+                raise WorkbenchError(
+                    "storage_error", "还有未确认的配对，请使用原邀请码与地址重试，勿覆盖设备身份。"
+                )
+            created_attempt = attempt is None
+            if created_attempt:
+                attempt = {**binding, "pair_token": secrets.token_urlsafe(32)}
+                _write_private(attempt_path, json.dumps(attempt).encode("utf-8"))
+            try:
+                paired = self._request(
+                    "POST",
+                    "/v1/pair",
+                    {
+                        "invite_id": invite.get("invite_id"),
+                        "invite_secret": invite.get("invite_secret"),
+                        "device_id": node["id"],
+                        "name": node["name"],
+                        "pair_token": attempt["pair_token"],
+                    },
+                    authenticated=False,
+                )
+            except WorkbenchError as exc:
+                if (
+                    created_attempt
+                    and exc.code == "tls_pin_mismatch"
+                    or exc.code in {"invite_expired", "invite_used"}
+                ):
+                    # The pin check precedes sending any secret, so this fresh
+                    # attempt never granted an identity. Explicit invite expiry
+                    # or refusal cannot be recovered with this proof either.
+                    attempt_path.unlink(missing_ok=True)
+                raise
+            if (
+                paired.get("device_id") != node["id"]
+                or not isinstance(paired.get("token"), str)
+                or not hmac.compare_digest(paired["token"], attempt["pair_token"])
+            ):
+                raise WorkbenchError("protocol_error", "主控未确认这次设备身份，请重试原配对。")
             self.credentials = {
                 **paired,
                 "base_url": self.base_url,
@@ -781,6 +862,7 @@ class FleetClient:
                 self.credentials_path,
                 json.dumps(self.credentials, ensure_ascii=False).encode("utf-8"),
             )
+            attempt_path.unlink(missing_ok=True)
         self.mappings = _load(self.mapping_path, {})
         if not isinstance(self.mappings, dict) or not all(
             isinstance(key, str) and isinstance(value, str) for key, value in self.mappings.items()

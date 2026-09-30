@@ -30,6 +30,12 @@ class WorkbenchLock:
                 "ALREADY_RUNNING", "This data directory already has a running workbench."
             ) from exc
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
     def close(self):
         if not self.file.closed:
             self.file.close()

@@ -29,7 +29,7 @@ def main(argv: list[str] | None = None) -> None:
 
         workspace_main()
     else:
-        from agent_mailbox.workbench import main as workbench_main
+        from agent_mailbox.cli import main as workbench_main
 
         workbench_main(arguments)
 

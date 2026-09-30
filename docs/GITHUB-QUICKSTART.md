@@ -1,42 +1,33 @@
-# 从 GitHub 开始使用 agent-mailbox
+# 从 GitHub 上手 v0.8
 
-GitHub 是源码、问题反馈、文档和版本下载的主入口。本地浏览器工作台是默认使用界面；macOS `.app` 是可选安装包。使用工作台不需要 Apple Developer 账号，也不需要为管理界面配置 LLM。
+当前是未公开发行的 0.8.0a3 alpha；获取这一版须用独立源码 checkout 或提供的本机构建产物。产品公开 PyPI 版本不代表本 alpha。
 
-当前分支是 **v0.8.0a2 开发预览**，尚未 push、打 tag 或公开 Release。下列仓内命令和本地产物用于预览验证，不代表 GitHub 默认分支或 PyPI 已提供 v0.8.0。
+## 单机
 
-## 仓内启动
-
-已有本分支源码与 [uv](https://docs.astral.sh/uv/) 时，在仓库根目录执行：
+Python 3.10+，执行工作需要 Node.js 22.13+。在 v0.8 checkout 建独立 venv，安装本目录：
 
 ```sh
-uv run agent-mailbox workbench
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install .
+agent-mailbox --home ~/.agent-mailbox-v08
 ```
 
-浏览器会打开本机工作台。选择已有项目目录，加入已安装、已登录的 Codex 或 Claude Code，交代工作及验收标准。受管会话的项目 MCP 由应用注入，无需逐个编辑全局配置。
+Windows PowerShell 激活改用 `.venv\Scripts\Activate.ps1`。以上使用独立 v0.8 数据目录。使用自带运行组件的 macOS app 则双击启动；unsigned alpha 可能受 Gatekeeper 阻挡，GitHub 下载不消除系统校验。
 
-首次实际执行需要 Node.js >=22.13、npm 和受管运行时依赖。源码方式需要先提供 Node/npm，再在工作台点击“准备执行环境”；它会下载固定版本依赖，不更改全局 agent 配置或登录态。当前依赖包含原生 agent 组件，下载体积较大；管理界面可以先打开。自包含 macOS 安装包自带运行时。
+在页面选已有项目、添加员工，必要时点“准备运行环境”。Codex/Claude 在这台电脑完成原生登录后，先派一个小任务验证交付、权限与人工验收。管理工作台不要求额外模型账号。准备组件会下载 package-lock 固定依赖，不修改全局 CLI 或登录。
 
-## 本地 Python 安装包
-
-本轮构建的 wheel 可以安装到隔离工具环境。将路径替换为实际下载的文件：
+CLI 可以在关闭工作台后显式准备同一个 home：
 
 ```sh
-uv tool install /absolute/path/agent_mailbox-0.8.0a2-py3-none-any.whl
-agent-mailbox workbench
+agent-mailbox prepare --home ~/.agent-mailbox-v08
+agent-mailbox --home ~/.agent-mailbox-v08
 ```
 
-工作台默认数据目录为 `~/.agent-mailbox`。安装包和项目、员工、工作日志、记忆、设备凭据分开保存。升级应用或工具包时保留这个目录即可沿用配置。预览验证使用独立 `--home`，不访问旧版在役邮箱 `~/.agent-mail`。
+同一 home 只允许一个工作台或执行节点 owner。退出按钮会停止应用，继续工作时重新运行原命令。`python -m agent_mailbox` 同样进入工作台。`agent-mailbox --version` 显示版本。
 
-## macOS 可选安装包
+## 更新与备份
 
-`Agent Mailbox.app` 双击后打开同一工作台，不依赖用户安装 Python/Node/npm。本轮仅构建 macOS ARM64，未做 Developer ID 签名或 Apple 公证；从互联网下载后的 Gatekeeper 首次打开体验仍未验证。Windows/Linux 的桌面包尚未构建。
+停止应用，备份整个选定 home/workbench（包括 state.db、设备私钥和身份文件，备份应私有）。用新兼容 wheel 替换程序并使用原 home；项目和身份不因重新安装程序而重建。当前不支持自动下载安装、数据库降级或自动回滚。不要删除运行数据来“升级”。
 
-GitHub Release 可以同时放源码、Python 包和 `.app`。它不要求通过 Mac App Store 发布；macOS 的代码签名与公证是另一条发行流程。
-
-## 升级与退出
-
-工作台提供“退出应用”，停止本实例并清理受管任务进程。关闭浏览器标签页不会自动停止后台服务。替换程序后重新打开，项目身份和配置从原数据目录读取；应用不会接管任意已打开的原生 agent 对话。
-
-本轮验证应用替换和 SQLite 增量迁移保留数据，没有实现自动下载更新、后台自替换或公开回滚渠道。未来的一键更新仍需要真实发行渠道、产物验证和数据回滚验收。
-
-已验证事实与剩余发行门见 [工作台说明](WORKBENCH.md) 和 [验证记录](evidence/v080/verification.md)。
+可选服务器用 [无界面节点指南](NODES.md)。单机用户无需部署服务器、配置私网或为每位员工手动安装 MCP。

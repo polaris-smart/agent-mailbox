@@ -1,63 +1,17 @@
-# Security Policy
+# Security
 
-## Reporting a vulnerability
+This document covers the independent v0.8 alpha, not v0.7's mail server.
 
-Please report vulnerabilities privately via **GitHub Security Advisories**
-(“Report a vulnerability” on `polaris-smart/agent-mailbox`), not as a public
-issue. If you cannot use advisories, open a minimal public issue asking for a
-private contact — do not include exploit details there.
+The human workbench listens on loopback and uses an owner bearer token plus same-origin/host checks. It must not be exposed to a LAN or public reverse proxy. Browser extensions and processes running as the same OS account remain within the local trust boundary; these credentials are not protection from a compromised host.
 
-Please include: affected version, a minimal reproduction, and your assessment
-of impact. You will get an acknowledgement within a few days and a fix
-timeline once the report is triaged. Please keep details private until a fix
-is released.
+SQLite, credential files and device identity files are created privately. POSIX mode checks apply on macOS/Linux; Windows access is governed by the user's filesystem ACL and still requires physical-platform verification. Secrets are redacted from public state and remote activity payloads; prompts, deliverables and saved notes can still contain user-provided sensitive content.
 
-## Supported versions
+An employee task gets project-scoped tools. Employee names are organizational identities, not OS sandboxes or independent provider accounts. Native agent login remains local; actual tool execution authority depends on the agent and its native sandbox. Human permissions default to deny on timeout or loss of control, and a worker cannot approve its own output.
 
-| Version | Supported |
-|---------|-----------|
-| 0.7.x   | ✅        |
-| 0.6.x   | ✅        |
-| < 0.6   | ❌ upgrade |
+Optional devices use TLS 1.2+ with a pinned SHA-256 certificate identity checked before invitations or bearer credentials are sent. Pairing scopes projects and binds device/run receipts. Invitations and pairing recovery proofs are secrets: deliver them through a trusted channel, store private files and revoke compromised devices. Registration and revocation are local records, not SPIFFE or short-lived identity infrastructure.
 
-## Security model
+The coordinator accepts an explicitly selected private/loopback/CGNAT address for the device listener. Use a private network or SSH tunnel for remote servers; do not expose the owner API. Project files and provider credentials are not transported by pairing. Persistent terminal receipts retry identical results, while uncertain executions are interrupted without automatic replay.
 
-**Default: local trust.** agent-mailbox is designed for agents running on one
-machine you control. The mail root (`~/.agent-mail/`) is plain JSON files;
-**any local process or user account that can read those files can read every
-mailbox**, and any local MCP client can act as any agent. The web board and
-the webhook receiver are the only network-facing surfaces and both enforce
-constant-time token checks (`hmac.compare_digest`); the store itself has no
-authentication.
+Task/governance history is useful local evidence, not tamper-proof audit storage. Full cost accounting and enterprise policy enforcement are not implemented. The source/wheel/app alpha has no public release assurance; the optional macOS build currently has only a local ad-hoc seal, with no Developer ID notarization.
 
-**Hardening mode: identity binding (opt-in, v0.6.2).** For machines where
-multiple untrusted MCP clients share the same user account, `identity_binding`
-in `<mail-root>/config.json` pins agent ids to tokens:
-
-```json
-{
-  "identity_binding": {
-    "enabled": true,
-    "HS": "<sha256 hex of the agent's token>"
-  }
-}
-```
-
-Each bound caller presents its secret via the `AGENT_MAIL_TOKEN` environment
-variable; the MCP server hashes it with sha256 and compares against the
-binding table in constant time. A mismatch rejects the tool call with
-`identity mismatch`. Agents not listed in the table are unaffected — the
-feature is incremental and disabled by default, so existing deployments keep
-today's behavior with zero configuration.
-
-Notes:
-
-- The token is the bearer credential; protect it like any env-carried secret.
-  Identity binding raises the bar against casual identity confusion between
-  local MCP clients, but it cannot help once an attacker can read the mail
-  root or the host's environment.
-- A malformed `identity_binding` block fails loudly at server startup
-  (fail-loud config) — a half-written security boundary never silently
-  degrades to "disabled".
-- `claimed_by` markers and `handled_log` entries (v0.5/v0.6.2) make
-  multi-session mailbox activity auditable after the fact.
+Report security issues privately to the repository maintainer using GitHub's private vulnerability reporting when available; otherwise contact the maintainer before publishing exploit details.

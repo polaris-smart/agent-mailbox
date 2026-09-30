@@ -92,8 +92,11 @@ for line in sys.stdin:
             result(request, {"configOptions":configs()})
     elif method == "session/prompt":
         text = "".join(p.get("text", "") for p in params["prompt"])
-        if text in ("permission_mcp", "permission_other", "permission_no_event"):
+        if text in ("permission_mcp", "permission_mcp_burst", "permission_other", "permission_no_event"):
             if text != "permission_no_event":
+                if text == "permission_mcp_burst":
+                    for i in range(80):
+                        chunk(params["sessionId"], "queued notification " + str(i), "agent_thought_chunk")
                 out({"jsonrpc":"2.0", "method":"session/update", "params":{
                     "sessionId":params["sessionId"], "update":{"sessionUpdate":"tool_call",
                     "toolCallId":"mcp-one", "title":"MCP tool", "kind":"execute", "status":"in_progress",
@@ -669,9 +672,10 @@ def test_managed_codex_incomplete_or_old_v1_pair_fails_closed(tmp_path, runtime_
     assert cli.exists()
 
 
-def test_mcp_permission_details_join_only_the_same_run_and_tool_id(launch):
+@pytest.mark.parametrize("prompt", ["permission_mcp", "permission_mcp_burst"])
+def test_mcp_permission_details_join_only_the_same_run_and_tool_id(launch, prompt):
     bridge = launch()
-    bridge.run(prompt="permission_mcp")
+    bridge.run(prompt=prompt)
     request = bridge.until(lambda m: m["type"] == "permission_required")
     assert "title" not in request["request"]["toolCall"]
     assert "rawInput" not in request["request"]["toolCall"]

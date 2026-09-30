@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from .workbench_fleet import permission_summary
+from .workbench_fleet import _load, _write_private, permission_summary
 from .workbench_runtime import BridgeExecution, context_prompt, workspace_server_command
 from .workbench_store import WorkbenchError
 
@@ -25,13 +25,87 @@ class RemoteWorker:
         self.errors = {}
         self.active_path = client.directory / "active-runs.json"
         self.active = {}
+        self.outbox_path = client.directory / "terminal-receipts.json"
+        self.outbox = _load(self.outbox_path, {})
+        if not isinstance(self.outbox, dict):
+            raise WorkbenchError("storage_error", "任务回执记录格式无效，请恢复备份。")
+        self.receipt_lock = threading.Lock()
+        self.receipt_ready = threading.Event()
+        self.receipt_thread = None
+
+    def _queue_receipt(self, task, status, result="", error=None):
+        # Write the result before any network operation. Reconnect/restart must
+        # resend this exact receipt, never replay the model or downgrade output.
+        with self.lock:
+            self.outbox[task["id"]] = {
+                "run_id": task["run_id"],
+                "status": status,
+                "result": result,
+                "error": error,
+            }
+            try:
+                _write_private(self.outbox_path, json.dumps(self.outbox).encode())
+            except WorkbenchError as exc:
+                self.errors[task["id"]] = "最终结果尚未落盘：" + exc.message
+                self.receipt_ready.set()
+                return
+        self.receipt_ready.set()
+        self._flush_receipts()
+
+    def _flush_receipts(self):
+        with self.receipt_lock:
+            with self.lock:
+                pending = dict(self.outbox)
+                if pending:
+                    try:
+                        # A previous queue write may have failed. Preserve the
+                        # actual result in memory and retry storage before HTTPS.
+                        _write_private(self.outbox_path, json.dumps(pending).encode())
+                    except WorkbenchError as exc:
+                        for task_id in pending:
+                            self.errors[task_id] = "最终结果尚未落盘：" + exc.message
+                        return
+            for task_id, receipt in pending.items():
+                try:
+                    self.client.receipt(task_id, **receipt)
+                except WorkbenchError as exc:
+                    # Keep even rejected receipts locally for diagnosis. Scope
+                    # revocation or a changed run must not discard a deliverable.
+                    self.errors[task_id] = "最终回执尚未确认：" + exc.message
+                    continue
+                with self.lock:
+                    if self.outbox.get(task_id) != receipt:
+                        continue
+                    next_active = {
+                        key: value for key, value in self.active.items() if key != task_id
+                    }
+                    next_outbox = {
+                        key: value for key, value in self.outbox.items() if key != task_id
+                    }
+                    try:
+                        # Commit cleanup to disk before mutating memory. If the
+                        # second write fails the durable outbox still contains
+                        # the result, even if the active journal is already clear.
+                        _write_private(self.active_path, json.dumps(next_active).encode())
+                        _write_private(self.outbox_path, json.dumps(next_outbox).encode())
+                    except WorkbenchError as exc:
+                        self.errors[task_id] = "主控已确认，本机回执清理未完成：" + exc.message
+                        continue
+                    self.active = next_active
+                    self.outbox = next_outbox
+                    self.errors.pop(task_id, None)
+
+    def _retry_receipts(self):
+        while not self.stopping.is_set():
+            self.receipt_ready.wait(5)
+            self.receipt_ready.clear()
+            if not self.stopping.is_set():
+                self._flush_receipts()
+            if self.outbox:
+                self.stopping.wait(5)  # Retry a final acknowledgement, no model replay.
 
     def _save(self):
-        data = json.dumps(self.active).encode()
-        temporary = self.active_path.with_suffix(".tmp")
-        temporary.write_bytes(data)
-        temporary.chmod(0o600)
-        temporary.replace(self.active_path)
+        _write_private(self.active_path, json.dumps(self.active).encode())
 
     def start_project(self, project_id):
         self.client.local_project(project_id)
@@ -45,8 +119,11 @@ class RemoteWorker:
                     self.active.setdefault(task["id"], task["run_id"])
             except WorkbenchError as exc:
                 self.errors["recovery"] = exc.message
+            self._flush_receipts()
             previous = dict(self.active)
             for task_id, run_id in previous.items():
+                if task_id in self.outbox:
+                    continue
                 try:
                     self.client.receipt(
                         task_id,
@@ -64,6 +141,8 @@ class RemoteWorker:
                     else:
                         self.errors["recovery"] = exc.message
             self._save()
+            self.receipt_thread = threading.Thread(target=self._retry_receipts, daemon=True)
+            self.receipt_thread.start()
         thread = threading.Thread(target=self._loop, args=(project_id,), daemon=True)
         thread.project_id = project_id
         self.threads.append(thread)
@@ -75,9 +154,8 @@ class RemoteWorker:
                 task = self.client.claim(project_id, wait=30)
                 self.errors.pop(project_id, None)
                 if task and self.stopping.is_set():
-                    self.client.receipt(
-                        task["id"],
-                        task["run_id"],
+                    self._queue_receipt(
+                        task,
                         "interrupted",
                         error={
                             "code": "DEVICE_STOPPED",
@@ -146,7 +224,7 @@ class RemoteWorker:
                 "running",
                 "waiting_approval",
             }:
-                self.client.receipt(task["id"], task["run_id"], "cancelled")
+                self._queue_receipt(task, "cancelled")
                 return
             project = self.client.local_project(task["project_id"])
             if self.execution.command is None:
@@ -279,37 +357,35 @@ class RemoteWorker:
             status = {"completed": "review", "cancelled": "cancelled"}.get(
                 result.get("status"), "failed"
             )
-            state = self.client.control(task["id"], task["run_id"], wait=0)
-            if state["cancel_requested"] or cancelled.is_set() or self.stopping.is_set():
-                status = "cancelled"
-            self.client.receipt(
-                task["id"],
-                task["run_id"],
-                status,
-                result.get("output_text", ""),
-                result.get("error"),
-            )
+            self._queue_receipt(task, status, result.get("output_text", ""), result.get("error"))
         except Exception as exc:  # noqa: BLE001 - a remote execution must produce an explicit failure
-            try:
-                self.client.receipt(
-                    task["id"],
-                    task["run_id"],
-                    "failed",
-                    error={"code": "REMOTE_EXECUTION_ERROR", "message": str(exc)},
-                )
-            except WorkbenchError:
-                self.errors[task["id"]] = "The coordinator did not acknowledge the final result."
+            with self.lock:
+                recorded = task["id"] in self.outbox
+            if recorded:
+                self.errors[task["id"]] = "最终回执尚未确认。"
+            else:
+                try:
+                    self._queue_receipt(
+                        task,
+                        "failed",
+                        error={"code": "REMOTE_EXECUTION_ERROR", "message": str(exc)},
+                    )
+                except (WorkbenchError, OSError):
+                    self.errors[task["id"]] = "无法保存最终回执，请检查本地磁盘。"
         finally:
             finished.set()
             with self.lock:
                 self.workers.discard(threading.current_thread())
                 # Keep unacknowledged runs for explicit restart recovery.
-                if task["id"] not in self.errors:
+                if task["id"] not in self.errors and task["id"] not in self.outbox:
                     self.active.pop(task["id"], None)
                     self._save()
 
     def close(self):
         self.stopping.set()
+        self.receipt_ready.set()
+        if self.receipt_thread:
+            self.receipt_thread.join(timeout=0.2)
         with self.lock:
             workers = list(self.workers)
         for worker in workers:
@@ -322,5 +398,6 @@ class RemoteWorker:
             return {
                 "projects": list(self.client.mappings),
                 "active": len(self.workers),
+                "pending_receipts": len(self.outbox),
                 "errors": dict(self.errors),
             }

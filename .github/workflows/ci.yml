@@ -1,22 +1,10 @@
 name: CI
 on:
-  push: { branches: [main] }
+  push:
+    branches: [main, feat/v080-workbench]
   pull_request:
+permissions:
+  contents: read
 jobs:
-  test:
-    runs-on: ${{ matrix.os }}
-    env:
-      PYTHONUTF8: "1"
-      PYTHONIOENCODING: utf-8
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ["3.11", "3.13"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "${{ matrix.python }}" }
-      - run: pip install -e ".[dev]"
-      - run: ruff check src tests
-      - run: pytest
+  checks:
+    uses: ./.github/workflows/checks.yml

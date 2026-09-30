@@ -584,3 +584,23 @@ def test_v2_migration_preserves_tasks_and_adds_optional_model(tmp_path):
         project["id"], "After", "New work", employee["id"], model="advertised-model"
     )
     assert selected["model"] == "advertised-model"
+
+
+def test_version_four_to_five_adds_receipt_proofs_without_replacing_identity(
+    store, project, employee
+):
+    import sqlite3
+
+    task = store.create_task(project["id"], "Retained", "Unchanged", employee["id"])
+    identity = store.local_node()["id"]
+    credential = store.employee_credentials(employee["id"], project["id"])
+    with sqlite3.connect(store.db_path) as db:
+        db.execute("DROP TABLE remote_receipts")
+        db.execute("PRAGMA user_version=4")
+    restored = WorkbenchStore(store.root)
+    assert restored.local_node()["id"] == identity
+    assert restored.employee_credentials(employee["id"], project["id"]) == credential
+    assert restored.get_task(task["id"])["status"] == "queued"
+    with sqlite3.connect(store.db_path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert db.execute("SELECT count(*) FROM remote_receipts").fetchone()[0] == 0

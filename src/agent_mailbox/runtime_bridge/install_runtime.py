@@ -33,7 +33,7 @@ def install_runtime(destination: Path, node_binary: str | None = None) -> dict:
     return {
         "runtime_dir": str(destination),
         "node_binary": str(Path(node).resolve()),
-        "acpx_version": "0.19.3",
+        "acpx_version": json.loads((assets / "package.json").read_text())["dependencies"]["acpx"],
         "node_version": version,
     }
 

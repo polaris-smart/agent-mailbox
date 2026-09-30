@@ -1,3 +1,5 @@
+> Packaging history and release gates. Independent 0.8.0a3 now uses cli.py for product dispatch; alpha2 delivery notes below remain historical. See [current product boundary](2026-09-30-v080-independent.md).
+
 # v0.8.0 local application packaging
 
 The macOS build is a PyInstaller `.app` with embedded Python, web assets, Node and

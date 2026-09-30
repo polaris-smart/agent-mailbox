@@ -291,7 +291,28 @@ async function configure(entry, run, operation, unsupportedCode) {
     fail(unsupportedCode, safeMessage(error.message));
   }
 }
-function permission(run, request, { signal }) {
+async function waitPermissionDetails(run, toolCallId, signal) {
+  if (run.toolCalls.has(toolCallId) || signal.aborted || run.terminal) return;
+  // ACPX queues session/update separately from permission callbacks. Synchronize
+  // only this turn's actual event consumer; never read another turn's projection.
+  await new Promise(resolve => {
+    const waiters = run.toolCallWaiters.get(toolCallId) ?? new Set();
+    run.toolCallWaiters.set(toolCallId, waiters);
+    const finish = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      waiters.delete(finish);
+      if (!waiters.size) run.toolCallWaiters.delete(toolCallId);
+      resolve();
+    };
+    const timer = setTimeout(finish, Math.min(250, run.permissionTimeout));
+    waiters.add(finish);
+    signal.addEventListener("abort", finish, { once: true });
+    if (signal.aborted || run.terminal) finish();
+  });
+}
+async function permission(run, request, { signal }) {
+  await waitPermissionDetails(run, request.raw.toolCall.toolCallId, signal);
   const requestId = randomUUID();
   return new Promise(resolve => {
     let timer;
@@ -365,6 +386,7 @@ async function execute(run, input) {
         run.toolCalls.set(event.toolCallId, { ...run.toolCalls.get(event.toolCallId),
           ...(mcpTitle ? { title: mcpTitle } : event.title && event.title !== "tool call" ? { title: event.title } : {}),
           ...(event.rawInput === undefined ? {} : { rawInput: event.rawInput }) });
+        for (const ready of run.toolCallWaiters.get(event.toolCallId) ?? []) ready();
       }
       if (event.type === "text_delta" && event.stream !== "thought") run.output.push(event.text);
       if (event.type === "error") run.streamError = errorInfo(event);
@@ -403,7 +425,7 @@ function command(input) {
     catch (error) { return controlError(error.message, input); }
     if (usedRunIds.has(id)) return controlError("run_id has already been admitted", input);
     usedRunIds.add(id);
-    const run = { id, sessionId, output: [], permissions: new Map(), toolCalls: new Map(),
+    const run = { id, sessionId, output: [], permissions: new Map(), toolCalls: new Map(), toolCallWaiters: new Map(),
       controller: new AbortController(), terminal: false };
     runs.set(id, run);
     run.task = execute(run, input);

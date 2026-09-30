@@ -1,6 +1,7 @@
 """Two isolated data roots communicate over real pinned HTTPS on loopback."""
 
 import json
+import secrets
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -9,6 +10,107 @@ import pytest
 
 from agent_mailbox.workbench_fleet import FleetClient, FleetCoordinator
 from agent_mailbox.workbench_store import WorkbenchError, WorkbenchStore
+
+
+def test_pair_response_loss_recovers_same_home_proof_without_plaintext_server_secret(
+    fleet, tmp_path, monkeypatch
+):
+    _, project, _, coordinator = fleet
+    invite = coordinator.issue_invite([project["id"]])
+    root = tmp_path / "recover"
+    original = FleetClient._request
+    lost = []
+
+    def lose_once(self, method, path, *args, **kwargs):
+        reply = original(self, method, path, *args, **kwargs)
+        if path == "/v1/pair" and not lost:
+            lost.append(reply)
+            raise WorkbenchError("network_error", "Pair reply was lost after commit")
+        return reply
+
+    monkeypatch.setattr(FleetClient, "_request", lose_once)
+    with pytest.raises(WorkbenchError):
+        FleetClient(root, invite)
+    attempt_path = root / "workbench/fleet/pair-attempt.json"
+    attempt = json.loads(attempt_path.read_text())
+    assert attempt_path.stat().st_mode & 0o777 == 0o600
+    assert not (root / "workbench/fleet/client.json").exists()
+    assert coordinator.state["invites"][invite["invite_id"]]["used"]
+    coordinator.state["invites"][invite["invite_id"]]["expires_at"] = 0
+    client = FleetClient(
+        root, {**invite, "base_url": invite["base_url"].replace("127.0.0.1", "localhost")}
+    )
+    assert client.credentials["token"] == lost[0]["token"] == attempt["pair_token"]
+    assert client.credentials["device_id"] == lost[0]["device_id"]
+    assert client.projects() == [{"id": project["id"], "name": "Shared"}]
+    assert not attempt_path.exists()
+    assert attempt["pair_token"] not in coordinator.state_path.read_text()
+
+
+def test_pair_proof_survives_client_credential_save_failure(fleet, tmp_path, monkeypatch):
+    import agent_mailbox.workbench_fleet as module
+
+    _, project, _, coordinator = fleet
+    invite = coordinator.issue_invite([project["id"]])
+    root = tmp_path / "disk-failure"
+    original = module._write_private
+
+    def disk_failure(path, data):
+        if path.name == "client.json":
+            raise WorkbenchError("storage_error", "Client credential save failed")
+        return original(path, data)
+
+    monkeypatch.setattr(module, "_write_private", disk_failure)
+    with pytest.raises(WorkbenchError):
+        FleetClient(root, invite)
+    attempt_path = root / "workbench/fleet/pair-attempt.json"
+    proof = json.loads(attempt_path.read_text())["pair_token"]
+    monkeypatch.setattr(module, "_write_private", original)
+    recovered = FleetClient(root, invite)
+    assert recovered.credentials["token"] == proof
+    assert not attempt_path.exists()
+
+
+def test_pair_recovery_rejects_wrong_proof_device_and_revocation(fleet, tmp_path):
+    _, project, _, coordinator = fleet
+    invite = coordinator.issue_invite([project["id"]])
+    client = FleetClient(tmp_path / "device", invite)
+    body = {
+        "invite_id": invite["invite_id"],
+        "invite_secret": invite["invite_secret"],
+        "device_id": client.credentials["device_id"],
+        "name": "Retry",
+        "pair_token": client.credentials["token"],
+    }
+    for changes in ({"pair_token": secrets.token_urlsafe(32)}, {"device_id": "other-node"}):
+        with pytest.raises(WorkbenchError):
+            client._request("POST", "/v1/pair", {**body, **changes}, authenticated=False)
+    assert client.device()["device"]["device_id"] == body["device_id"]
+    coordinator.revoke_device(body["device_id"])
+    with pytest.raises(WorkbenchError):
+        client._request("POST", "/v1/pair", body, authenticated=False)
+
+
+@pytest.mark.parametrize("proof", ["short", "A" * 42, "A" * 44, "x" * 43, "!" * 43, 123])
+def test_pair_rejects_noncanonical_256_bit_proof(fleet, tmp_path, proof):
+    _, project, _, coordinator = fleet
+    invite = coordinator.issue_invite([project["id"]])
+    client = paired(fleet, tmp_path)
+    with pytest.raises(WorkbenchError):
+        client._request(
+            "POST",
+            "/v1/pair",
+            {
+                "invite_id": invite["invite_id"],
+                "invite_secret": invite["invite_secret"],
+                "device_id": "new-node",
+                "name": "Invalid",
+                "pair_token": proof,
+            },
+            authenticated=False,
+        )
+    assert not coordinator.state["invites"][invite["invite_id"]]["used"]
+
 
 PERMISSION_OPTIONS = [{"optionId": "once", "name": "Allow once", "kind": "allow_once"}]
 
@@ -705,3 +807,39 @@ def test_revoked_device_can_explicitly_repair_with_rotated_token_and_new_scope(f
             authenticated=False,
         )
     assert coordinator.state["invites"][unused["invite_id"]]["used"] is False
+
+
+def test_identical_final_receipt_replays_without_rewriting_human_review(fleet, tmp_path):
+    owner, project, _, coordinator = fleet
+    client = mapped(fleet, tmp_path)
+    employee = client.register_employee(project["id"], "Remote", "codex")
+    task = owner.create_task(project["id"], "Report", "Work", employee["id"])
+    client.claim(project["id"])
+    notifications = []
+    coordinator.on_change = lambda: notifications.append("changed")
+    client.event(task["id"], task["run_id"], "started")
+    assert notifications
+    client.receipt(task["id"], task["run_id"], "review", "Deliverable", {"b": 2, "a": 1})
+    event_count = len(owner.task_detail(task["id"])["events"])
+    owner.review_task(task["id"], "accept")
+    reviewed_count = len(owner.task_detail(task["id"])["events"])
+    replay = client.receipt(task["id"], task["run_id"], "review", "Deliverable", {"a": 1, "b": 2})
+    assert replay["status"] == "done"
+    assert reviewed_count == event_count + 1
+    assert len(owner.task_detail(task["id"])["events"]) == reviewed_count
+    with pytest.raises(WorkbenchError) as conflict:
+        client.receipt(task["id"], task["run_id"], "review", "Different deliverable")
+    assert conflict.value.code == "invalid_state"
+    assert owner.get_task(task["id"])["status"] == "done"
+
+
+def test_repeated_remote_receipt_respects_owner_cancel(fleet, tmp_path):
+    owner, project, _, _ = fleet
+    client = mapped(fleet, tmp_path)
+    employee = client.register_employee(project["id"], "Remote", "codex")
+    task = owner.create_task(project["id"], "Report", "Work", employee["id"])
+    client.claim(project["id"])
+    client.event(task["id"], task["run_id"], "started")
+    owner.cancel_task(task["id"])
+    assert client.receipt(task["id"], task["run_id"], "review", "Output")["status"] == "cancelled"
+    assert client.receipt(task["id"], task["run_id"], "review", "Output")["status"] == "cancelled"

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.0a3 — independent foundation (unpublished)
+
+- Remove v0.7 mail runtime, background services, installation scripts and legacy tests from the v0.8 distribution; default CLI and Python module open the workbench.
+- Add explicit runtime preparation and optional headless device join/map/employee/run commands; private/CGNAT binding and SSH dial override.
+- Persist terminal device receipts and acknowledge exact same-run replay without re-execution or overwriting human review; recover a lost pairing response safely.
+- Align runtime/model discovery with the dependency manifest and managed Codex pair; synchronize permission summaries with same-run tool events.
+- Preserve task drafts during setup, support named local employees, and separate local runtime readiness from remote assignment.
+- Replace active PRD, quick start, security and handover with the independent product baseline; use one shared cross-platform CI test definition.
+
+Earlier alpha and v0.7 notes below are historical, not capabilities of this build.
+
+
 All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).

@@ -405,3 +405,123 @@ def test_orphan_starting_run_without_device_journal_is_interrupted_not_replayed(
         assert client.active_runs() == []
     finally:
         recovered.close()
+
+
+@pytest.mark.parametrize("committed", [False, True])
+def test_durable_terminal_outbox_survives_lost_reply_and_restart_without_execution(
+    remote, monkeypatch, committed
+):
+    owner, device, project, _, _ = remote
+    worker = device.remote_worker
+    original_receipt = device.remote_client.receipt
+    original_execution = worker.execution.run
+    executed = []
+    lost = threading.Event()
+
+    def execution(*args, **kwargs):
+        executed.append(args[0]["id"])
+        return original_execution(*args, **kwargs)
+
+    def disconnected(*args, **kwargs):
+        if committed:
+            original_receipt(*args, **kwargs)
+        lost.set()
+        raise WorkbenchError("network_error", "Final reply was lost")
+
+    monkeypatch.setattr(worker.execution, "run", execution)
+    monkeypatch.setattr(device.remote_client, "receipt", disconnected)
+    task = dispatch(remote, "complete")
+    assert lost.wait(8)
+    worker.close()
+    pending = json.loads(worker.outbox_path.read_text())
+    assert pending[task["id"]]["status"] == "review"
+    assert "Mapped directory:" in pending[task["id"]]["result"]
+    assert executed == [task["id"]]
+    assert owner.store.get_task(task["id"])["status"] == ("review" if committed else "running")
+    if committed:
+        owner.store.review_task(task["id"], "accept")
+    monkeypatch.setattr(device.remote_client, "receipt", original_receipt)
+    restarted = RemoteWorker(device.remote_client, bridge_command=worker.execution.command)
+    monkeypatch.setattr(restarted.execution, "run", lambda *a, **k: pytest.fail("Model replayed"))
+    try:
+        restarted.start_project(project["id"])
+        expected = "done" if committed else "review"
+        assert owner.store.get_task(task["id"])["status"] == expected
+        assert json.loads(restarted.outbox_path.read_text()) == {}
+        assert json.loads(restarted.active_path.read_text()) == {}
+        assert executed == [task["id"]]
+    finally:
+        restarted.close()
+
+
+def test_final_receipt_retries_on_live_reconnect_without_model_replay(remote, monkeypatch):
+    owner, device, _, _, _ = remote
+    worker = device.remote_worker
+    real_receipt = device.remote_client.receipt
+    real_execution = worker.execution.run
+    offline = threading.Event()
+    offline.set()
+    lost = threading.Event()
+    executed = []
+
+    def receipt(*args, **kwargs):
+        if offline.is_set():
+            lost.set()
+            raise WorkbenchError("network_error", "Offline fixture")
+        return real_receipt(*args, **kwargs)
+
+    def execute(*args, **kwargs):
+        executed.append(args[0]["id"])
+        return real_execution(*args, **kwargs)
+
+    monkeypatch.setattr(device.remote_client, "receipt", receipt)
+    monkeypatch.setattr(worker.execution, "run", execute)
+    task = dispatch(remote, "complete")
+    assert lost.wait(8)
+    assert json.loads(worker.outbox_path.read_text())[task["id"]]["status"] == "review"
+    offline.clear()
+    worker.receipt_ready.set()
+    delivered = await_task(owner.store, task["id"], "review", timeout=12)
+    assert "Mapped directory:" in delivered["result"]
+    assert executed == [task["id"]]
+
+
+@pytest.mark.parametrize("failed_path", ["active-runs.json", "terminal-receipts.json"])
+def test_acknowledged_output_survives_local_cleanup_write_failure(remote, monkeypatch, failed_path):
+    owner, device, _, _, _ = remote
+    worker = device.remote_worker
+    real_write = __import__(
+        "agent_mailbox.workbench_fleet", fromlist=["_write_private"]
+    )._write_private
+    fail_cleanup = threading.Event()
+    fail_cleanup.set()
+    failed = threading.Event()
+    executions = []
+    real_execution = worker.execution.run
+
+    def write(path, data):
+        if path.name == failed_path and json.loads(data) == {} and fail_cleanup.is_set():
+            failed.set()
+            raise WorkbenchError("storage_error", "Cleanup disk failure fixture")
+        return real_write(path, data)
+
+    def execution(*args, **kwargs):
+        executions.append(args[0]["id"])
+        return real_execution(*args, **kwargs)
+
+    monkeypatch.setattr("agent_mailbox.workbench_remote._write_private", write)
+    monkeypatch.setattr(worker.execution, "run", execution)
+    task = dispatch(remote, "complete")
+    assert failed.wait(8)
+    result = await_task(owner.store, task["id"], "review")
+    assert "Mapped directory:" in result["result"]
+    assert worker.outbox[task["id"]]["status"] == "review"
+    assert worker.outbox[task["id"]]["result"] == result["result"]
+    assert json.loads(worker.outbox_path.read_text())[task["id"]]["status"] == "review"
+    owner.store.review_task(task["id"], "accept")
+    fail_cleanup.clear()
+    worker._flush_receipts()
+    assert worker.outbox == {}
+    assert json.loads(worker.outbox_path.read_text()) == {}
+    assert owner.store.get_task(task["id"])["status"] == "done"
+    assert executions == [task["id"]]
