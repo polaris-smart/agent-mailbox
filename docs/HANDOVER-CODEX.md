@@ -1,6 +1,6 @@
 # agent-mailbox v0.8 维护入口
 
-先读 [PRD](PRD.md)、[独立实现决定](designs/2026-09-30-v080-independent.md) 和 [审查记录](reviews/2026-09-30-v080-independence.md)。当前接入与 NoFox / Apache-2.0 署名见 [设计](designs/2026-09-30-connection-guidance.md) 和 [验证](evidence/v080/connection-guidance.md)。本轮员工与项目组见 [设计](designs/2026-09-30-project-groups.md) 和 [验证](evidence/v080/project-groups.md)。v0.8 完全独立，不继续承载 v0.7 运行路径；旧 Git 历史和 docs/archive/v07 只供参考。
+先读 [PRD](PRD.md)、[独立实现决定](designs/2026-09-30-v080-independent.md) 和 [审查记录](reviews/2026-09-30-v080-independence.md)。员工卡片及信箱见 [设计](designs/2026-09-30-employee-cards-mailboxes.md) 和 [验证](evidence/v080/employee-cards-mailboxes.md)。当前接入与 NoFox / Apache-2.0 署名见 [设计](designs/2026-09-30-connection-guidance.md) 和 [验证](evidence/v080/connection-guidance.md)。本轮员工与项目组见 [设计](designs/2026-09-30-project-groups.md) 和 [验证](evidence/v080/project-groups.md)。v0.8 完全独立，不继续承载 v0.7 运行路径；旧 Git 历史和 docs/archive/v07 只供参考。
 
 默认命令 `agent-mailbox` / `python -m agent_mailbox` 进入工作台；`prepare` 显式准备本 home 的锁定运行组件；`node` 管理可选无界面执行节点。产品状态放在 home/workbench；不要修改任何在用 v0.7 目录、全局 agent 配置或原生登录。
 

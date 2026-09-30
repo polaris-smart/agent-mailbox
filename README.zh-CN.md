@@ -2,7 +2,7 @@
 
 在本机围绕项目管理 AI 员工：派工、共享资料、查看进度、审批操作、验收结果。
 
-**v0.8 从实现开始完全独立**：继续叫 agent-mailbox、继续版本线，但使用自己的入口、数据库、运行组件和项目工具。v0.7 的邮箱命令和后台服务不再随包发行。当前为 **0.8.0a5 本地 alpha**，尚未发布到 GitHub Release 或 PyPI。
+**v0.8 从实现开始完全独立**：继续叫 agent-mailbox、继续版本线，但使用自己的入口、数据库、运行组件和项目工具。v0.7 的邮箱命令和后台服务不再随包发行。当前为 **0.8.0a6 本地 alpha**，尚未发布到 GitHub Release 或 PyPI。
 
 [English](README.md) · [PRD 正典](docs/PRD.md) · [上手指南](docs/GITHUB-QUICKSTART.md) · [可选设备](docs/NODES.md) · [维护入口](docs/HANDOVER-CODEX.md)
 

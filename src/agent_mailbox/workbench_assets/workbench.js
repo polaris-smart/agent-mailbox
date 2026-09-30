@@ -20,6 +20,7 @@ const state = {
   governance: null, governanceError: null, governanceLoading: false, governanceQueued: false,
   applicationStopping: false, applicationStopped: false,
   taskFormUpdate: null,
+  employeeQuery: "", employeeFilter: "all", mailboxEmployeeId: "", mailboxFolder: "inbox",
   messageDrafts: {}, messages: {}, messagesLoading: false, messagesError: null, dragEmployeeId: null,
 };
 try { state.projectId = sessionStorage.getItem("agent-mailbox.workbench.project") || ""; } catch { /* optional */ }
@@ -27,7 +28,7 @@ try { state.projectId = sessionStorage.getItem("agent-mailbox.workbench.project"
 const navLabels = {
   overview: t("项目概览", "Overview"), tasks: t("任务", "Tasks"),
   employees: t("所有员工", "All employees"), members: t("项目成员", "Project members"), messages: t("项目消息", "Messages"), resources: t("资料与记忆", "Resources & memory"),
-  devices: t("设备", "Devices"),
+  mailboxes: t("员工信箱", "Employee mailboxes"), devices: t("设备", "Devices"),
 };
 const statusLabels = {
   queued: t("排队中", "Queued"), starting: t("正在启动", "Starting"),
@@ -253,7 +254,7 @@ function renderSidebar() {
     });
   }
   const current = project();
-  document.getElementById("breadcrumb-project").textContent = state.view === "employees" ? t("工作台", "Workbench") : current?.name || t("工作台", "Workbench");
+  document.getElementById("breadcrumb-project").textContent = ["employees", "mailboxes"].includes(state.view) ? t("工作台", "Workbench") : current?.name || t("工作台", "Workbench");
   document.getElementById("breadcrumb-page").textContent = navLabels[state.view];
   document.getElementById("task-nav-count").textContent = current ? String(projectTasks().filter((task) => task.status !== "done" && task.status !== "cancelled").length) : "";
 }
@@ -444,8 +445,27 @@ function employeeRow(employee, { membership = false } = {}) {
       employee.detail ? el("p", { class: "employee-detail" }, humanDetail(employee.detail)) : null,
       employee.lifecycle_reason ? el("p", { class: "employee-reason" }, t("调整原因", "Reason"), " · ", employee.lifecycle_reason) : null,
       facts), controls);
+  row.classList.add("employee-card");
+  const projects = state.data.projects.filter(item => employee.project_ids?.includes(item.id) || employee.project_id === item.id);
+  const mailbox = button(t("查看信箱", "Open mailbox"), null, { class: "small employee-mailbox-button", icon: "document" });
+  mailbox.addEventListener("click", () => { state.mailboxEmployeeId = employee.id; state.mailboxFolder = "inbox"; selectView("mailboxes"); });
+  const join = button(t("选择项目", "Choose project"), null, { class: "small", icon: "plus", disabled: lifecycle === "retired" });
+  join.addEventListener("click", () => openEmployeeProjects(employee));
+  const details = el("details", { class: "employee-configuration" }, el("summary", {}, t("连接与管理", "Connection & management")),
+    facts, employee.entrypoint ? el("p", { class: "employee-detail" }, el("code", {}, employee.entrypoint)) : null,
+    employee.detail ? el("p", { class: "employee-detail" }, humanDetail(employee.detail)) : null,
+    employee.lifecycle_reason ? el("p", { class: "employee-reason" }, employee.lifecycle_reason) : null, controls);
+  const executionLabel = verified ? t("执行已验证", "Execution verified") : employee.execution_supported ? t("支持任务 · 尚未验证", "Tasks supported · Unverified") : t("自动执行待接入", "Execution not connected");
+  row.replaceChildren(el("header", { class: "employee-card-header" }, avatar(employee.kind === "codex" ? "Cx" : employee.kind === "claude" ? "CC" : employee.kind.slice(0,2).toUpperCase()),
+    el("div", { class: "employee-card-identity" }, el("h2", { class: "employee-name" }, employee.name), el("p", { class: "employee-kind" }, employee.kind, " · ", deviceName(employee.node_id))),
+    el("span", { class: "employee-entry-type" }, connection)),
+    el("div", { class: "employee-card-status" }, el("span", { class: `execution-pill ${verified ? "verified" : ""}` }, executionLabel), lifecycle !== "active" ? tag(lifecycle) : null),
+    el("p", { class: "employee-sign-in" }, t("原生登录", "Native sign-in"), " · ", statusLabels[employee.auth_status] || statusLabels.unknown),
+    el("div", { class: "employee-projects" }, projects.length ? projects.map(item => el("span", { class: "employee-project-chip", title: item.name }, icon("folder"), item.name)) : el("span", { class: "muted" }, t("尚未加入项目", "No project yet"))),
+    el("div", { class: "employee-card-actions" }, mailbox, !membership ? join : null), details);
   if (!membership && lifecycle !== "retired") {
     row.addEventListener("dragstart", (event) => {
+      if (event.target.closest("button, a, input, select, summary, details")) { event.preventDefault(); return; }
       if (!state.data.employees.some((item) => item.id === employee.id && item.lifecycle !== "retired")) { event.preventDefault(); return; }
       state.dragEmployeeId = employee.id;
       event.dataTransfer.clearData(); event.dataTransfer.setData("text/plain", employee.id); event.dataTransfer.effectAllowed = "copy";
@@ -458,19 +478,77 @@ function employeeRow(employee, { membership = false } = {}) {
   }
   return row;
 }
+function renderEmployeeGrid() {
+  const query = state.employeeQuery.trim().toLocaleLowerCase();
+  const people = state.data.employees.filter(employee => {
+    const filter = state.employeeFilter;
+    if (filter === "cli" && employee.connection_type !== "cli") return false;
+    if (filter === "app" && employee.connection_type !== "app") return false;
+    if (filter === "supported" && !employee.execution_supported) return false;
+    return !query || [employee.name, employee.kind, deviceName(employee.node_id), ...state.data.projects.filter(p => employee.project_ids?.includes(p.id)).map(p => p.name)].some(value => String(value).toLocaleLowerCase().includes(query));
+  });
+  const target = document.getElementById("employee-grid");
+  if (target) target.replaceChildren(...(people.length ? people.map(employee => employeeRow(employee)) : [empty(t("没有匹配的员工", "No matching employees"), t("试试其他名称、项目或入口类型。", "Try another name, project or entry type."))]));
+  const count = document.getElementById("employee-result-count"); if (count) count.textContent = t(`${people.length} 个入口`, `${people.length} entries`);
+}
 function renderEmployees() {
   const people = state.data.employees;
-  return [heading(navLabels.employees, t("先登记已有 AI 员工，再按项目组织协作。一个员工可以加入多个项目。", "Register existing AI employees, then organize them by project. An employee can join several projects."), [button(t("发现员工", "Discover employees"), "discover", { class: "primary", icon: "plus" })]),
-    people.length ? el("div", { class: "employee-table" }, people.map((employee) => employeeRow(employee))) : empty(t("从你已有的员工开始", "Start with your existing employees"), t("检查这台设备上的 CLI 和桌面应用。现在就能登记员工，无需先创建项目。", "Discover CLI tools and desktop apps on this device. Register employees before creating a project."), "discover", t("发现已有员工", "Discover existing employees"), "users"),
-    el("p", { class: "welcome-footnote" }, t("登录、自动执行支持与执行验证分别显示。Codex CLI 会启动受管任务会话，不会接管当前桌面对话。", "Sign-in, execution support, and verified execution are shown separately. Codex CLI starts a managed task session; it does not attach to this desktop conversation.")),
-    el("p", { class: "welcome-footnote" }, t("可将员工拖到左侧项目；也可在项目成员页通过按钮选择。加入项目不会启动执行。", "Drag employees onto a project in the sidebar, or choose them with buttons on Project members. Joining does not start execution.")),
-    button(t("创建项目并组织团队", "Create a project and organize your team"), "new-project", { icon: "folder" })];
+  const search = el("input", { id: "employee-search", type: "search", value: state.employeeQuery, placeholder: t("搜索员工、工具或项目…", "Search employees, tools or projects…"), "aria-label": t("搜索员工", "Search employees") });
+  search.addEventListener("input", () => { state.employeeQuery = search.value; renderEmployeeGrid(); });
+  const filters = el("div", { class: "employee-filters", "aria-label": t("员工入口类型", "Employee entry type") });
+  for (const [value, label] of [["all", t("全部", "All")], ["cli", "CLI"], ["app", t("桌面应用", "Apps")], ["supported", t("支持任务", "Task support")]]) {
+    const control = button(label, null, { class: "small", attrs: { "aria-pressed": String(state.employeeFilter === value) } });
+    control.addEventListener("click", () => { state.employeeFilter = value; filters.querySelectorAll("button").forEach(item => item.setAttribute("aria-pressed", String(item === control))); renderEmployeeGrid(); }); filters.append(control);
+  }
+  const grid = el("div", { id: "employee-grid", class: "employee-grid" }, people.filter(employee => !state.employeeQuery || employee.name.toLocaleLowerCase().includes(state.employeeQuery.toLocaleLowerCase())).map(employee => employeeRow(employee)));
+  queueMicrotask(renderEmployeeGrid);
+  return [heading(navLabels.employees, t("你的 AI 员工，在这里相识，在项目里协作。", "Meet your AI employees here. Collaborate in projects."), [button(t("发现员工", "Discover employees"), "discover", { class: "primary", icon: "plus" }), button(t("创建项目", "Create project"), "new-project", { icon: "folder" })]),
+    el("div", { class: "employee-directory-toolbar" }, el("label", { class: "employee-search" }, icon("search"), search), filters, el("span", { id: "employee-result-count", class: "muted small-text" }, t(`${people.length} 个入口`, `${people.length} entries`))),
+    people.length ? grid : empty(t("从你已有的员工开始", "Start with your existing employees"), t("发现并登记这台设备上的 AI 工具，无需先创建项目。", "Discover tools on this device before creating a project."), "discover", t("发现已有员工", "Discover existing employees"), "users"),
+    el("p", { class: "directory-note" }, t("入口不等于独立账号；登录、执行支持和执行验证分别记录。可拖入左侧项目，或点“选择项目”。", "An entry is not a separate account. Sign-in, task support and verified execution are distinct. Drag into a project or Choose project."))];
+}
+function openEmployeeProjects(employee) {
+  if (!state.data.projects.length) { openProjectForm(); return; }
+  const body = openForm(t(`${employee.name} · 选择项目`, `${employee.name} · Choose project`), t("加入项目不会启动执行。一个员工可加入多个项目。", "Joining does not start execution. An employee may join several projects.")); if (!body) return;
+  const error = errorBox(); body.append(error);
+  for (const item of state.data.projects) {
+    const joined = employee.project_ids?.includes(item.id) || employee.project_id === item.id;
+    const add = button(joined ? t("已加入", "Joined") : t("加入项目", "Join project"), null, { class: "small", disabled: joined });
+    add.addEventListener("click", () => submitAction(add, error, () => api.addProjectMember(item.id, employee.id), async () => { await refresh(); add.textContent = t("已加入", "Joined"); add.disabled = true; showToast(t(`${employee.name} 已加入项目。`, `${employee.name} joined the project.`)); }));
+    body.append(el("div", { class: "member-picker-row" }, icon("folder"), el("strong", {}, item.name), add));
+  }
+}
+function renderMailboxes() {
+  const employees = state.data.employees;
+  const employee = employees.find(item => item.id === state.mailboxEmployeeId) || employees[0];
+  if (!employee) return [heading(navLabels.mailboxes), empty(t("先登记一位员工", "Register an employee first"), t("登记后，这里可以查看它在项目中的收信与发信。", "Once registered, view its project correspondence here."), "discover", t("发现员工", "Discover employees"))];
+  state.mailboxEmployeeId = employee.id;
+  const selector = el("select", { id: "mailbox-employee", "aria-label": t("选择员工信箱", "Choose employee mailbox") }, employees.map(item => el("option", { value: item.id }, item.name))); selector.value = employee.id;
+  selector.addEventListener("change", () => { state.mailboxEmployeeId = selector.value; render(); });
+  const memberships = new Set(employee.project_ids || []); if (employee.project_id) memberships.add(employee.project_id);
+  const relevant = (state.data.messages || []).filter(message => state.mailboxFolder === "sent" ? message.sender_id === employee.id : state.mailboxFolder === "group" ? !message.recipient_id && memberships.has(message.project_id) && message.sender_id !== employee.id : message.recipient_id === employee.id);
+  relevant.sort((a,b) => String(b.created_at).localeCompare(String(a.created_at)));
+  const folders = el("div", { class: "employee-filters", "aria-label": t("信箱分类", "Mailbox folders") });
+  for (const [value, label] of [["inbox",t("收件箱", "Inbox")],["sent",t("发件箱", "Sent")],["group",t("项目群消息", "Project broadcasts")]]) {
+    const control = button(label, null, { class: "small", attrs: { "aria-pressed": String(state.mailboxFolder === value) } });control.addEventListener("click", () => { state.mailboxFolder = value; render(); }); folders.append(control);
+  }
+  const list = el("section", { class: "mailbox-list", "aria-label": t("员工信件", "Employee correspondence") });
+  if (!relevant.length) list.append(empty(t("这里还没有信件", "No messages here yet"), state.mailboxFolder === "group" ? t("显示该员工当前项目的全员消息；发给其他员工的定向消息不会混入。", "Shows broadcasts in current projects; direct messages to other employees are excluded.") : t("这是 v0.8 的项目通信记录，旧版 v0.7 信箱不会自动迁入。发送普通消息不会启动员工。", "This is v0.8 project correspondence. v0.7 mailboxes are not automatically imported. Ordinary messages do not start employees.")));
+  relevant.forEach(message => {
+    const item = state.data.projects.find(p => p.id === message.project_id);
+    const open = button(t("打开项目对话", "Open project conversation"), null, { class: "small" });
+    open.addEventListener("click", () => { selectProject(message.project_id); selectView("messages"); loadMessages(); });
+    list.append(el("article", { class: "message-row", "data-message-id": message.id }, el("div", { class: "message-meta" }, el("strong", {}, message.sender?.name || t("你 · Human", "You · Human")), el("span", {}, "→ ", message.recipient?.name || t("项目全员", "Everyone")), el("time", {}, formatDate(message.created_at,true))), el("h2", {}, message.title), el("p", { class: "message-body" }, message.body), el("div", { class: "message-actions" }, el("span", { class: "muted" }, icon("folder"), item?.name || t("历史项目", "Historical project")), open)));
+  });
+  return [heading(`${employee.name} · ${navLabels.mailboxes}`, t("管理员查看 · 显示该员工相关的项目通信，不代表登录或代替它发信。", "Administrator view · Project correspondence for this employee. This does not sign in or send as the employee.")),
+    el("div", { class: "mailbox-toolbar" }, selector, folders, el("span", { class: "muted small-text" }, t(`${relevant.length} 封信`, `${relevant.length} messages`))), list,
+    el("p", { class: "directory-note" }, t("给员工发信：打开对应项目 → 项目消息 → 选择收件人。Agent 自己通过授权的项目工具读写；查看此页不标记已读或自动确认。", "To write: open the project → Messages → choose the recipient. Agents use authorized project tools. Viewing this page does not mark messages read or acknowledge them."))];
 }
 function renderMembers() {
   if (!project()) return [heading(navLabels.members), empty(t("为团队选择一个项目", "Choose a project for your team"), t("员工已在全局登记；创建项目后选择需要的成员。", "Employees are registered globally. Create a project and choose its members."), "new-project", t("创建项目", "Create project"), "users")];
   const people = projectEmployees();
   return [heading(navLabels.members, t("从已登记员工中选择成员。移出项目不会删除员工身份或历史。", "Choose from registered employees. Removing a member keeps their identity and history."), [button(t("选择已有员工", "Choose existing employees"), "add-member", { class: "primary", icon: "plus" }), button(t("发现更多员工", "Discover more employees"), "discover", { icon: "search" })]),
-    people.length ? el("div", { class: "employee-table" }, people.map((employee) => employeeRow(employee, { membership: true }))) : empty(t("把已有员工加入团队", "Add existing employees to your team"), t("选择登记过的员工加入此项目，然后通过消息沟通或派发工作任务。", "Choose registered employees for this project, then send messages or assign work."), "add-member", t("选择已有员工", "Choose existing employees"), "users"),
+    people.length ? el("div", { class: "employee-grid" }, people.map((employee) => employeeRow(employee, { membership: true }))) : empty(t("把已有员工加入团队", "Add existing employees to your team"), t("选择登记过的员工加入此项目，然后通过消息沟通或派发工作任务。", "Choose registered employees for this project, then send messages or assign work."), "add-member", t("选择已有员工", "Choose existing employees"), "users"),
     renderGovernancePanel()];
 }
 function openMemberForm() {
@@ -700,7 +778,7 @@ function render() {
     root.setAttribute("aria-busy", "false");
     return;
   }
-  const renders = { overview: renderOverview, tasks: renderTasks, employees: renderEmployees, members: renderMembers, messages: renderMessages, resources: renderResources, devices: renderDevices };
+  const renders = { overview: renderOverview, tasks: renderTasks, employees: renderEmployees, mailboxes: renderMailboxes, members: renderMembers, messages: renderMessages, resources: renderResources, devices: renderDevices };
   const content = state.data ? renders[state.view]() : renderDisconnected();
   root.replaceChildren(...content.flat(Infinity).filter((item) => item !== null && item !== undefined && item !== false));
   root.setAttribute("aria-busy", "false");

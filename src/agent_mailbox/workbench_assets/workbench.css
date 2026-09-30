@@ -429,3 +429,45 @@ dialog::backdrop { background: rgb(15 23 36 / 30%); }
 .connection-guide h3 { margin: 0 0 8px; }
 .connection-guide p { margin: 8px 0; }
 .connection-guide code { overflow-wrap: anywhere; white-space: pre-wrap; }
+
+/* Employee identities: essential facts first, connection details on demand. */
+.employee-directory-toolbar, .mailbox-toolbar { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-bottom: 24px; }
+.employee-search { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 220px; max-width: 360px; padding: 0 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+.employee-search svg { width: 17px; color: var(--muted); }
+.employee-search input { width: 100%; min-width: 0; border: 0; background: transparent; padding: 10px 0; }
+.employee-filters { display: flex; gap: 5px; flex-wrap: wrap; }
+.employee-filters .button { border-color: transparent; background: transparent; color: var(--muted); }
+.employee-filters .button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-soft-ink); }
+.employee-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 290px), 1fr)); gap: 18px; align-items: start; }
+.employee-grid > .large-empty { grid-column: 1 / -1; }
+.employee-row.employee-card { display: flex; flex-direction: column; align-items: stretch; gap: 0; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); min-width: 0; transition: border-color 160ms ease-out; }
+.employee-row.employee-card:hover { border-color: var(--accent); }
+.employee-card-header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; min-width: 0; }
+.employee-card .avatar { width: 42px; height: 42px; border-radius: 12px; font-size: 14px; flex: none; }
+.employee-card-identity { min-width: 0; flex: 1; }
+.employee-card .employee-name { font-size: 16px; overflow-wrap: anywhere; }
+.employee-card .employee-kind { font-size: 11px; margin-top: 3px; color: var(--muted); overflow-wrap: anywhere; }
+.employee-entry-type { font-size: 10px; font-weight: 600; padding: 3px 7px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); flex: none; }
+.employee-card-status { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.execution-pill { color: var(--muted); font-size: 12px; display: inline-flex; align-items: center; gap: 7px; }
+.execution-pill::before { content: ""; width: 6px; height: 6px; border: 1.5px solid currentColor; border-radius: 50%; }
+.execution-pill.verified { color: var(--success); }
+.execution-pill.verified::before { background: currentColor; }
+.employee-sign-in { font-size: 11px; color: var(--muted); margin-top: 7px; }
+.employee-projects { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 54px; padding-block: 14px; font-size: 11px; }
+.employee-project-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; color: var(--muted); overflow-wrap: anywhere; }
+.employee-project-chip svg { width: 13px; height: 13px; }
+.employee-card-actions { display: flex; gap: 8px; margin-top: auto; padding-top: 8px; }
+.employee-mailbox-button { color: var(--accent-soft-ink); background: var(--accent-soft); border-color: transparent; }
+.employee-configuration { margin-top: 18px; border-top: 1px solid var(--line-soft); padding-top: 12px; }
+.employee-configuration summary { color: var(--muted); font-size: 11px; cursor: pointer; }
+.employee-configuration .employee-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.employee-configuration .employee-facts dt, .employee-configuration .employee-facts dd { font-size: 11px; }
+.employee-card .employee-actions { justify-content: flex-start; margin-top: 14px; gap: 6px; }
+.employee-card .employee-actions .button { font-size: 11px; padding: 6px 8px; }
+.directory-note { font-size: 12px; color: var(--muted); max-width: 75ch; margin-top: 24px; line-height: 1.8; }
+.mailbox-toolbar select { max-width: 270px; }
+.mailbox-list .message-row { background: var(--surface); }
+.mailbox-list .message-actions > span { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.mailbox-list .message-actions > span svg { width: 14px; height: 14px; }
+@media (max-width: 480px) { .employee-directory-toolbar, .mailbox-toolbar { gap: 12px; } .employee-search { max-width: none; min-width: 100%; } .employee-grid { gap: 14px; } .employee-row.employee-card { padding: 18px; } }
