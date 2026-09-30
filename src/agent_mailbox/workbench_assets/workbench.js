@@ -1,6 +1,9 @@
 import { api, ApiError } from "./api.js";
 
-const english = !navigator.language.toLowerCase().startsWith("zh");
+let languagePreference = "auto";
+try { languagePreference = localStorage.getItem("agent-mailbox.workbench.language") || "auto"; } catch { /* optional */ }
+if (!["auto", "zh-CN", "en"].includes(languagePreference)) languagePreference = "auto";
+const english = languagePreference === "en" || (languagePreference === "auto" && !navigator.language.toLowerCase().startsWith("zh"));
 const t = (zh, en) => english ? en : zh;
 document.documentElement.lang = english ? "en" : "zh-CN";
 document.title = t("工作台 · agent-mailbox", "Workbench · agent-mailbox");
@@ -19,16 +22,19 @@ const state = {
   changesPending: false, changeTimer: null, streamError: false,
   governance: null, governanceError: null, governanceLoading: false, governanceQueued: false,
   applicationStopping: false, applicationStopped: false,
+  legalDocuments: {},
   taskFormUpdate: null,
   employeeQuery: "", employeeFilter: "all", mailboxEmployeeId: "", mailboxFolder: "inbox",
   messageDrafts: {}, messages: {}, messagesLoading: false, messagesError: null, dragEmployeeId: null,
 };
 try { state.projectId = sessionStorage.getItem("agent-mailbox.workbench.project") || ""; } catch { /* optional */ }
 
+try { if (sessionStorage.getItem("agent-mailbox.workbench.language-view") === "about") { state.view = "about"; sessionStorage.removeItem("agent-mailbox.workbench.language-view"); } } catch { /* optional */ }
+
 const navLabels = {
   overview: t("项目概览", "Overview"), tasks: t("任务", "Tasks"),
   employees: t("所有员工", "All employees"), members: t("项目成员", "Project members"), messages: t("项目消息", "Messages"), resources: t("资料与记忆", "Resources & memory"),
-  mailboxes: t("员工信箱", "Employee mailboxes"), devices: t("设备", "Devices"),
+  mailboxes: t("员工信箱", "Employee mailboxes"), devices: t("设备", "Devices"), about: t("关于与更新", "About & updates"),
 };
 const statusLabels = {
   queued: t("排队中", "Queued"), starting: t("正在启动", "Starting"),
@@ -171,8 +177,6 @@ function setNotice(message, isError = false) {
   notice.append(el("span", {}, message), button(t("重试", "Retry"), "refresh", { class: "small", icon: "refresh" }));
 }
 function updateConnection(connected) {
-  document.getElementById("service-dot").className = `status-dot ${connected ? "connected" : "error"}`;
-  document.getElementById("service-label").textContent = connected ? t("工作台已连接", "Workbench connected") : t("服务未连接", "Disconnected");
   const connection = document.getElementById("connection-label");
   connection.replaceChildren(el("span", { class: `status-dot ${connected ? "connected" : "error"}` }), el("span", {}, connected ? t("已连接", "Connected") : t("未连接", "Disconnected")));
 }
@@ -254,7 +258,7 @@ function renderSidebar() {
     });
   }
   const current = project();
-  document.getElementById("breadcrumb-project").textContent = ["employees", "mailboxes"].includes(state.view) ? t("工作台", "Workbench") : current?.name || t("工作台", "Workbench");
+  document.getElementById("breadcrumb-project").textContent = ["employees", "mailboxes", "about"].includes(state.view) ? t("工作台", "Workbench") : current?.name || t("工作台", "Workbench");
   document.getElementById("breadcrumb-page").textContent = navLabels[state.view];
   document.getElementById("task-nav-count").textContent = current ? String(projectTasks().filter((task) => task.status !== "done" && task.status !== "cancelled").length) : "";
 }
@@ -771,6 +775,51 @@ function renderDisconnected() {
   return [heading(t("工作台暂未连接", "The workbench is disconnected"), t("连接服务后，你的项目、员工和任务会显示在这里。", "Your projects, employees, and tasks appear when the service is connected.")),
     empty(t("连接本机工作台", "Connect to your workbench"), errorText(state.error || new ApiError("connection_failed")), "refresh", t("重新连接", "Reconnect"), "link")];
 }
+function renderAbout() {
+  const language = el("select", { id: "language-preference", "aria-label": t("界面语言", "Interface language") },
+    el("option", { value: "auto" }, t("跟随浏览器", "Follow browser")),
+    el("option", { value: "zh-CN" }, "简体中文"), el("option", { value: "en" }, "English"));
+  language.value = languagePreference;
+  language.addEventListener("change", () => {
+    try {
+      localStorage.setItem("agent-mailbox.workbench.language", language.value);
+      sessionStorage.setItem("agent-mailbox.workbench.language-view", "about");
+      location.reload();
+    } catch { showToast(t("浏览器无法保存语言偏好，请检查存储权限。", "The browser cannot save your language preference. Check storage permissions."), true); }
+  });
+  const link = (label, url) => el("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, label);
+  const section = (title, ...content) => el("section", { class: "about-section" }, el("h2", {}, title), ...content);
+  const version = state.data?.version ? `v${state.data.version}` : t("版本未知", "Version unavailable");
+  const licenses = [["LICENSE.txt", "Apache-2.0"], ["NOTICE.txt", "NOTICE"], ["MIT-Legacy.txt", t("原 MIT 版权声明", "Legacy MIT notices")]].map(([filename, label]) => {
+    const pre = el("pre", { class: "license-text", tabindex: "0" });
+    const details = el("details", { class: "license-document" }, el("summary", {}, label),
+      link(t("打开原始文本 ↗", "Open original text ↗"), `/workbench-assets/${filename}`), pre);
+    details.addEventListener("toggle", async () => {
+      if (!details.open) return;
+      if (state.legalDocuments[filename]) { pre.textContent = state.legalDocuments[filename]; return; }
+      pre.textContent = t("正在读取…", "Loading…");
+      try {
+        const response = await fetch(`/workbench-assets/${filename}`, { cache: "no-store" });
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        state.legalDocuments[filename] = await response.text();
+        pre.textContent = state.legalDocuments[filename];
+      } catch { pre.textContent = t("读取失败。可重新展开重试，或打开原始文本。", "Could not load. Reopen to retry, or open the original text."); }
+    });
+    return details;
+  });
+  return [heading(t("关于与更新", "About & updates"), "agent-mailbox · " + version), el("div", { class: "about-content" },
+    section(t("界面语言", "Interface language"), el("p", {}, t("支持简体中文与英文。偏好保存在当前浏览器；切换会重新加载界面，不会改变任务或项目资料的语言。", "Simplified Chinese and English are available. Preferences are stored in this browser. Switching reloads the interface and does not translate tasks or project content.")), language),
+    section(t("版本与升级", "Version & updates"), el("p", {}, t("当前为本地 alpha，尚无公开 v0.8 安装包或应用内自动更新。GitHub 公开发行版可能仍是旧版本，请核对版本号。", "This is a local alpha. There is no public v0.8 installer or in-app automatic updater yet. Public GitHub releases may still be older versions; check their version numbers.")),
+      el("ol", {}, ...[
+        t("先让运行中的任务结束，再退出应用。", "Let running tasks finish, then quit the application."),
+        t("备份原数据目录，再替换同系统的新应用包；保留原数据目录。", "Back up your data directory, then replace the app with the new package for your OS. Keep the existing data directory."),
+        t("用同一数据目录启动，确认员工、项目和历史仍在。迁移失败时停止使用，按对应版本说明恢复备份。", "Start with the same data directory and verify employees, projects and history. If migration fails, stop and follow that release's backup recovery instructions."),
+      ].map(item => el("li", {}, item))),
+      el("p", {}, t("默认 Mac 数据目录：~/.agent-mailbox-v08。供应商登录保留在各 agent 本机；不会迁移到其他设备。", "Default Mac data directory: ~/.agent-mailbox-v08. Provider sign-in stays local to each agent and is not transferred to other devices.")),
+      el("p", { class: "about-links" }, link(t("GitHub 发行页 ↗", "GitHub releases ↗"), "https://github.com/polaris-smart/agent-mailbox/releases"), link(t("反馈问题 ↗", "Report an issue ↗"), "https://github.com/polaris-smart/agent-mailbox/issues"))),
+    section(t("开源与版权", "Open source & notices"), el("p", {}, "© 2026 NoFox · Apache-2.0"), el("p", {}, t("保留原有代码及第三方要求的版权声明。以下是随本版本发行的原始内容。", "Original and required third-party copyright notices are retained. The documents below ship with this version.")), ...licenses))];
+}
+
 function render() {
   renderSidebar();
   if (state.applicationStopped) {
@@ -778,7 +827,7 @@ function render() {
     root.setAttribute("aria-busy", "false");
     return;
   }
-  const renders = { overview: renderOverview, tasks: renderTasks, employees: renderEmployees, mailboxes: renderMailboxes, members: renderMembers, messages: renderMessages, resources: renderResources, devices: renderDevices };
+  const renders = { overview: renderOverview, tasks: renderTasks, employees: renderEmployees, mailboxes: renderMailboxes, members: renderMembers, messages: renderMessages, resources: renderResources, devices: renderDevices, about: renderAbout };
   const content = state.data ? renders[state.view]() : renderDisconnected();
   root.replaceChildren(...content.flat(Infinity).filter((item) => item !== null && item !== undefined && item !== false));
   root.setAttribute("aria-busy", "false");
@@ -1444,6 +1493,7 @@ for (const control of document.querySelectorAll("[data-view]")) {
   const span = control.querySelector("span");
   if (span) span.textContent = navLabels[control.dataset.view];
 }
+document.getElementById("version-label").setAttribute("aria-label", t("关于与更新", "About & updates"));
 document.querySelector(".brand small").textContent = t("团队工作台", "Team workbench");
 document.querySelector(".sidebar-heading > span").textContent = t("项目", "Projects");
 document.querySelector("#quit-application-button > span").textContent = t("退出应用", "Quit application");

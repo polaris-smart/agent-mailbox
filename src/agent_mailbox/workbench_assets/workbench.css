@@ -471,3 +471,22 @@ dialog::backdrop { background: rgb(15 23 36 / 30%); }
 .mailbox-list .message-actions > span { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
 .mailbox-list .message-actions > span svg { width: 14px; height: 14px; }
 @media (max-width: 480px) { .employee-directory-toolbar, .mailbox-toolbar { gap: 12px; } .employee-search { max-width: none; min-width: 100%; } .employee-grid { gap: 14px; } .employee-row.employee-card { padding: 18px; } }
+
+/* Quiet identity footer; connection state lives in the top bar. */
+.legal-footer { border-top: 1px solid var(--line); padding: 14px 8px 0; font-size: 11px; color: var(--muted); }
+.legal-identity, .legal-links { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.legal-links { margin-top: 8px; }
+.text-button { color: inherit; border: 0; background: transparent; padding: 0; font: inherit; cursor: pointer; text-align: left; }
+.text-button:hover, .legal-footer a:hover { color: var(--ink); text-decoration: underline; }
+.text-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.about-content { max-width: 800px; }
+.about-section { padding: 24px 0; border-top: 1px solid var(--line); }
+.about-section h2 { font-size: 16px; margin-bottom: 12px; }
+.about-section p, .about-section li { font-size: 13px; line-height: 1.8; margin-bottom: 10px; }
+.about-section ol { padding-left: 22px; }
+.about-section select { width: 240px; max-width: 100%; }
+.about-links { display: flex; gap: 24px; flex-wrap: wrap; }
+.license-document { border-top: 1px solid var(--line); padding: 14px 0; }
+.license-document summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+.license-document > a { display: inline-block; font-size: 12px; margin: 12px 0; }
+.license-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 18px; font-size: 12px; line-height: 1.65; }
