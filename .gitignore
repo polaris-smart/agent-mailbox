@@ -13,3 +13,7 @@ dist/
 .aoci/config.local.json
 .aoci/ledger.jsonl
 .aoci/verify_history*
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/docs/context-graph/
+graft/.cache/

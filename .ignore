@@ -1,0 +1,5 @@
+# graft's cards are gitignored but should stay greppable: ripgrep reads
+# .ignore before .gitignore, so this re-admits the tree to search only.
+!docs/context-graph/
+docs/context-graph/.cache/
+docs/context-graph/.graph/
