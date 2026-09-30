@@ -113,12 +113,13 @@ def build(runtime_dir: Path, node: Path, output: Path, name: str) -> dict:
         )
     )
     content = spec.read_text()
-    if content.count("app = BUNDLE(\n") != 1:
+    bundle_start = "app = BUNDLE(\n    coll,\n"
+    if content.count(bundle_start) != 1:
         raise RuntimeError("PyInstaller generated an unexpected macOS bundle specification")
     spec.write_text(
         content.replace(
-            "app = BUNDLE(\n",
-            f"app = BUNDLE(\n    version={short_version!r},\n    info_plist={info_plist!r},\n",
+            bundle_start,
+            bundle_start + f"    version={short_version!r},\n    info_plist={info_plist!r},\n",
         )
     )
     command = [
