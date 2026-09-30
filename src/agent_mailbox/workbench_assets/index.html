@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>工作台 · agent-mailbox</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 28'%3E%3Crect x='1' y='1' width='26' height='26' rx='7' fill='%234a6fa5'/%3E%3Cpath d='M6 9h16v11H6zM6 9l8 6 8-6' stroke='white' stroke-width='1.4' fill='none'/%3E%3C/svg%3E" type="image/svg+xml">
+  <link rel="stylesheet" href="/workbench-assets/workbench.css">
+  <script type="module" src="/workbench-assets/workbench.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到工作区</a>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar" aria-label="项目与导航">
+      <a class="brand" href="#overview" aria-label="agent-mailbox 工作台">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 28 28"><rect x="3" y="6" width="22" height="16" rx="4"/><path d="m4 8 10 7L24 8"/></svg></span>
+        <span>agent-mailbox<small>团队工作台</small></span>
+      </a>
+      <div class="sidebar-section">
+        <div class="sidebar-heading"><span>项目</span><button class="icon-button" type="button" data-action="new-project" aria-label="新建项目" title="新建项目"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>
+        <div id="project-list" class="project-list" aria-label="项目列表"><div class="skeleton skeleton-project"></div></div>
+      </div>
+      <nav class="project-nav" aria-label="工作区">
+        <button type="button" class="nav-item selected" data-view="overview" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="6" height="7" rx="1.5"/><rect x="4" y="14" width="7" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/></svg><span>项目概览</span></button>
+        <button type="button" class="nav-item" data-view="tasks"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 7 2 2 3-4m-5 12 2 2 3-4M12 7h8M12 17h8"/></svg><span>任务</span><span class="nav-count" id="task-nav-count"></span></button>
+        <button type="button" class="nav-item" data-view="employees"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2m1-15a3 3 0 0 1 0 6m2 4a5 5 0 0 1 3 5"/></svg><span>员工</span></button>
+        <button type="button" class="nav-item" data-view="resources"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h6l2 2h8v12H4zM4 6V4h6l2 2"/></svg><span>资料与记忆</span></button>
+      </nav>
+      <div class="sidebar-bottom">
+        <button type="button" class="nav-item" data-view="devices"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="14" height="11" rx="2"/><path d="M7 20h6m-3-5v5"/><rect x="18" y="12" width="4" height="8" rx="1"/></svg><span>设备</span></button>
+        <div class="service-indicator"><span class="status-dot" id="service-dot"></span><span id="service-label">正在连接工作台</span><span class="version-label" id="version-label"></span></div>
+      </div>
+    </aside>
+    <button class="sidebar-backdrop" id="sidebar-backdrop" type="button" aria-label="关闭导航" hidden></button>
+    <div class="main-shell">
+      <header class="topbar">
+        <button class="icon-button mobile-menu" id="sidebar-toggle" type="button" aria-label="打开导航" aria-controls="sidebar" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+        <div class="breadcrumb"><span id="breadcrumb-project">工作台</span><span aria-hidden="true">/</span><span id="breadcrumb-page">项目概览</span></div>
+        <div class="topbar-actions">
+          <span class="connection-label" id="connection-label"><span class="status-dot"></span><span>连接中</span></span>
+          <button class="icon-button" type="button" id="refresh-button" aria-label="刷新工作台" title="刷新工作台"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 7a7 7 0 0 1 12-1l2 2M4 16l2 2a7 7 0 0 0 12-1"/></svg></button>
+          <button class="icon-button" type="button" id="theme-button" aria-label="切换为深色外观" title="切换外观"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 13a8 8 0 0 1-9-9 8 8 0 1 0 9 9Z"/></svg></button>
+        </div>
+      </header>
+      <main id="main" class="content" tabindex="-1">
+        <div id="global-notice" class="notice" role="status" hidden></div>
+        <div id="view-root" aria-live="polite" aria-busy="true"><div class="loading-view"><div class="skeleton skeleton-heading"></div><div class="skeleton skeleton-text"></div><div class="loading-rows"><div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div></div><p class="muted">正在读取项目与员工…</p></div></div>
+      </main>
+    </div>
+  </div>
+  <dialog id="form-dialog" class="form-dialog" aria-labelledby="form-dialog-title"><div id="form-dialog-content"></div></dialog>
+  <dialog id="detail-dialog" class="detail-dialog" aria-labelledby="detail-dialog-title"><div id="detail-dialog-content"></div></dialog>
+  <div class="toast-region" id="toast-region" role="status" aria-live="polite" aria-atomic="true"></div>
+  <noscript><div class="noscript-message">工作台需要 JavaScript 才能读取项目和派发任务。请启用 JavaScript 后刷新。</div></noscript>
+</body>
+</html>
