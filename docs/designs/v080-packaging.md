@@ -71,5 +71,5 @@ This build has no Developer ID signature or notarization. PyInstaller may apply
 local ad-hoc signatures for Mach-O executables; that does not make it a signed,
 notarized distribution. It is a local build artifact requiring a separate release
 process before public distribution. The installer and build do not implement
-automatic updates, data migrations or rollout/rollback, and must not be described
-as delivering those features. A future updater must preserve the external home.
+automatic updates or rollout/rollback, and must not be described
+as delivering those features. The product store performs its own additive SQLite schema migrations. A future updater must preserve the external home.

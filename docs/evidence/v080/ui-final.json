@@ -1,0 +1,9 @@
+{
+  "passed": [
+    "timeline suppresses 30 real fixture text-delta records; tool title remains safe text",
+    "resource form only offers supported text-file kinds and accurate UTF-8 size hint",
+    "real streamed external mutation defers bootstrap while form open, preserves draft, applies after close"
+  ],
+  "consoleErrors": [],
+  "limits": "Actual isolated HTTP and SQLite fixture; no AI execution."
+}

@@ -1,0 +1,14 @@
+{
+  "bundled_runtime": true,
+  "static_assets": true,
+  "frozen_local_mcp_tools": 5,
+  "frozen_remote_mcp_tools": 5,
+  "two_app_tls_pairing": true,
+  "authenticated_push": true,
+  "graceful_shutdown": true,
+  "persistent_data_and_tls_identity": true,
+  "model_calls": 0,
+  "physical_devices": false,
+  "version": "0.8.0a1",
+  "test_home": "/var/folders/w0/pcr9bwy17xjf_kxc3kmqm35h0000gn/T/v080-final-package-0cyawweh"
+}

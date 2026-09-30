@@ -1,3 +1,5 @@
+> **开发预览：** 本分支新增 **v0.8.0a1 项目工作台**，尚未公开发版。使用方式、实测与待解决项见[工作台说明](docs/WORKBENCH.md)。以下保留已有信箱文档。
+
 <!-- mcp-name: io.github.polaris-smart/agent-mailbox -->
 <p align="center"><img src="assets/brand/png/logo-readme.png" width="360" alt="agent-mailbox"></p>
 

@@ -1,0 +1,21 @@
+{
+  "passed": [
+    "actual TLS listener started explicitly from UI on isolated loopback",
+    "actual scoped single-use five-minute invitation, credentials only transient dialog",
+    "actual TLS pairing; invalid invitation error preserves input; unmapped employee action disabled",
+    "actual directory validation and persisted mapping; actual coordinator employee registration",
+    "remote employee appears in coordinator project, correct remote node identity, no AI task executed",
+    "remote assignment uses employee model settings without coordinator advertised options",
+    "authenticated real NDJSON change stream updates external writes; idle 6s makes no bootstrap polling",
+    "paired device flow at 390px has no horizontal overflow",
+    "revoked state hides repeated revoke; actual local disconnect and scoped re-pair preserve local mapping and identity",
+    "actual pairing revoke and listener pause from explicit confirmation forms"
+  ],
+  "consoleErrors": [],
+  "screenshots": [
+    "/tmp/agent-mailbox-v080-ui-fleet-owner.png",
+    "/tmp/agent-mailbox-v080-ui-fleet-remote.png",
+    "/tmp/agent-mailbox-v080-ui-fleet-mobile.png"
+  ],
+  "limits": "Two actual HTTP servers and actual TLS fleet protocol on loopback with isolated SQLite stores. Discovery and runtime are fixtures. No real AI task or physical LAN device tested."
+}

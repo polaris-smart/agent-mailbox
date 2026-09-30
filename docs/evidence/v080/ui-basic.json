@@ -1,0 +1,25 @@
+{
+  "passed": [
+    "credential fragment removed; real bootstrap connects",
+    "actual create project; invalid path error preserves input",
+    "actual employee registration; task is read-only; XSS input renders as text",
+    "model selection defaults to employee settings; advertised selection is sent explicitly",
+    "actual permission resolution and human acceptance, durable SQLite events",
+    "actual resource, memory, search and delete endpoints; no HTML injection",
+    "390px layout has no horizontal overflow; drawer navigation closes",
+    "reload retains tab authorization, project selection, and appearance",
+    "runtime installing and failure render; assignment is disabled without runtime",
+    "English browser gets English navigation and first-run copy",
+    "unauthorized page shows disconnected state without fabricated records",
+    "secondary text contrast passes 4.5:1; no null/object placeholders"
+  ],
+  "screenshots": [
+    "/tmp/agent-mailbox-v080-ui-empty.png",
+    "/tmp/agent-mailbox-v080-ui-permission.png",
+    "/tmp/agent-mailbox-v080-ui-overview.png",
+    "/tmp/agent-mailbox-v080-ui-mobile.png",
+    "/tmp/agent-mailbox-v080-ui-dark.png"
+  ],
+  "consoleErrors": [],
+  "limits": "Actual HTTP and SQLite; employee/runtime/engine are explicit fixtures. No real AI execution."
+}

@@ -89,6 +89,8 @@ def build(runtime_dir: Path, node: Path, output: Path, name: str) -> dict:
         "--collect-submodules",
         "mcp.server",
         "--add-data",
+        f"{REPOSITORY / 'LICENSE'}:licenses",
+        "--add-data",
         f"{SOURCE / 'runtime_bridge'}:agent_mailbox/runtime_bridge",
         "--add-data",
         f"{SOURCE / 'workbench_assets'}:agent_mailbox/workbench_assets",
