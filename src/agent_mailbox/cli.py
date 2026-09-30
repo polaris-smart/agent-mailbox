@@ -737,7 +737,16 @@ def _doctor_unit_path(
     launch_agents_dir: Path | None,
     systemd_dir: Path | None,
 ) -> Path | None:
-    """G-1「装」的判物：该身份的 wake 单元文件路径（None = 平台无法判装态）。"""
+    """G-1「装」的判物：该身份的 wake 单元文件路径（None = 平台无法判装态）。
+
+    显式注入的目录优先（测试/非默认安装位置的探测面），未注入才按平台
+    默认取——否则 CI 的 Linux/Windows runner 无法用注入的 macOS 形态假根
+    断言「装」判定（v0.7.6 发布实测：ubuntu 上 injected launchagents 目录
+    被平台分支绕过 ⇒ 已装 0/3 假红）。"""
+    if launch_agents_dir is not None:
+        return Path(launch_agents_dir) / f"{wake_mod.WAKE_LABEL}-{agent_id}.plist"
+    if systemd_dir is not None:
+        return Path(systemd_dir) / f"{wake_mod.WAKE_LABEL}-{agent_id}.path"
     if sys.platform == "darwin":
         return (
             Path(launch_agents_dir or (Path.home() / "Library" / "LaunchAgents"))
