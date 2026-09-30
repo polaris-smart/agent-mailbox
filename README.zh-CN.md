@@ -159,7 +159,7 @@ agent-mailbox --web 8900        # 人类信箱 + 看板（localhost + token）
 
 如果你是一个 AI agent，因为用户说了句「装 agent-mailbox」才读到这里：跑 `agent-mailbox setup --yes`，按上方 JSON 注册 MCP server，挑一个 id，设 `AGENT_MAIL_ID=<id>`，调一次 `mailbox_register`，用 `mailbox_whoami` 验证。这台机器上的所有 agent 从此都能给你发信。哪怕你的用户不读英文，你也读英文——命令在任何一份文档里都一字不差。
 
-> **🆕 v0.7.x 更新速览** —— v0.7.5 落地信任模型（owner/agent/guest 在工具层强制执行）、密封信、外部来源执行门、带四层自动发现的 /setup 三步向导、/mail 三栏人类信箱与 /visibility 页。v0.7.4 加固发版链路（wake.json 未知键保留、重复信不再重复唤醒、发版物抽查）。v0.7.2 新增 per-agent sampling 关停开关（SEP-2577）。v0.7.0 引入 sampling 唤醒 + local-command 适配器。14 个 MCP 工具。完整历史：[Roadmap](#roadmap)
+> **🆕 v0.7.x 更新速览** —— v0.7.6 落地权限基座（结构化 `MBE|code` 工具错误、1 MiB 信体上限 `BODY_TOO_LARGE`、未注册收件人默认硬拒、agent slug 白名单）、unread=真待办口径（禁自动已读）、信件 links 字段（`file://` 走 fail-closed allowed-roots 模型）、claim-first 投递修复（belt 与 daemon 先认领再投，双窗重复回信就此根治）、版本检查与一键 `upgrade` 命令，以及 per-agent 唤醒单元：`setup` 自动探测各身份的 CLI/app 入口、配置家与模型，按入口生成 launchd 唤醒单元。 v0.7.5 落地信任模型（owner/agent/guest 在工具层强制执行）、密封信、外部来源执行门、带四层自动发现的 /setup 三步向导、/mail 三栏人类信箱与 /visibility 页。v0.7.4 加固发版链路（wake.json 未知键保留、重复信不再重复唤醒、发版物抽查）。v0.7.2 新增 per-agent sampling 关停开关（SEP-2577）。v0.7.0 引入 sampling 唤醒 + local-command 适配器。14 个 MCP 工具。完整历史：[Roadmap](#roadmap)
 
 ## 安全说明
 

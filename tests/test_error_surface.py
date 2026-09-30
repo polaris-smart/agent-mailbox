@@ -224,7 +224,7 @@ def test_guard_unexpected_exception_stays_is_error_and_generic(caplog):
 
     @_tool_guard
     def crashed():
-        raise RuntimeError("secret stack detail /Users/interia/x")
+        raise RuntimeError("secret stack detail /Users/someuser/x")  # 假路径示例，勿用真机用户名
 
     with (
         caplog.at_level(_logging.ERROR, logger="agent_mailbox.server"),

@@ -32,9 +32,13 @@ Operate the **agent-mailbox** system: a local-file mailbox (`~/.agent-mail`) whe
 
 5. Optional — sampling wake (v0.7, in-protocol): if the host declares MCP `capabilities.sampling`, the server pings the recipient's host via `sampling/createMessage` the moment a letter lands — no file-watcher needed. Each wake carries a **forced wake-policy injection** (`<mail-root>/wake.json` per-agent section: `identity` template, `forbidden` hard constraints, `require_receipt`, `max_tokens`, `max_concurrent` execution lock — default 1, so one clone per agent works at a time). CLI-only agents (e.g. codex) can be woken without MCP sampling via the `local-command` adapter: `agent-mailbox wake run --agent <ID> --adapter local-command --once`, command configured in `wake.json`. A per-agent plist may override the adapter with `wake run --adapter <name>`. Every attempt is audited in `<mail-root>/sampling.log`; timeouts/errors degrade silently — letters never depend on sampling.
 
+6. Optional — per-entry wake units (v0.7.6, G-6/G-7): `agent-mailbox setup --agent <ID> --entry app|cli` detects the agent's binary, config home, and model, then renders the wake wrapper and a per-entry launchd unit (non-interactive shells never inherit app env — the generated unit writes config env and `--model` in explicitly). Wake delivery is **claim-first** since v0.7.6: belt and daemon claim before delivering, failed delivery goes back to pending, and a second claimant gets a `claim_denied` audit instead of a double reply. `agent-mailbox doctor` reports each entry as install → loaded → works, with human-readable fixes.
+
+7. Upgrading (v0.7.6): `agent-mailbox upgrade` checks PyPI and upgrades in place (auto-detects uv tool / pipx / pip; dry-run by default and shows the exact command; owner on this machine only; audit-logged; self-update is forbidden by design).
+
 ## Session discipline (important — hard-won lessons)
 
-1. **Start of session**: `mailbox_check()` to pull unread mail (pulling marks letters *acked*).
+1. **Start of session**: `mailbox_check()` to pull unread mail. Since v0.7.6 check is **read-only by default** (no auto-ack); to consume letters exactly once use the claim path (`agent-mailbox wake claim` / `store.claim()`), or pass `mark=True` for the legacy ack-on-read behavior. `unread` counts real pending work only.
 2. **Per letter**: read → do the work → `mailbox_done(msg_id)` immediately. A letter that is read-but-never-done piles up and poisons wake/polling heuristics downstream.
 3. **Replying**: `mailbox_reply(msg_id, body)` auto-routes to the original sender and closes the letter in one step. Threads are first-class: reply inherits the `thread_id`; to re-read a long exchange call `mailbox_thread(thread)` instead of stacking more "Re:" prefixes.
 4. **End of session**: run `mailbox_check()` once more — new mail may have arrived while you worked.
@@ -48,7 +52,7 @@ Operate the **agent-mailbox** system: a local-file mailbox (`~/.agent-mail`) whe
 |---|---|---|
 | `mailbox_register` | Register/claim a mailbox (idempotent) | `agent_id`, `owner?`, `description?` |
 | `mailbox_send` | Send to one / many / `"all"` | `to`, `subject`, `body`, `priority?`, `reply_to?` |
-| `mailbox_check` | Pull unread (marks acked by default) | `mark?` (`false` = peek) |
+| `mailbox_check` | Pull unread (read-only by default since v0.7.6) | `mark?` (`true` = legacy ack-on-read) |
 | `mailbox_reply` | Reply and auto-close the original | `msg_id`, `body` |
 | `mailbox_list` | List mail, filterable | `status?`, `thread?` |
 | `mailbox_thread` | Replay a whole thread in time order (cross-agent) | `thread` (thread_id or any msg id) |
