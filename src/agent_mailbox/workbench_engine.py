@@ -1,0 +1,160 @@
+"""Task execution joins durable product state with a replaceable ACP runtime."""
+
+from __future__ import annotations
+
+import threading
+import time
+from pathlib import Path
+
+from .workbench_runtime import BridgeExecution, context_prompt, workspace_server_command
+from .workbench_store import WorkbenchError, WorkbenchStore
+
+
+class WorkbenchEngine:
+    def __init__(
+        self,
+        store: WorkbenchStore,
+        bridge_command: list[str] | None = None,
+        task_timeout: float = 600,
+    ):
+        self.store = store
+        self.execution = BridgeExecution(Path(store.root), bridge_command)
+        self.task_timeout = task_timeout
+        self.changed = threading.Event()
+        self.stopping = threading.Event()
+        self.thread: threading.Thread | None = None
+        self.workers: set[threading.Thread] = set()
+        self.lock = threading.Lock()
+        self.endpoint = ""
+        self.on_change = None
+
+    def start(self):
+        self.store.recover_runs(self.store.local_node()["id"])
+        self.thread = threading.Thread(target=self._loop, name="mailbox-workbench", daemon=True)
+        self.thread.start()
+
+    def notify(self):
+        self.changed.set()
+        if self.on_change:
+            self.on_change()
+
+    def close(self):
+        self.stopping.set()
+        self.changed.set()
+        if self.thread:
+            self.thread.join(timeout=8)
+        with self.lock:
+            workers = list(self.workers)
+        for worker in workers:
+            worker.join(timeout=8)
+
+    def _loop(self):
+        while not self.stopping.is_set():
+            task = self.store.claim_task(self.store.local_node()["id"])
+            if task:
+                worker = threading.Thread(target=self._work, args=(task,), daemon=True)
+                with self.lock:
+                    self.workers.add(worker)
+                worker.start()
+                continue
+            self.changed.wait()
+            self.changed.clear()
+
+    def _work(self, task):
+        try:
+            self.execute(task)
+        finally:
+            with self.lock:
+                self.workers.discard(threading.current_thread())
+            self.notify()
+
+    def execute(self, task: dict):
+        try:
+            snapshot = self.store.snapshot()
+            project = next(p for p in snapshot["projects"] if p["id"] == task["project_id"])
+            employee = next(e for e in snapshot["employees"] if e["id"] == task["assignee_id"])
+            task = {**task, "kind": employee["kind"]}
+            if self.execution.command is None:
+                task["prompt"] = context_prompt(task, self.store.project_context(project["id"]))
+            creds = self.store.employee_credentials(employee["id"], project["id"])
+            command, args = workspace_server_command()
+            mcp_servers = [
+                {
+                    "name": "agent-mailbox-project",
+                    "command": command,
+                    "args": args,
+                    "env": [
+                        {"name": "AGENT_MAIL_HOME", "value": str(self.store.root)},
+                        {"name": "AGENT_MAIL_EMPLOYEE", "value": employee["id"]},
+                        {"name": "AGENT_MAIL_PROJECT", "value": project["id"]},
+                        {"name": "AGENT_MAIL_WORKBENCH_URL", "value": self.endpoint},
+                        {"name": "AGENT_MAIL_PROJECT_TOKEN", "value": creds["token"]},
+                    ],
+                }
+            ]
+
+            def cancelled():
+                return self.stopping.is_set() or self.store.get_task(task["id"])["cancel_requested"]
+
+            def event(record):
+                if record["type"] == "started":
+                    self.store.set_status(task["id"], "running")
+                # Keep thoughts/tool transcripts out of the concise public event message.
+                messages = {
+                    "session": "Employee session connected.",
+                    "started": "Employee started working.",
+                    "event": "Employee activity recorded.",
+                }
+                self.store.add_event(
+                    task["id"],
+                    record["type"],
+                    messages.get(record["type"], "Execution event."),
+                    record,
+                )
+
+                if self.on_change and (
+                    record["type"] != "event" or record.get("event", {}).get("type") != "text_delta"
+                ):
+                    self.on_change()
+
+            def permission(record):
+                self.store.request_permission(
+                    task["id"],
+                    record["request_id"],
+                    record.get("options", []),
+                    record.get("tool_call", {}),
+                )
+                if self.on_change:
+                    self.on_change()
+                deadline = time.monotonic() + 120
+                while time.monotonic() < deadline and not cancelled():
+                    value = self.store.get_permission(task["id"], record["request_id"])
+                    if value["status"] == "resolved":
+                        return value["decision"]
+                    self.stopping.wait(timeout=0.2)
+                try:
+                    self.store.resolve_permission(task["id"], record["request_id"], "deny")
+                except WorkbenchError:
+                    pass
+                return "deny"
+
+            result = self.execution.run(
+                task, project, mcp_servers, event, permission, cancelled, timeout=self.task_timeout
+            )
+            status = {"completed": "review", "cancelled": "cancelled"}.get(
+                result.get("status"), "failed"
+            )
+            self.store.finish_task(
+                task["id"], status, result.get("output_text", ""), result.get("error")
+            )
+            self.store.update_employee(
+                employee["id"],
+                "available" if status == "review" else "unknown",
+                "Execution verified."
+                if status == "review"
+                else "Inspect the task for execution details.",
+            )
+        except Exception as exc:  # noqa: BLE001 - execution must leave a terminal state
+            self.store.finish_task(
+                task["id"], "failed", error={"code": "EXECUTION_ERROR", "message": str(exc)}
+            )

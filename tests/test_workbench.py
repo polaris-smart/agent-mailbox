@@ -1,0 +1,257 @@
+"""Exercise real HTTP requests and child processes across the workbench boundary."""
+
+import json
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+
+import pytest
+
+from agent_mailbox.workbench import WorkbenchHTTP
+from agent_mailbox.workbench_engine import WorkbenchEngine
+from agent_mailbox.workbench_runtime import BridgeExecution
+from agent_mailbox.workbench_store import WorkbenchStore
+
+FAKE = r"""
+import sys,json,time
+r=json.loads(sys.stdin.readline())
+def send(t,**v):
+ print(json.dumps(dict(protocol=1,run_id=r['run_id'],session_id=r['session_id'],type=t,**v)),flush=True)
+if r['prompt']=='exit': sys.exit(0)
+send('started')
+if r['prompt']=='permission':
+ send('permission_required',request_id='approval',options=[{'optionId':'once','kind':'allow_once','name':'Allow once'}],tool_call={'title':'Read project'})
+ answer=json.loads(sys.stdin.readline())
+ if answer.get('decision')!='allow_once':
+  send('result',status='failed',error={'code':'PERMISSION_DENIED','message':'Denied'});sys.exit(0)
+if r['prompt']=='wait':
+ json.loads(sys.stdin.readline());send('result',status='cancelled');sys.exit(0)
+send('result',status='completed',output_text='Verified deliverable: '+r['prompt'])
+json.loads(sys.stdin.readline())
+"""
+
+
+@pytest.fixture
+def bench(tmp_path):
+    store = WorkbenchStore(tmp_path / "state")
+    project = store.create_project("Test project", str(tmp_path))
+    employee = store.create_employee("Fixture employee", "codex", project["id"])
+    bridge = tmp_path / "fake.py"
+    bridge.write_text(FAKE)
+    engine = WorkbenchEngine(store, [sys.executable, str(bridge)], task_timeout=3)
+    server = WorkbenchHTTP(store, engine=engine, token="test-owner-token")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    engine.start()
+    yield server, project, employee
+    server.shutdown()
+    server.close()
+    thread.join(timeout=2)
+
+
+def request(server, path, body=None, method=None, token="test-owner-token", origin=None):
+    headers = {"Authorization": "Bearer " + token}
+    if origin:
+        headers["Origin"] = origin
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(
+        server.endpoint + "/api/workbench/" + path, data=data, method=method, headers=headers
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=4) as response:
+            return response.status, json.load(response)
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.load(exc)
+
+
+def dispatch(bench, prompt="simple", employee=None):
+    server, project, person = bench
+    status, task = request(
+        server,
+        "tasks",
+        {
+            "project_id": project["id"],
+            "title": prompt,
+            "prompt": prompt,
+            "assignee_id": (employee or person)["id"],
+        },
+    )
+    assert status == 200
+    return task
+
+
+def await_state(server, task_id, status):
+    end = time.monotonic() + 6
+    while time.monotonic() < end:
+        task = server.store.get_task(task_id)
+        if task["status"] == status:
+            return task
+        time.sleep(0.03)
+    pytest.fail(f"Expected {status}; got {task['status']}: {task.get('error')}")
+
+
+def test_execution_and_human_acceptance(bench):
+    server, _, _ = bench
+    task = dispatch(bench)
+    result = await_state(server, task["id"], "review")
+    assert result["result"] == "Verified deliverable: simple"
+    assert request(server, "tasks/" + task["id"])[1]["events"]
+    assert (
+        request(server, "tasks/" + task["id"] + "/review", {"decision": "accept"})[1]["status"]
+        == "done"
+    )
+
+
+def test_exit_zero_without_result_is_failure(bench):
+    server, _, _ = bench
+    task = dispatch(bench, "exit")
+    assert await_state(server, task["id"], "failed")["error"]["code"] == "EXECUTION_INTERRUPTED"
+
+
+def test_owner_approval_and_late_answer(bench):
+    server, _, _ = bench
+    task = dispatch(bench, "permission")
+    await_state(server, task["id"], "waiting_approval")
+    detail = request(server, "tasks/" + task["id"])[1]
+    assert detail["permissions"][0]["status"] == "pending"
+    path = "tasks/" + task["id"] + "/permissions/approval"
+    assert request(server, path, {"decision": "allow_once"})[0] == 200
+    await_state(server, task["id"], "review")
+    assert request(server, path, {"decision": "allow_once"})[0] == 400
+
+
+def test_cancel_stops_only_assigned_run_and_releases_queue(bench):
+    server, _, _ = bench
+    task = dispatch(bench, "wait")
+    await_state(server, task["id"], "running")
+    queued = dispatch(bench)
+    request(server, "tasks/" + task["id"] + "/cancel", {})
+    await_state(server, task["id"], "cancelled")
+    await_state(server, queued["id"], "review")
+
+
+def test_different_employees_execute_concurrently(bench):
+    server, project, _ = bench
+    task = dispatch(bench, "wait")
+    await_state(server, task["id"], "running")
+    colleague = server.store.create_employee("Other fixture", "codex", project["id"])
+    next_task = dispatch(bench, employee=colleague)
+    await_state(server, next_task["id"], "review")
+    assert server.store.get_task(task["id"])["status"] == "running"
+    request(server, "tasks/" + task["id"] + "/cancel", {})
+
+
+def test_auth_origin_and_employee_scope(bench, tmp_path):
+    server, project, employee = bench
+    assert request(server, "bootstrap", token="wrong")[0] == 401
+    assert (
+        request(
+            server,
+            "projects",
+            {"name": "evil", "path": str(tmp_path)},
+            origin="https://evil.example",
+        )[0]
+        == 403
+    )
+    credentials = server.store.employee_credentials(employee["id"], project["id"])
+    assert request(server, "bootstrap", token=credentials["token"])[0] == 401
+    assert (
+        request(
+            server,
+            "notify",
+            {"employee_id": employee["id"], "project_id": project["id"]},
+            token=credentials["token"],
+        )[0]
+        == 200
+    )
+    other = server.store.create_project("Other", str(tmp_path / "state"))
+    assert (
+        request(
+            server,
+            "notify",
+            {"employee_id": employee["id"], "project_id": other["id"]},
+            token=credentials["token"],
+        )[0]
+        == 401
+    )
+    snapshot = request(server, "bootstrap")[1]
+    assert credentials["token"] not in json.dumps(snapshot)
+
+
+def test_static_assets_and_path_traversal(bench):
+    server, _, _ = bench
+    with urllib.request.urlopen(server.endpoint + "/workbench") as response:
+        assert response.status == 200
+        assert "script-src 'self'" in response.headers["Content-Security-Policy"]
+    with urllib.request.urlopen(server.endpoint + "/workbench-assets/workbench.css") as response:
+        assert response.status == 200
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(server.endpoint + "/../workbench_store.py")
+    assert exc.value.code == 404
+
+
+def test_bridge_timeout_and_wrong_session(tmp_path):
+    project = {"path": str(tmp_path)}
+    task = {
+        "kind": "codex",
+        "run_id": "run",
+        "session_id": "session",
+        "prompt": "test",
+        "permission_mode": "read-only",
+    }
+    script = tmp_path / "bad.py"
+    script.write_text("import time\ntime.sleep(8)\n")
+    execution = BridgeExecution(tmp_path, [sys.executable, str(script)])
+    start = time.monotonic()
+    result = execution.run(
+        task, project, [], lambda e: None, lambda e: "deny", lambda: False, timeout=0.1
+    )
+    assert result["error"]["code"] == "TIMEOUT"
+    assert time.monotonic() - start < 5
+    script.write_text(
+        "import json\nprint(json.dumps({'protocol':1,'run_id':'run','session_id':'other','type':'result','status':'completed','output_text':'wrong'}),flush=True)\n"
+    )
+    assert (
+        execution.run(task, project, [], lambda e: None, lambda e: "deny", lambda: False)["error"][
+            "code"
+        ]
+        == "RUNTIME_PROTOCOL_ERROR"
+    )
+
+
+def test_push_updates_require_owner_auth_and_do_not_poll(bench):
+    server, _, _ = bench
+    assert request(server, "changes", token="wrong")[0] == 401
+    req = urllib.request.Request(
+        server.endpoint + "/api/workbench/changes",
+        headers={"Authorization": "Bearer test-owner-token"},
+    )
+    with urllib.request.urlopen(req, timeout=3) as response:
+        first = json.loads(response.readline())
+        server.ui_notify()
+        second = json.loads(response.readline())
+        assert second["revision"] > first["revision"]
+
+
+def test_second_frontend_cannot_interrupt_running_owner(bench):
+    from agent_mailbox.workbench_store import WorkbenchError
+
+    server, _, _ = bench
+    task = dispatch(bench, "wait")
+    await_state(server, task["id"], "running")
+    with pytest.raises(WorkbenchError) as error:
+        WorkbenchHTTP(server.store)
+    assert error.value.code == "ALREADY_RUNNING"
+    assert server.store.get_task(task["id"])["status"] == "running"
+    request(server, "tasks/" + task["id"] + "/cancel", {})
+
+
+def test_cancelled_before_launch_does_not_start_a_process(tmp_path):
+    flag = tmp_path / "unexpected"
+    command = [sys.executable, "-c", f"from pathlib import Path;Path({str(flag)!r}).touch()"]
+    execution = BridgeExecution(tmp_path, command)
+    result = execution.run({}, {}, [], lambda e: None, lambda e: "deny", lambda: True)
+    assert result["status"] == "cancelled"
+    assert not flag.exists()
