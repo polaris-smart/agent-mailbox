@@ -333,3 +333,45 @@ def test_application_quit_is_owner_only_and_main_cleans_up(tmp_path):
         if process.poll() is None:
             process.terminate()
             process.wait(timeout=5)
+
+
+def test_quit_main_stops_owned_execution_and_preserves_external_state(tmp_path):
+    import subprocess
+
+    root = tmp_path / "active-home"
+    store = WorkbenchStore(root)
+    project = store.create_project("Quit check", str(tmp_path))
+    person = store.create_employee("Fixture", "codex", project["id"])
+    task = store.create_task(project["id"], "Wait", "wait", person["id"])
+    bridge = tmp_path / "fixture.py"
+    bridge.write_text(FAKE)
+    script = (
+        "from agent_mailbox import workbench\n"
+        "from agent_mailbox.workbench_engine import WorkbenchEngine\n"
+        f"workbench.WorkbenchEngine=lambda store: WorkbenchEngine(store, {[sys.executable, str(bridge)]!r},task_timeout=10)\n"
+        f"workbench.main(['--home',{str(root)!r},'--no-browser'])\n"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+    try:
+        endpoint, token = process.stdout.readline().strip().split("/#token=")
+        deadline = time.monotonic() + 5
+        while store.get_task(task["id"])["status"] != "running" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert store.get_task(task["id"])["status"] == "running"
+        req = urllib.request.Request(
+            endpoint + "/api/workbench/application/quit",
+            data=b"{}",
+            headers={"Authorization": "Bearer " + token},
+        )
+        with urllib.request.urlopen(req, timeout=3) as response:
+            assert json.load(response)["stopping"]
+        assert process.wait(timeout=8) == 0
+        assert store.get_task(task["id"])["status"] == "cancelled"
+        assert store.snapshot()["projects"][0]["id"] == project["id"]
+        assert not (store.directory / "instance.json").exists()
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=8)

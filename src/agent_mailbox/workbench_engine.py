@@ -72,6 +72,7 @@ class WorkbenchEngine:
             self.notify()
 
     def execute(self, task: dict):
+        run_deadline = time.monotonic() + self.task_timeout
         try:
             snapshot = self.store.snapshot()
             project = next(p for p in snapshot["projects"] if p["id"] == task["project_id"])
@@ -129,7 +130,15 @@ class WorkbenchEngine:
                 )
                 if self.on_change:
                     self.on_change()
-                deadline = time.monotonic() + 120
+                timeout_ms = record.get("timeout_ms", 120000)
+                if (
+                    not isinstance(timeout_ms, int)
+                    or isinstance(timeout_ms, bool)
+                    or timeout_ms <= 0
+                ):
+                    self.store.expire_permission(task["id"], record["request_id"], task["run_id"])
+                    return "deny"
+                deadline = min(run_deadline, time.monotonic() + min(120, timeout_ms / 1000))
                 # Hold the condition across the DB read so a human decision cannot
                 # be lost between observing pending and registering the waiter.
                 with self.permission_changed:
