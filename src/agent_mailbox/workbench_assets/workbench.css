@@ -490,3 +490,18 @@ dialog::backdrop { background: rgb(15 23 36 / 30%); }
 .license-document summary { cursor: pointer; font-size: 13px; font-weight: 600; }
 .license-document > a { display: inline-block; font-size: 12px; margin: 12px 0; }
 .license-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 18px; font-size: 12px; line-height: 1.65; }
+
+/* Live resource reads and optional, explicit code queries. */
+.resource-row-main { min-width: 0; flex: 1; }
+.resource-row-main > .button { margin-top: 12px; }
+.resource-row code, .resource-hash { display: block; overflow-wrap: anywhere; }
+.resource-reader-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0; }
+.resource-provenance, .knowledge-provenance { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; line-height: 1.7; }
+.resource-hash { font-size: 11px; color: var(--muted); }
+.resource-text, .knowledge-result { margin: 14px 0 0; padding: 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 55dvh; overflow: auto; font-size: 12px; line-height: 1.75; }
+.resource-html-preview { display: block; width: 100%; height: 55dvh; border: 1px solid var(--line); border-radius: 7px; background: white; }
+.knowledge-panel { margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--line); }
+.knowledge-status { margin: 12px 0 18px; font-size: 12px; line-height: 1.7; }
+.knowledge-panel form { max-width: 720px; }
+.knowledge-panel textarea { min-height: 84px; }
+.knowledge-output { margin-top: 16px; }

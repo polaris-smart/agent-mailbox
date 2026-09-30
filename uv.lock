@@ -10,7 +10,7 @@ resolution-markers = [
 
 [[package]]
 name = "agent-mailbox"
-version = "0.8.0a8"
+version = "0.8.0a9"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },

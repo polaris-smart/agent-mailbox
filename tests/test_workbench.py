@@ -515,3 +515,69 @@ def test_distribution_notices_are_available_without_owner_credentials(bench):
         with urllib.request.urlopen(server.endpoint + "/workbench-assets/" + name) as response:
             assert response.headers["Content-Type"] == "text/plain; charset=utf-8"
             assert expected in response.read().decode()
+
+
+def test_resource_preview_capability_and_live_provenance(bench, tmp_path):
+    import hashlib
+
+    server, project, _ = bench
+    source = tmp_path / "diagram.html"
+    source.write_text("<h1>Diagram</h1><script>window.fixture=1</script>")
+    resource = server.store.add_resource(project["id"], "Diagram", "architecture", source)
+    route = f"projects/{project['id']}/resources/{resource['id']}/read"
+    assert request(server, route, token="wrong")[0] == 401
+    status, result = request(server, route)
+    assert status == 200
+    assert result["provenance"]["mode"] == "live"
+    assert (
+        result["provenance"]["content_sha256"]
+        == hashlib.sha256(result["content"].encode()).hexdigest()
+    )
+    other = server.store.create_project("Other", str(tmp_path))
+    assert request(server, f"projects/{other['id']}/resources/{resource['id']}/read")[0] == 400
+    with urllib.request.urlopen(server.endpoint + result["preview_url"]) as response:
+        csp = response.headers["Content-Security-Policy"]
+        assert "sandbox allow-scripts;" in csp
+        assert "connect-src 'none'" in csp
+        assert "allow-same-origin" not in csp
+        assert response.read().decode() == result["content"]
+    nonce = result["preview_url"].rsplit("/", 1)[1]
+    with server.preview_lock:
+        server.previews[nonce] = (0, result["content"])
+    with pytest.raises(urllib.error.HTTPError) as expired:
+        urllib.request.urlopen(server.endpoint + result["preview_url"])
+    assert expired.value.code == 404
+    assert request(server, "bootstrap", token=nonce)[0] == 401
+    for _ in range(40):
+        server.resource_preview("x")
+    assert len(server.previews) == 32
+    source.write_text("Changed live file")
+    assert request(server, route)[1]["content"] == "Changed live file"
+
+
+def test_knowledge_http_is_project_bound_and_authenticated(bench, monkeypatch, tmp_path):
+    from agent_mailbox import workbench_knowledge
+
+    server, project, _ = bench
+    calls = []
+
+    def query(path, value):
+        calls.append((path, value))
+        return {
+            "symbols": [{"name": "Example"}],
+            "mode": "symbols_snapshot",
+            "freshness": "unknown",
+        }
+
+    monkeypatch.setattr(workbench_knowledge, "knowledge_query", query)
+    route = f"projects/{project['id']}/knowledge/query"
+    assert request(server, route, {"query": "Example"}, token="wrong")[0] == 401
+    assert calls == []
+    revision = server.ui_revision
+    status, result = request(server, route, {"query": "Example", "path": "/arbitrary"})
+    assert server.ui_revision == revision
+    assert status == 200
+    assert calls == [(str(tmp_path), "Example")]
+    assert result["provenance"]["freshness"] == "unknown"
+    assert request(server, "projects/missing/knowledge/query", {"query": "Example"})[0] == 404
+    assert len(calls) == 1

@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -63,6 +64,8 @@ class WorkbenchHTTP(ThreadingHTTPServer):
         self.engine = engine or WorkbenchEngine(store)
         self.engine.on_change = self.ui_notify
         self.token = token or secrets.token_urlsafe(32)
+        self.preview_lock = threading.Lock()
+        self.previews = {}
         self.install_lock = threading.Lock()
         self.install_status = None
         self.fleet = None
@@ -83,6 +86,26 @@ class WorkbenchHTTP(ThreadingHTTPServer):
         self.instance_path.write_text(json.dumps({"endpoint": self.endpoint, "token": self.token}))
         self.instance_path.chmod(0o600)
         self.restore_connections()
+
+    def resource_preview(self, content: str) -> str:
+        # Mint a short-lived content capability only after owner-authenticated
+        # resource reading. This capability cannot access any other API/data.
+        now = time.monotonic()
+        with self.preview_lock:
+            self.previews = {key: value for key, value in self.previews.items() if value[0] > now}
+            if len(self.previews) >= 32:
+                self.previews.pop(next(iter(self.previews)))
+            nonce = secrets.token_urlsafe(32)
+            self.previews[nonce] = (now + 300, content)
+        return "/workbench-preview/" + nonce
+
+    def preview_content(self, nonce: str) -> str:
+        with self.preview_lock:
+            item = self.previews.get(nonce)
+            if item is None or item[0] <= time.monotonic():
+                self.previews.pop(nonce, None)
+                raise WorkbenchError("NOT_FOUND", "Preview expired. Read the resource again.")
+            return item[1]
 
     def close(self):
         self.closing.set()
@@ -228,7 +251,9 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass  # Never log bearer credentials or prompts.
 
-    def send_value(self, status, value, content_type="application/json; charset=utf-8"):
+    def send_value(
+        self, status, value, content_type="application/json; charset=utf-8", *, csp=None
+    ):
         data = (
             json.dumps(value, ensure_ascii=False).encode()
             if isinstance(value, (dict, list))
@@ -242,7 +267,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+            csp
+            or "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
         )
         self.end_headers()
         self.wfile.write(data)
@@ -310,6 +336,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         url = urlsplit(self.path)
         path = url.path
+        if self.command == "GET" and path.startswith("/workbench-preview/"):
+            content = self.server.preview_content(path.removeprefix("/workbench-preview/"))
+            self.send_value(
+                200,
+                content.encode("utf-8"),
+                "text/html; charset=utf-8",
+                csp="sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                "img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; "
+                "form-action 'none'; base-uri 'none'; frame-ancestors 'self'",
+            )
+            return
         if self.command == "GET" and not path.startswith(PREFIX):
             name = (
                 "index.html"
@@ -523,6 +560,33 @@ class Handler(BaseHTTPRequestHandler):
         ):
             result = store.resolve_permission(route[1], route[3], data["decision"])
             self.server.notify()
+        elif (
+            method == "GET"
+            and len(route) == 5
+            and route[0] == "projects"
+            and route[2] == "resources"
+            and route[4] == "read"
+        ):
+            result = store.read_resource(route[1], route[3])
+            resource = result["resource"]
+            if str(resource.get("path", "")).lower().endswith((".html", ".htm")) or resource.get(
+                "kind"
+            ) in {"html", "archify"}:
+                result["preview_url"] = self.server.resource_preview(result["content"])
+        elif (
+            method == "GET"
+            and len(route) == 3
+            and route[0] == "projects"
+            and route[2] == "knowledge"
+        ):
+            result = store.knowledge_status(route[1])
+        elif (
+            method == "POST"
+            and len(route) == 4
+            and route[0] == "projects"
+            and route[2:] == ["knowledge", "query"]
+        ):
+            result = store.query_knowledge(route[1], data.get("query"))
         elif method == "POST" and route == ["resources"]:
             result = store.add_resource(
                 data["project_id"], data["name"], data["kind"], data["path"]
@@ -598,7 +662,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_value(202, self.server.install_runtime())
         else:
             raise WorkbenchError("NOT_FOUND", "Unknown workbench action.")
-        if method in {"POST", "DELETE"}:
+        if method in {"POST", "DELETE"} and not (
+            len(route) == 4 and route[0] == "projects" and route[2:] == ["knowledge", "query"]
+        ):
             self.server.ui_notify()
         self.send_value(200, result)
 

@@ -8,6 +8,7 @@ import urllib.request
 from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from .workbench_store import WorkbenchError, WorkbenchStore
 
@@ -45,6 +46,15 @@ def build_server(store, employee_id, project_id, token, endpoint="", task_id="",
         """Read a registered text artifact in the assigned project."""
         guard()
         return store.read_resource(project_id, resource_id)
+
+    @server.tool()
+    def project_code_search(query: str) -> dict:
+        """Search this project's optional CodeGraph symbol index. No index rebuild or LLM call."""
+        guard()
+        try:
+            return store.query_knowledge(project_id, query)
+        except WorkbenchError as exc:
+            raise ToolError(f"{exc.code}: {exc}") from None
 
     @server.tool()
     def project_note(title: str, body: str) -> dict:
@@ -180,6 +190,14 @@ def build_remote_server(client, employee_id, project_id, task_id="", run_id=""):
     def project_resource_read(resource_id: str) -> dict:
         """Read a registered project resource."""
         return call("resource_read", {"resource_id": resource_id})
+
+    @server.tool()
+    def project_code_search(query: str) -> dict:
+        """Search the coordinator's authorized project index; freshness is explicit."""
+        try:
+            return call("code_search", {"query": query})
+        except WorkbenchError as exc:
+            raise ToolError(f"{exc.code}: {exc}") from None
 
     @server.tool()
     def project_note(title: str, body: str) -> dict:

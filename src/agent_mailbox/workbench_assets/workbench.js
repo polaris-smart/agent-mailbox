@@ -138,13 +138,14 @@ function formatDate(value, detailed = false) {
 function errorText(error) {
   if (error.status === 401 || (error.status === 403 && ["UNAUTHORIZED", "authorization_required"].includes(error.code))) return t("此页面没有访问授权。请从本机工作台入口重新打开。", "This page is not authorized. Reopen it from the workbench launcher on this computer.");
   const messages = {
+    KNOWLEDGE_INDEX_BUSY: t("索引工具正在写入，请等它完成后再检查。", "The index tool is writing. Wait for it to finish, then check again."),
     authorization_required: t("请从本机工作台入口重新打开页面以连接服务。", "Reopen this page from the workbench launcher to connect."),
     request_timeout: t("服务响应超时，请稍后重试。", "The service took too long to respond. Try again."),
     connection_failed: t("无法连接工作台服务，请确认它正在运行后重试。", "Could not connect to the workbench. Check that it is running and try again."),
     invalid_response: t("服务返回了无法读取的数据，请刷新后重试。", "The service returned an unreadable response. Refresh and try again."),
     request_failed: t("操作没有完成，请重试。", "The operation did not complete. Try again."),
   };
-  return messages[error.message] || error.message || t("操作没有完成，请重试。", "The operation did not complete. Try again.");
+  return messages[error.code] || messages[error.message] || error.message || t("操作没有完成，请重试。", "The operation did not complete. Try again.");
 }
 function humanDetail(value) {
   const messages = {
@@ -708,6 +709,111 @@ function memoryRow(memory) {
   const source = memory.source === "human" ? t("由你记录", "Recorded by you") : memory.source || t("手动记录", "Manual record");
   return el("article", { class: "memory-row" }, el("header", {}, el("h3", {}, memory.title), remove), el("p", { class: "memory-body" }, memory.body), el("div", { class: "memory-meta" }, el("span", {}, source), el("span", {}, formatDate(memory.updated_at || memory.created_at))));
 }
+function resourceRow(resource, projectId) {
+  const read = button(t("查看资料", "View resource"), null, { class: "small", icon: "document" });
+  read.addEventListener("click", () => openResourceReader(projectId, resource));
+  return el("article", { class: "resource-row" }, icon("document"), el("div", { class: "resource-row-main" }, el("h3", {}, resource.name), el("code", {}, resource.path), el("p", { class: "resource-kind" }, resource.kind), read));
+}
+async function openResourceReader(projectId, resource) {
+  if (projectId !== state.projectId) return;
+  const body = openForm(resource.name || t("查看资料", "View resource"), t("实时读取登记的文件，显示本次内容与校验值。", "Read the registered file live and inspect its contents and checksum."));
+  if (!body) return;
+  const output = el("div", { class: "resource-reader", role: "status" }, t("正在读取…", "Reading…"));
+  body.append(output);
+  const current = () => projectId === state.projectId && formDialog.open && body.isConnected;
+  try {
+    const result = await api.readResource(projectId, resource.id);
+    if (!current()) return;
+    if (typeof result.content !== "string") throw new ApiError("invalid_response");
+    const content = result.content;
+    const provenance = result.provenance || {};
+    const raw = el("pre", { class: "resource-text", tabindex: "0", "aria-label": t("资料原文", "Resource source") }, content);
+    const stage = el("div", { class: "resource-reader-stage" }, raw);
+    const tools = el("div", { class: "resource-reader-actions" });
+    const html = /\.html?$/i.test(resource.path || result.source?.path || "") || /^\s*(?:<!doctype html|<html[\s>])/i.test(content);
+    if (html) {
+      const preview = button(t("隔离预览", "Isolated preview"), null, { class: "small" });
+      preview.setAttribute("aria-pressed", "false");
+      preview.addEventListener("click", () => {
+        if (!current()) return;
+        const showingPreview = preview.getAttribute("aria-pressed") === "true";
+        preview.setAttribute("aria-pressed", String(!showingPreview));
+        preview.textContent = showingPreview ? t("隔离预览", "Isolated preview") : t("查看原文", "View source");
+        if (showingPreview) stage.replaceChildren(raw);
+        else {
+          const frame = el("iframe", { class: "resource-html-preview", sandbox: "allow-scripts", referrerpolicy: "no-referrer", title: t("资料隔离预览", "Isolated resource preview") });
+          // Opaque sandbox origin: no owner storage, credentials, forms or popups.
+          // The preview response CSP blocks connections and external subresources.
+          if (!result.preview_url?.startsWith("/workbench-preview/")) {
+            showToast(t("隔离预览不可用，请查看或下载原文。", "Isolated preview unavailable. View or download the source."), true);
+            preview.setAttribute("aria-pressed", "false");
+            preview.textContent = t("隔离预览", "Isolated preview");
+            return;
+          }
+          frame.src = result.preview_url;
+          stage.replaceChildren(frame);
+        }
+      });
+      tools.append(preview);
+    }
+    const download = button(t("下载原文", "Download source"), null, { class: "small", icon: "download" });
+    download.addEventListener("click", () => {
+      if (!current()) return;
+      const url = URL.createObjectURL(new Blob([content], { type: "text/plain;charset=utf-8" }));
+      const link = el("a", { href: url, download: (resource.path || resource.name || "resource.txt").split(/[\\/]/).pop() || "resource.txt" });
+      document.body.append(link); link.click(); link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+    tools.append(download);
+    output.replaceChildren(...[el("p", { class: "resource-provenance" }, provenance.mode === "live" ? t("本次为实时读取", "Read live for this request") : t("读取方式未确认", "Read mode unconfirmed"), " · ", formatDate(provenance.read_at, true)), el("code", { class: "resource-hash" }, `SHA-256: ${provenance.content_sha256 || t("未提供", "Not provided")}`), tools, html ? el("p", { class: "field-hint" }, t("预览允许内联脚本，阻止外部资源和网络连接。原文与下载不会执行脚本。", "Preview allows inline scripts and blocks external resources and network connections. Source view and download do not execute scripts.")) : null, stage].filter((item) => item !== null));
+    formDialog.addEventListener("close", () => stage.replaceChildren(), { once: true });
+  } catch (error) { if (current()) output.replaceChildren(el("p", { class: "form-error", role: "alert" }, errorText(error))); }
+}
+function renderKnowledgePanel(projectId) {
+  const status = el("div", { class: "knowledge-status", role: "status" }, t("可选工具，尚未检查。只在你点击时检查或查询。", "Optional tool, not checked yet. Checks and queries run only when you click."));
+  const check = button(t("检查 CodeGraph", "Check CodeGraph"), null, { class: "small", icon: "search" });
+  const question = el("textarea", { id: "knowledge-query", maxlength: 500, rows: 2, placeholder: t("输入函数、类或路由名称", "Enter a function, class, or route name") });
+  const query = el("button", { class: "button small", type: "submit", disabled: true }, t("查询代码", "Query code"));
+  const output = el("div", { class: "knowledge-output", role: "status" });
+  const panel = el("section", { class: "knowledge-panel" });
+  let ready = false;
+  let busy = false;
+  let sequence = 0;
+  const current = () => projectId === state.projectId && panel.isConnected;
+  const updateQuery = () => { query.disabled = busy || !ready || !question.value.trim() || question.value.length > 500; };
+  question.addEventListener("input", updateQuery);
+  check.addEventListener("click", async () => {
+    const requestId = ++sequence;
+    ready = false; busy = true; check.disabled = true; updateQuery(); output.replaceChildren();
+    status.textContent = t("正在检查…", "Checking…");
+    try {
+      const result = await api.knowledgeStatus(projectId);
+      if (!current() || requestId !== sequence) return;
+      ready = result.available === true && result.index_ready === true;
+      const reason = result.reason || result.error?.message || result.message || "";
+      status.replaceChildren(el("p", {}, ready ? t("索引可查询；未核验当前源码", "Index query available; current source not verified") : !result.available ? t("CodeGraph 未安装或不可用；这是可选功能。", "CodeGraph is not installed or unavailable; it is optional.") : t("尚无可用索引。请在项目中准备索引后再次检查。", "No usable index. Prepare the project's index, then check again.")), reason ? el("p", { class: "muted" }, reason) : null, result.provider_version ? el("p", { class: "muted" }, `CodeGraph ${result.provider_version}`) : null, el("p", { class: "muted" }, result.freshness === "unknown" || !result.freshness ? t("新鲜度未知：未核验当前源码。", "Freshness unknown: current source not verified.") : `${t("索引状态", "Index freshness")}: ${typeof result.freshness === "string" ? result.freshness : JSON.stringify(result.freshness)}`));
+    } catch (error) { if (current() && requestId === sequence) status.textContent = errorText(error); }
+    finally { if (current() && requestId === sequence) { busy = false; check.disabled = false; updateQuery(); } }
+  });
+  const form = el("form", {}, formField(t("符号名称（最多 500 字符）", "Symbol name (up to 500 characters)"), question), query);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const value = question.value.trim();
+    if (!ready || busy || !value || question.value.length > 500 || !current()) return;
+    const requestId = ++sequence;
+    busy = true; check.disabled = true; updateQuery(); output.textContent = t("正在查询…", "Querying…");
+    try {
+      const result = await api.queryKnowledge(projectId, value);
+      if (!current() || requestId !== sequence) return;
+      if (typeof result.content !== "string") throw new ApiError("invalid_response");
+      const text = result.content.slice(0, 24000);
+      output.replaceChildren(...[el("p", { class: "field-hint" }, t("索引符号快照；未核验当前源码。", "Indexed symbol snapshot; current source not verified.")), el("pre", { class: "knowledge-result", tabindex: "0" }, text || t("没有匹配结果。", "No matching results.")), result.content.length > text.length ? el("p", { class: "field-hint" }, t("结果较长，仅显示前 24,000 字符。", "Showing the first 24,000 characters.")) : null, result.provenance ? el("p", { class: "knowledge-provenance" }, `${t("来源", "Provenance")}: ${JSON.stringify(result.provenance).slice(0, 2000)}`) : null].filter((item) => item !== null));
+    } catch (error) { if (current() && requestId === sequence) output.replaceChildren(el("p", { class: "form-error", role: "alert" }, errorText(error))); }
+    finally { if (current() && requestId === sequence) { busy = false; check.disabled = false; updateQuery(); } }
+  });
+  panel.append(el("div", { class: "section-heading" }, el("h2", {}, t("CodeGraph 代码符号检索", "CodeGraph symbol search")), check), status, form, output);
+  return panel;
+}
 function renderResources() {
   if (!project()) return [heading(navLabels.resources, t("共享背景、决定和资料，让员工接着已有工作继续。", "Share context, decisions, and resources so employees can continue the work.")), empty(t("先选择一个项目", "Choose a project first"), t("资料和记忆按项目保存。", "Resources and memory are saved by project."), "new-project", t("选择项目", "Choose project"))];
   const resources = state.data.resources.filter((item) => item.project_id === state.projectId);
@@ -732,8 +838,8 @@ function renderResources() {
   });
   return [heading(navLabels.resources, t("让背景资料与已确认的决定，成为下一次工作的起点。", "Make context and confirmed decisions the starting point for the next task.")),
     el("div", { class: "resource-layout" }, el("section", {}, el("div", { class: "section-heading" }, el("h2", {}, t("共享资料", "Shared resources")), button(t("添加资料", "Add resource"), "add-resource", { class: "small", icon: "plus" })),
-      resources.length ? resources.map((resource) => el("article", { class: "resource-row" }, icon("document"), el("div", {}, el("h3", {}, resource.name), el("code", {}, resource.path), el("p", { class: "resource-kind" }, resource.kind)))) : el("p", { class: "inline-empty" }, t("添加需求、规则或参考资料的文本文件，供员工在任务中读取。", "Add text files with requirements, rules, or references for employees to read during tasks."))),
-      el("section", {}, el("div", { class: "section-heading" }, el("h2", {}, t("项目记忆", "Project memory")), button(t("记录记忆", "Add memory"), "add-memory", { class: "small", icon: "plus" })), el("div", { class: "toolbar" }, search), memoryList))];
+      resources.length ? resources.map((resource) => resourceRow(resource, state.projectId)) : el("p", { class: "inline-empty" }, t("添加需求、规则或参考资料的文本文件，供员工在任务中读取。", "Add text files with requirements, rules, or references for employees to read during tasks."))),
+      el("section", {}, el("div", { class: "section-heading" }, el("h2", {}, t("项目记忆", "Project memory")), button(t("记录记忆", "Add memory"), "add-memory", { class: "small", icon: "plus" })), el("div", { class: "toolbar" }, search), memoryList)), renderKnowledgePanel(state.projectId)];
 }
 function renderDevices() {
   const devices = state.data?.devices || [];

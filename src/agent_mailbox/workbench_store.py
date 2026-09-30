@@ -1635,9 +1635,51 @@ class WorkbenchStore:
             if row["project_id"] != project_id:
                 raise WorkbenchError("permission_denied", "该资源不属于当前项目。")
             location, content = self._resource_file(row["path"])
-            return self._scrub(
+            result = self._scrub(
                 db, {"resource": self._entity(row), "content": content, "source": str(location)}
             )
+            result["provenance"] = {
+                "mode": "live",
+                "read_at": _now(),
+                "content_sha256": hashlib.sha256(result["content"].encode("utf-8")).hexdigest(),
+            }
+            return result
+
+    def knowledge_status(self, project_id: str) -> dict:
+        from .workbench_knowledge import knowledge_status
+
+        with self._connection() as db:
+            project = self._required(db, "projects", project_id)
+            path = project["path"]
+        result = knowledge_status(path)
+        result["provider_version"] = result.get("version")
+        result["reason"] = result.get("error_code") or result.get("freshness_reason")
+        with self._connection() as db:
+            return self._scrub(db, result)
+
+    def query_knowledge(self, project_id: str, query: str) -> dict:
+        from .workbench_knowledge import knowledge_query
+
+        with self._connection() as db:
+            project = self._required(db, "projects", project_id)
+            path = project["path"]
+        result = knowledge_query(path, query)
+        result["provider_version"] = result.get("version")
+        result["provenance"] = {
+            key: result.get(key)
+            for key in (
+                "provider",
+                "version",
+                "mode",
+                "revision",
+                "working_tree_dirty",
+                "freshness",
+                "freshness_reason",
+            )
+        }
+        result["content"] = json.dumps(result.get("symbols", []), ensure_ascii=False, indent=2)
+        with self._connection() as db:
+            return self._scrub(db, result)
 
     def project_context(self, project_id: str, employee_id: str | None = None) -> dict:
         with self._connection() as db:

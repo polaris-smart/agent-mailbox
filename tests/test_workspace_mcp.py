@@ -15,7 +15,7 @@ from agent_mailbox.workbench_engine import WorkbenchEngine
 from agent_mailbox.workbench_store import WorkbenchStore
 
 
-def test_project_mcp_context_message_wakes_colleague(tmp_path):
+def test_project_mcp_context_message_wakes_colleague(tmp_path, monkeypatch):
     store = WorkbenchStore(tmp_path / "state")
     project = store.create_project("Project One", str(tmp_path))
     other = store.create_project("Project Two", str(tmp_path / "state"))
@@ -31,7 +31,18 @@ def test_project_mcp_context_message_wakes_colleague(tmp_path):
     server = WorkbenchHTTP(store, engine=engine)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    idle = threading.Event()
+    original_claim = store.claim_task
+
+    def claim(node_id):
+        result = original_claim(node_id)
+        if result is None:
+            idle.set()
+        return result
+
+    monkeypatch.setattr(store, "claim_task", claim)
     engine.start()
+    assert idle.wait(2)
     source = store.create_task(project["id"], "Source", "Ask a colleague", alice["id"])
     source = store.claim_task(store.local_node()["id"])
     creds = store.execution_credentials(source["id"])
@@ -61,6 +72,7 @@ def test_project_mcp_context_message_wakes_colleague(tmp_path):
                 "project_context",
                 "project_memory_search",
                 "project_resource_read",
+                "project_code_search",
                 "project_note",
                 "team_message",
                 "project_message",
@@ -73,6 +85,9 @@ def test_project_mcp_context_message_wakes_colleague(tmp_path):
             assert bob["id"] in serialized
             assert "only-project-two" not in serialized
             assert creds["token"] not in serialized
+            search = await session.call_tool("project_code_search", {"query": "Example"})
+            assert search.is_error  # No index in this fixture; never create one silently.
+            assert "KNOWLEDGE_" in json.dumps(search.model_dump())
             note = await session.call_tool(
                 "project_note", {"title": "Proposed", "body": "Agent observation"}
             )

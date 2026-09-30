@@ -551,6 +551,16 @@ class FleetCoordinator:
             raise WorkbenchError("permission_denied", "工具不能切换到其他项目或员工身份。")
         if tool == "context":
             return self._context(project_id, employee_id=employee_id)
+        if tool == "code_search":
+            result = self.store.query_knowledge(project_id, args.get("query"))
+            # A remote employee receives a coordinator snapshot, not proof that
+            # its mapped checkout has the same files or revision.
+            provenance = result.setdefault("provenance", {})
+            provenance.pop("repository_root", None)
+            result.pop("repository_root", None)
+            result.pop("project_path", None)
+            result["index_scope"] = "coordinator_project"
+            return result
         if tool == "memory_search":
             return {"memories": self.store.search_memory(project_id, args.get("query", ""))}
         if tool == "resource_read":
