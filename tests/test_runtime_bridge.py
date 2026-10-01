@@ -200,7 +200,9 @@ class Bridge:
             "--runtime-dir",
             str(runtime_dir),
             "--startup-timeout-ms",
-            "1000",
+            # Normal setup uses the product budget. Windows ACPX includes
+            # PowerShell/CIM process-identity queries, not only ACP initialize.
+            "1000" if flavor in {"init_hang", "new_hang"} else "15000",
             "--permission-timeout-ms",
             "1000",
         ]
@@ -236,6 +238,23 @@ class Bridge:
         self.seen = []
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
+        self.stderr_chunks = []
+        self.stderr_size = 0
+        self.stderr_secret_seen = False
+        self.stderr_reader = threading.Thread(target=self._read_stderr, daemon=True)
+        self.stderr_reader.start()
+
+    def _read_stderr(self):
+        tail = ""
+        for chunk in iter(lambda: self.process.stderr.read(4096), ""):
+            joined = tail + chunk
+            self.stderr_secret_seen |= "sk-fakecredential123" in joined
+            tail = joined[-64:]
+            # Keep diagnostics bounded, while checking every drained byte.
+            if self.stderr_size < 65536:
+                kept = chunk[: 65536 - self.stderr_size]
+                self.stderr_chunks.append(kept)
+                self.stderr_size += len(kept)
 
     def _read(self):
         for line in self.process.stdout:
@@ -259,7 +278,7 @@ class Bridge:
             **value,
         )
 
-    def until(self, predicate, timeout=12):
+    def until(self, predicate, timeout=20):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             message = self.messages.get(timeout=max(0.01, deadline - time.monotonic()))
@@ -285,9 +304,14 @@ class Bridge:
             self.process.kill()
             self.process.wait(timeout=2)
             raise AssertionError("Bridge shutdown did not stop its fake ACP child")
-        stderr = self.process.stderr.read()
-        assert "sk-fakecredential123" not in stderr
+        # A child inheriting stderr can otherwise leave .read() blocked after
+        # the bridge exits. Drain concurrently, require bounded EOF/cleanup.
+        self.stderr_reader.join(timeout=1)
         self.reader.join(timeout=1)
+        assert not self.stderr_reader.is_alive(), "Bridge stderr did not close after shutdown"
+        assert not self.reader.is_alive(), "Bridge stdout did not close after shutdown"
+        assert not self.stderr_secret_seen
+        assert "sk-fakecredential123" not in "".join(self.stderr_chunks)
 
 
 @pytest.fixture
@@ -416,7 +440,10 @@ def test_explicit_errors_and_timeouts(launch, flavor, prompt, expected):
     bridge.run(prompt=prompt, timeout_ms=100)
     result = bridge.result()
     assert result["status"] == "failed"
-    assert result["error"]["code"] == expected
+    assert result["error"]["code"] == expected, result.get("error")
+    if flavor == "normal" and prompt == "hang":
+        # This case must exercise the prompt deadline, not fail in startup.
+        assert any(record.get("method") == "session/prompt" for record in bridge.requests())
     assert "sk-fakecredential123" not in json.dumps(result)
 
 
