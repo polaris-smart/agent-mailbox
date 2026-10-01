@@ -69,7 +69,7 @@ sys.stdin.readline()
 """
 
 
-def request(server, path, data=None):
+def request(server, path, data=None, timeout=15):
     encoded = None if data is None else json.dumps(data).encode()
     req = urllib.request.Request(
         server.endpoint + "/api/workbench/" + path,
@@ -77,13 +77,13 @@ def request(server, path, data=None):
         headers={"Authorization": "Bearer " + server.token},
     )
     try:
-        with urllib.request.urlopen(req, timeout=5) as response:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
         pytest.fail(f"HTTP {exc.code} for {path}: {exc.read().decode()}")
 
 
-def await_task(store, task_id, status, timeout=8):
+def await_task(store, task_id, status, timeout=15):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         task = store.get_task(task_id)
@@ -127,7 +127,9 @@ def remote(tmp_path, monkeypatch):
         server.engine.start()
     request(owner_http, "fleet/start", {"address": "127.0.0.1"})
     invite = request(owner_http, "fleet/invite", {"project_ids": [project["id"]]})
-    request(device_http, "fleet/join", {"invite": invite})
+    # Pairing and project discovery are sequential HTTPS requests, each with
+    # a 10-second budget. The enclosing fixture client must cover both phases.
+    request(device_http, "fleet/join", {"invite": invite}, timeout=25)
     device_http.remote_worker.execution = BridgeExecution(remote_store.root, command)
     employee = request(
         device_http,
@@ -437,7 +439,7 @@ def test_durable_terminal_outbox_survives_lost_reply_and_restart_without_executi
     monkeypatch.setattr(worker.execution, "run", execution)
     monkeypatch.setattr(device.remote_client, "receipt", disconnected)
     task = dispatch(remote, "complete")
-    assert lost.wait(8)
+    assert lost.wait(15)
     worker.close()
     pending = json.loads(worker.outbox_path.read_text())
     assert pending[task["id"]]["status"] == "review"
@@ -483,8 +485,9 @@ def test_final_receipt_retries_on_live_reconnect_without_model_replay(remote, mo
     monkeypatch.setattr(device.remote_client, "receipt", receipt)
     monkeypatch.setattr(worker.execution, "run", execute)
     task = dispatch(remote, "complete")
-    assert lost.wait(8)
-    assert json.loads(worker.outbox_path.read_text())[task["id"]]["status"] == "review"
+    assert lost.wait(15)
+    with worker.lock:
+        assert json.loads(worker.outbox_path.read_text())[task["id"]]["status"] == "review"
     offline.clear()
     worker.receipt_ready.set()
     delivered = await_task(owner.store, task["id"], "review", timeout=12)

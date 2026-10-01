@@ -26,6 +26,8 @@
 - 运行 [36844804800](https://github.com/polaris-smart/agent-mailbox/actions/runs/36844804800)，提交 `8bea5e0`：三平台原生包与 macOS/Linux 四组回归通过；Windows 回归仍失败。SQLite 备份连接上下文没有显式关闭，WAL 模式可能留下临时边文件；整改为显式关闭连接、备份转为 DELETE journal 的独立数据库，并断言无边文件。另一个失败为故障注入测试与回执重试同时读写日志；测试按写入方原有 journal 锁核对持久内容，不重试掩盖错误。
 - 本机已用 `8bea5e0` 的 CI Mac 安装包升级到 Beta 4：18 员工、1 项目、0 任务、0 邮件，业务表行 hash 完全不变；升级前私有一致性备份，provider 调用 0。真实浏览器 UI 10 项通过，包含中英切换持久化、协议样式、手机无溢出，页面错误 0。后续修复仍须重建最新产物，不能把本次升级说成后续提交。
 
+- `3a2cfdb` 的 [36846081917](https://github.com/polaris-smart/agent-mailbox/actions/runs/36846081917) 首次完整 9 作业通过：Mac/Linux 每组 365 passed、4 skipped，Windows 每组 321 passed、48 skipped。随后测试等待预算整改提交仍出现 Windows 配对 setup 的外层 5 秒等待超时，不能把上轮全绿冒充后续提交已通过。配对先 pair 后 projects，两个顺序 HTTPS 调用各有 10 秒预算，fixture 外层已改 25 秒；普通请求/状态及回执事件等待 15 秒，2 秒取消断言不变。最终提交仍需完整重跑。
+
 ## 待完成
 
 - 新commit GitHub六组回归全通过。
