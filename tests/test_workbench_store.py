@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from agent_mailbox.workbench_private import private_access
 from agent_mailbox.workbench_store import SCHEMA_VERSION, WorkbenchError, WorkbenchStore
 
 
@@ -40,8 +41,8 @@ def running(store, project, employee):
 
 
 def test_new_store_private_and_stable(store):
-    assert store.directory.stat().st_mode & 0o777 == 0o700
-    assert store.db_path.stat().st_mode & 0o777 == 0o600
+    assert private_access(store.directory, 0o700)
+    assert private_access(store.db_path, 0o600)
     node = store.local_node()
     assert WorkbenchStore(store.root).local_node() == node
     assert store.snapshot()["devices"][0]["id"] == node["id"]
@@ -341,7 +342,7 @@ def test_backup_restores_consistent_identity_tasks_credentials(store, project, e
     task = running(store, project, employee)
     credentials = store.employee_credentials(employee["id"], project["id"])
     file = store.backup(tmp_path / "backup.sqlite")
-    assert file.stat().st_mode & 0o777 == 0o600
+    assert private_access(file, 0o600)
     with sqlite3.connect(file) as db:
         assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     restored_root = tmp_path / "restored"

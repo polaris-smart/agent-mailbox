@@ -14,6 +14,7 @@ import pytest
 
 from agent_mailbox import __version__
 from agent_mailbox.workbench import WorkbenchHTTP
+from agent_mailbox.workbench_private import private_access
 from agent_mailbox.workbench_store import SCHEMA_VERSION, WorkbenchError, WorkbenchStore
 from agent_mailbox.workbench_updates import (
     select_release,
@@ -169,9 +170,8 @@ def test_backup_restores_private_identity_and_excludes_runtime(setup, tmp_path):
     assert restored.update_maintenance()["paused"]
     with sqlite3.connect(restored.db_path) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-    if os.name != "nt":
-        assert backup.stat().st_mode & 0o777 == 0o700
-        assert all(p.stat().st_mode & 0o777 == 0o600 for p in backup.rglob("*") if p.is_file())
+    assert private_access(backup, 0o700)
+    assert all(private_access(p, 0o600) for p in backup.rglob("*") if p.is_file())
 
 
 def test_backup_failure_keeps_pause_no_false_ready(setup, monkeypatch):

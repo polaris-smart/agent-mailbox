@@ -93,3 +93,8 @@ dsh-devices 的产品线负责人考核、成员入组审批、派单时指定 p
 本机 workspace-write 必须使用干净且有提交的 Git 根目录，建立独立 detached worktree；非 Git、子目录和脏目录不回退原目录执行。工作区不是 OS 安全沙箱，同设备原生账号仍默认共享。固定交付保存文本 patch、基线、摘要及验证来源，员工报告与系统事实分开。Human 验收不等于应用 patch；合入需再次明确确认、校验原仓库仍干净及 HEAD 一致，不自动 commit/push。退回创建关联任务并在相同基线继承上一轮固定 patch。
 
 本项目成员经 `project_delivery(task_id)` 读取固定交付，不能切换项目或读取任意工作区文件；受管会话当前 11 个项目 MCP 工具。远端 workspace-write 暂时拒绝，远端只读工具继续使用现有协议。二进制、符号链接、凭据、不安全路径与过大 patch 不自动合入。更新备份仍不包括 home/task-workspaces、外部 Git 源码或供应商登录；工作区保留但须另行备份。Beta 3 当前验证状态见[证据记录](evidence/v080/beta3-collaboration.md)，历史 Beta 1/2 证据不当作本轮重跑。
+
+
+## Beta 4 统一替代发行决定
+
+Human 于 2026-10-01 决定产品、仓库、Python 包和 CLI 继续叫 agent-mailbox；v0.8 替代旧软件，各平台和已启用发行渠道保持同一产品版本。本轮已确认正式包渠道只有 PyPI（账号 coolmax、维护者 polaris-smart）及 GitHub 发行入口；TestPyPI、Homebrew、npm 从未发布本项目产物。v0.8.0b4 是待验收目标，不是已公开版本。旧数据/后台服务/MCP 配置没有自动迁移，必须与兼容 v0.8 数据保留升级区分。发布必须完成六组 CI、对应原生安装包与升级验证。详见[渠道与发布门槛](RELEASE-CHANNELS.md)。

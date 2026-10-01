@@ -16,6 +16,7 @@ import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 from urllib.parse import parse_qs, urlsplit
 
 from . import __version__
@@ -24,6 +25,7 @@ from .workbench_compatibility import compatibility_nodes
 from .workbench_engine import WorkbenchEngine
 from .workbench_lock import WorkbenchLock
 from .workbench_onboarding import create_probe, onboarding_status
+from .workbench_private import private_mode
 from .workbench_runtime import available_models, discover_employees, runtime_status
 from .workbench_store import WorkbenchError, WorkbenchStore
 from .workbench_updates import UpdateService
@@ -90,8 +92,14 @@ class WorkbenchHTTP(ThreadingHTTPServer):
         self.engine.endpoint = self.endpoint
         self.instance_path = store.root / "workbench/instance.json"
         self.instance_path.write_text(json.dumps({"endpoint": self.endpoint, "token": self.token}))
-        self.instance_path.chmod(0o600)
+        private_mode(self.instance_path, 0o600)
         self.restore_connections()
+
+    def server_bind(self):
+        # This is a literal loopback listener. HTTPServer's reverse DNS lookup
+        # can block startup on machines without a working PTR resolver.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
     def resource_preview(self, content: str) -> str:
         # Mint a short-lived content capability only after owner-authenticated
@@ -181,7 +189,7 @@ class WorkbenchHTTP(ThreadingHTTPServer):
         self.fleet = fleet
         config = {"enabled": True, "address": address, "port": fleet.server.server_port}
         self.listener_path.write_text(json.dumps(config))
-        self.listener_path.chmod(0o600)
+        private_mode(self.listener_path, 0o600)
         self.fleet_error = None
         return result
 
@@ -698,7 +706,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.fleet.stop()
                 self.server.fleet = None
             self.server.listener_path.write_text(json.dumps({"enabled": False}))
-            self.server.listener_path.chmod(0o600)
+            private_mode(self.server.listener_path, 0o600)
             result = {"stopped": True}
         elif method == "POST" and route == ["fleet", "invite"]:
             if not self.server.fleet:

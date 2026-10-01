@@ -21,6 +21,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from . import __version__
+from .workbench_private import private_mode
 from .workbench_store import WorkbenchError
 
 REPOSITORY = "polaris-smart/agent-mailbox"
@@ -201,9 +202,10 @@ def private_backup(store):
     if parent.is_symlink():
         raise WorkbenchError("UPDATE_UNSAFE_FILE", "备份目录是符号链接，请先检查数据目录。")
     parent.mkdir(mode=0o700, exist_ok=True)
-    parent.chmod(0o700)
+    private_mode(parent, 0o700)
     target = parent / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex)
     target.mkdir(mode=0o700)
+    private_mode(target, 0o700)
     total = 0
     entries = []
     try:
@@ -222,9 +224,11 @@ def private_backup(store):
                 raise WorkbenchError("UPDATE_BUSY", "仍有执行或领取请求未结束，请等待后重试。")
             folder = target / "workbench"
             folder.mkdir(mode=0o700)
+            private_mode(folder, 0o700)
             path = folder / "state.db"
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
             os.close(fd)
+            private_mode(path, 0o600)
             with sqlite3.connect(store.db_path) as src, sqlite3.connect(path) as dst:
                 src.backup(dst)
                 if (
@@ -264,6 +268,7 @@ def private_backup(store):
                     relative = item.relative_to(store.directory)
                     destination = folder / relative
                     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    private_mode(destination.parent, 0o700)
                     fd = os.open(item, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
                     with os.fdopen(fd, "rb") as source:
                         info = os.fstat(source.fileno())
@@ -277,6 +282,7 @@ def private_backup(store):
                             )
                         outfd = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
                         with os.fdopen(outfd, "wb") as output:
+                            private_mode(destination, 0o600)
                             remaining = info.st_size
                             while remaining:
                                 chunk = source.read(min(remaining, 1024 * 1024))

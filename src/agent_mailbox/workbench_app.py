@@ -12,7 +12,7 @@ def bundled_runtime() -> dict[str, str] | None:
     if not getattr(sys, "frozen", False):
         return None
     bundle = Path(sys._MEIPASS)
-    node = bundle / "runtime/bin/node"
+    node = bundle / "runtime/bin" / ("node.exe" if os.name == "nt" else "node")
     dependencies = bundle / "runtime/deps"
     if not node.is_file() or not (dependencies / "node_modules/acpx/package.json").is_file():
         raise RuntimeError("This application bundle is missing its managed execution runtime")

@@ -607,3 +607,23 @@ def test_resource_versions_owner_routes_and_activity(bench, tmp_path):
     activity = request(server, f"projects/{project['id']}/activity")[1]
     assert any(e["type"] == "resource_version_approved" for e in activity["events"])
     assert request(server, f"projects/{project['id']}/activity", token="wrong")[0] == 401
+
+
+def test_loopback_startup_does_not_require_reverse_dns(tmp_path, monkeypatch):
+    import socket
+
+    def forbidden_lookup(*args):
+        pytest.fail("Loopback binding must not perform reverse DNS")
+
+    monkeypatch.setattr(socket, "getfqdn", forbidden_lookup)
+    store = WorkbenchStore(tmp_path / "home")
+    server = WorkbenchHTTP(store, token="test-owner-token")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        assert server.server_name == "127.0.0.1"
+        assert request(server, "bootstrap")[0] == 200
+    finally:
+        server.shutdown()
+        server.close()
+        thread.join(timeout=3)

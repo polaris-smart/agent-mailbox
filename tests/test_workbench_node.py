@@ -14,6 +14,7 @@ from agent_mailbox.workbench import WorkbenchHTTP
 from agent_mailbox.workbench_engine import WorkbenchEngine
 from agent_mailbox.workbench_fleet import FleetCoordinator
 from agent_mailbox.workbench_node import _client, main, run_node
+from agent_mailbox.workbench_private import private_access
 from agent_mailbox.workbench_store import WorkbenchError, WorkbenchStore
 
 
@@ -93,7 +94,7 @@ def test_private_join_explicit_mapping_registration_and_saved_resume(node, capsy
     employee = owner.snapshot()["employees"][0]
     assert employee["node_id"] == credentials["device_id"]
     assert employee["project_ids"] == [project["id"]]
-    assert client.credentials_path.stat().st_mode & 0o777 == 0o600
+    assert private_access(client.credentials_path, 0o600)
     assert main(["--home", str(home), "map", "--project", private["id"], "--path", str(home)]) == 1
     assert private["id"] not in _client(home).mappings
 

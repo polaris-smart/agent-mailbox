@@ -1,21 +1,35 @@
 # 从 GitHub 上手 v0.8
 
-当前是未公开发行的 0.8.0b3 Beta 3；获取这一版须用独立源码 checkout 或提供的本机构建产物。产品公开 PyPI 版本不代表本 Beta。
+把已有 AI Agent 组成项目团队的本地工作台。默认从单机开始：发现 → 入组 → 协作 → 验收。
+
+Beta 4 目标版本为 `0.8.0b4`，正在统一版本与发行整改，尚未发行；已有公开源码分支不能当作全平台验收已通过。我们的 PyPI 当前为 v0.7.6，TestPyPI、Homebrew、npm 从未发布；同名无 scope npm 包属于其他项目。本轮只发布同版 GitHub Beta 与 PyPI；请先看[发行渠道](RELEASE-CHANNELS.md)。
 
 ## 单机
 
 Python 3.10+，执行工作需要 Node.js 22.13+。在 v0.8 checkout 建独立 venv，安装本目录：
 
 ```sh
-python -m venv .venv
+git clone --branch feat/v080-workbench --single-branch https://github.com/polaris-smart/agent-mailbox.git agent-mailbox-v08
+cd agent-mailbox-v08
+python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install .
 agent-mailbox --home ~/.agent-mailbox-v08
 ```
 
-Windows PowerShell 激活改用 `.venv\Scripts\Activate.ps1`。以上使用独立 v0.8 数据目录。使用自带运行组件的 macOS app 则双击启动；未公证 Beta 可能受 Gatekeeper 阻挡，GitHub 下载不消除系统校验。
+Windows PowerShell 激活改用 `.venv\Scripts\Activate.ps1`。产品、仓库、Python 包与 CLI 都保持 `agent-mailbox` 名称，v0.8 将替代旧发行线。当前源码验证使用专用 venv 和独立 v0.8 数据目录；v0.7 数据库、后台服务与配置没有自动迁移，旧 MCP 配置不兼容新的项目工具入口，不要把旧数据目录直接交给新程序。使用自带运行组件的 macOS app 则双击启动；未公证 Beta 可能受 Gatekeeper 阻挡，GitHub 下载不消除系统校验。
 
 在“员工”页发现并登记本机 app/CLI，再创建项目、从名册添加项目成员。普通消息用于同步；选择接收者并点“请求协作”才触发只读任务。必要时点“准备运行环境”。Codex/Claude 在这台电脑完成原生登录后，在员工详情选择项目，显式运行接入验证，可按实际模型列表选择模型；此任务会消耗原生模型额度。查看检查不调用模型，验证成功依赖实际上下文和随机标记笔记回执，不是员工口头报告。远端 probe 暂不支持。管理工作台不要求额外模型账号。准备组件会下载 package-lock 固定依赖，不修改全局 CLI 或登录。
+
+### 先完成一次协作
+
+1. 在员工页发现工具，创建项目并加入 Codex、Claude Code CLI 员工。
+2. 在“资料与记忆”登记 PRD、todo 等背景，确认团队要使用的版本。
+3. 给 Codex 派一个小任务。修改类任务使用干净、有提交的 Git 根目录；只读分析可以先上手。
+4. 再给 Claude Code 一个审查任务，让它通过 `project_delivery(task_id)` 读取 Codex 的固定交付并提出意见。
+5. 查看 diff 和员工证据。需要修改就写明要求、退回补充；验收通过后，再单独确认是否合入原仓库。
+
+普通邮件不自动触发模型；“请求协作”会创建只读任务。当前是明确派工和交接，不是拖拽 workflow 编排器。运行器为这些受管任务提供项目 MCP 工具；原有桌面 app 对话不会被自动接管。
 
 CLI 可以在关闭工作台后显式准备同一个 home：
 
@@ -42,7 +56,7 @@ Codex 若返回 `MODEL_UNSUPPORTED`，新建任务时从服务实际提供的模
 
 远端员工可通过项目工具显式提交小于 256 KiB 的资料文本作为提案，不能直接覆盖协调端文件。资料 API 读取共享版本，不自动拷贝整个项目或同步 Git。工作日志记录派工、结果、消息、笔记及资料确认；查看不会自动 ACK 或验收。
 
-Beta 1 验证平台为 macOS ARM64 app 与 Ubuntu 24.04 ARM64 源码节点。Windows 可以尝试源码入口，但未完成实机验收，CodeGraph 适配器明确不支持。
+Beta 1 验证平台为 macOS ARM64 app 与 Ubuntu 24.04 ARM64 源码节点。Windows 可以尝试源码入口，但未完成实机验收，CodeGraph 适配器明确不支持。当前 GitHub CI 仍有 macOS/Windows 失败待处理；本机验证不代表 CI 全绿，发行门槛见渠道文档。
 
 ## 修改、退回和合入
 

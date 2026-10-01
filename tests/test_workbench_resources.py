@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from agent_mailbox.workbench_private import private_access
 from agent_mailbox.workbench_store import MAX_TEXT, WorkbenchError, WorkbenchStore
 
 
@@ -154,7 +155,7 @@ def test_schema6_migration_backup_preserves_business_and_old_live(resources):
         db.execute("PRAGMA user_version=6")
     migrated = WorkbenchStore(store.root)
     backup = migrated.migration_backup_path
-    assert backup and backup.stat().st_mode & 0o777 == 0o600
+    assert backup and private_access(backup, 0o600)
     with sqlite3.connect(backup) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 6
         assert db.execute("SELECT id FROM employees").fetchone()[0] == employee["id"]

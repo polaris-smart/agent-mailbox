@@ -23,11 +23,13 @@ import time
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 from urllib.parse import quote, urlsplit
 
 from . import __version__
 from .workbench_compatibility import FLEET_PROTOCOL, node_report
 from .workbench_execution_resources import execution_project_context
+from .workbench_private import private_mode
 from .workbench_store import ACTIVE, WorkbenchError, WorkbenchStore
 
 MAX_BODY = 1024 * 1024
@@ -100,11 +102,12 @@ def _write_private(path, data):
     try:
         fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         with os.fdopen(fd, "wb") as stream:
+            private_mode(temporary, 0o600)
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
-        path.chmod(0o600)
+        private_mode(path, 0o600)
     except OSError as exc:
         raise WorkbenchError("storage_error", "无法保存设备凭据，请检查磁盘和目录权限。") from exc
     finally:
@@ -114,7 +117,7 @@ def _write_private(path, data):
 def _directory(root):
     directory = Path(root) / "workbench" / "fleet"
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    directory.chmod(0o700)
+    private_mode(directory, 0o700)
     return directory
 
 
@@ -122,7 +125,7 @@ def _load(path, fallback):
     if not path.exists():
         return fallback
     try:
-        path.chmod(0o600)
+        private_mode(path, 0o600)
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise WorkbenchError("storage_error", "设备凭据无法读取，请恢复备份，勿重新覆盖。") from exc
@@ -191,8 +194,8 @@ class FleetCoordinator:
                 ),
             )
             _write_private(cert_path, cert.public_bytes(serialization.Encoding.PEM))
-        key_path.chmod(0o600)
-        cert_path.chmod(0o600)
+        private_mode(key_path, 0o600)
+        private_mode(cert_path, 0o600)
         try:
             cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
             self.fingerprint = "sha256:" + cert.fingerprint(hashes.SHA256()).hex()
@@ -282,6 +285,11 @@ class FleetCoordinator:
 
             class Server(ThreadingHTTPServer):
                 daemon_threads = True
+
+                def server_bind(self):
+                    # Numeric endpoints do not need reverse DNS to start serving.
+                    TCPServer.server_bind(self)
+                    self.server_name, self.server_port = self.server_address[:2]
 
                 def get_request(self):
                     connection, address = super().get_request()
@@ -888,6 +896,7 @@ class FleetClient:
         self.journal_lock = threading.RLock()
         self.connection_lock = threading.Lock()
         self.claim_connection = None
+        self.claim_socket = None
         self.claim_cancellation = threading.local()
         self.directory = _directory(self.store.root)
         self.credentials_path = self.directory / "client.json"
@@ -1042,6 +1051,10 @@ class FleetClient:
                     if stop is not None and stop.is_set():
                         raise WorkbenchError("claim_stopped", "设备已停止领取任务。")
                     self.claim_connection = connection
+                    # HTTPConnection clears .sock for Connection: close responses
+                    # before the response body finishes. Keep the actual transport
+                    # so stopping can interrupt that read on every platform.
+                    self.claim_socket = connection.sock
             connection.request(method, path, body=data, headers=headers)
             response = connection.getresponse()
             payload = response.read(MAX_BODY * 4 + 1)
@@ -1064,15 +1077,16 @@ class FleetClient:
             with self.connection_lock:
                 if self.claim_connection is connection:
                     self.claim_connection = None
+                    self.claim_socket = None
             connection.close()
 
     def interrupt_claim(self):
         # Stop only the pending claim transport, never receipts or running tools.
         with self.connection_lock:
-            connection = self.claim_connection
-            if connection and connection.sock:
+            transport = self.claim_socket
+            if transport:
                 try:
-                    connection.sock.shutdown(socket.SHUT_RDWR)
+                    transport.shutdown(socket.SHUT_RDWR)
                 except OSError:
                     pass
 

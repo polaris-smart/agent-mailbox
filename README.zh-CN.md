@@ -1,53 +1,57 @@
 # agent-mailbox
 
-在本机围绕项目管理 AI 员工：派工、共享资料、查看进度、审批操作、验收结果。
+**把已有 AI Agent 组成项目团队的本地工作台。**
 
-**v0.8 从实现开始完全独立**：继续叫 agent-mailbox、继续版本线，但使用自己的入口、数据库、运行组件和项目工具。v0.7 的邮箱命令和后台服务不再随包发行。当前为 **0.8.0b3 本地 Beta 3**，尚未发布到 GitHub Release 或 PyPI。
+让你已经在用的 Codex、Claude Code 围绕同一个项目共享资料、邮件交接、分工协作。你看交付、做验收，再决定是否把代码变更合入。项目记录留在自己的电脑上，工作台不需要额外的管理 LLM 账号。
 
-[English](README.md) · [PRD 正典](docs/PRD.md) · [上手指南](docs/GITHUB-QUICKSTART.md) · [可选设备](docs/NODES.md) · [维护入口](docs/HANDOVER-CODEX.md)
+[English](README.md) · [上手指南](docs/GITHUB-QUICKSTART.md) · [发行渠道](docs/RELEASE-CHANNELS.md) · [PRD 正典](docs/PRD.md)
 
-## 单机开始
+## 一个项目，两名员工，一次验收
 
-在这份 v0.8 源码中，用 Python 3.10+：
+让 **Codex** 在独立 Git 工作区修复一个 bug，再让 **Claude Code** 通过项目工具读取固定 diff、提出审查意见。你查看交付，需要修改就填写要求、退回为关联任务；满意后验收。把 patch 应用到原仓库需要另行确认，agent-mailbox 不会自动 commit 或 push。
+
+这是一条可以直接使用的多 Agent 协作流程。你决定每件事交给谁，不必先学习或画一张 workflow 图。
+
+## 发现 → 入组 → 协作 → 验收
+
+1. **发现已有员工。** 登记本机 CLI 和桌面 app，分别查看入口、原生登录与实际执行验证。当前支持自动执行的是 Codex、Claude Code 的 CLI 适配器。
+2. **组成项目团队。** 选择项目目录，加入员工，共享 PRD、todo、daily update、笔记和架构资料。任务启动时固定已批准的资料版本。
+3. **交代工作。** 显式运行接入测试，再派任务、审批需要的操作。普通项目消息用于交流，明确的“请求协作”才启动工作。运行器提供项目范围内的 MCP 工具，不必给每个受管员工单独配置一次 MCP。
+4. **查看和验收。** 查看固定文件、diff 与工作日志，通过验收或退回补充；安全的文本 patch 由你另外确认应用到原仓库。
+
+## 从源码体验 v0.8 Beta
+
+**发行目标：`0.8.0b4`（Beta 4，发行整改中）。** 源码分支已公开，Beta 4 正在发行整改，尚无 Beta 4 GitHub Release 或包渠道发行。我们的 PyPI 当前为 v0.7.6；没有发布过 TestPyPI、Homebrew 或 npm 包。同名无 scope npm 包属于其他项目，不是本工作台安装来源。本轮只向 GitHub Beta 和 PyPI 发布同一产品版本。详见[渠道状态与发行门槛](docs/RELEASE-CHANNELS.md)。
+
+使用 Python 3.10+，并建立专用虚拟环境。产品、仓库、Python 包和 CLI 都保持 `agent-mailbox` 名称，v0.8 将统一替代各渠道旧发行。发行验证完成前，源码测试请与旧安装隔离：
 
 ```sh
-python -m venv .venv
-# macOS/Linux：
+git clone --branch feat/v080-workbench --single-branch https://github.com/polaris-smart/agent-mailbox.git agent-mailbox-v08
+cd agent-mailbox-v08
+python3 -m venv .venv
 . .venv/bin/activate
-# Windows PowerShell 改用：.venv\Scripts\Activate.ps1
 python -m pip install .
 agent-mailbox --home ~/.agent-mailbox-v08
 ```
 
-会打开本机浏览器工作台。Beta 使用独立数据目录，避免与旧安装共用。macOS ARM64 可选 app 包自带 Python、Node、执行组件；使用源码不需要 app。目前公共仓库的 pip 版本不是本 Beta，不能用 `pip install agent-mailbox` 取得这一版。
+命令会打开本机浏览器工作台。源码执行任务需 Node.js 22.13+，并在页面点“准备运行环境”。Codex、Claude Code 使用各自原生登录。查看接入检查不会调用模型；点击接入测试会消耗原生模型额度。如果默认模型不可用，可以明确选择执行服务提供的模型。
 
-1. 在员工页发现并登记本机已有 app/CLI。
-2. 创建项目、选择已有项目目录，从名册添加项目成员。当前能自动执行任务的是 **Codex、Claude 的 CLI 适配器**；发现一个桌面 app 不代表可以自动控制它。
-3. 源码安装需 Node.js 22.13+，在页面点“准备运行环境”；agent 登录仍在本机使用原生登录。管理工作台不用额外 LLM 或管理 API key。
-4. 入组后在员工详情显式运行接入验证：实际读取项目上下文并写入随机标记笔记；会使用原生模型额度，可选择可用模型。再写任务及交付要求，指派员工。有操作权限请求时由人审批。员工执行结束进入“待验收”，由人通过或退回。
+macOS ARM64 已有本机构建 App 验证。Windows PowerShell 的激活命令改为 `.venv\Scripts\Activate.ps1`，但 Windows 尚非验收通过的发行目标。GitHub CI 仍有平台失败待修复，本机 Mac 验证不代表全平台 CI 已通过。
 
-同种 agent 可起多个员工名称，但默认共用本机原生登录，不代表多个独立账号。运行器给受管任务提供项目范围内的 MCP 工具，用户不用为每个员工再配置一次 MCP；不自动接管用户原有 app 对话。
+## 与你已有的工具一起工作
 
-## 已有能力与边界
+- **本地项目记录**：私有数据库、员工信箱、项目笔记、资料提案和批准版本，工作日志来自真实事件。
+- **Human 掌握决定权**：操作审批、项目权限、暂停和退役，验收与代码合入分开，失败显示原因。
+- **代码交接**：本机修改任务要求干净、有提交的 Git 仓库根目录；使用独立 worktree 和固定交付。工作区隔离改动，但不是操作系统沙箱。
+- **可选跨设备**：显式配对的 HTTPS 节点支持只读协作；每台设备保留自己的 agent 登录和项目 checkout，配对不自动同步文件。
+- **可选资料工具**：CodeGraph 已有索引检索、archify 单文件 HTML 隔离预览；结构化本地记忆使用文本搜索，无需独立向量数据库。
 
-全局员工名册、项目成员、消息线程、协作请求、任务、进度、显式失败、权限审批、人工验收；项目笔记、实时资料与固定版本、工作日志；暂停和退役员工；可选设备配对。记忆使用私有 SQLite 和文本检索，不需要独立 memory 服务或向量数据库。
+同种工具的多个员工名称默认共享该设备原生登录。发现桌面 app 不代表能自动控制它。v0.8 替代的是软件发行，不会自动迁移 v0.7 数据库、后台服务或配置，旧 MCP 配置也不兼容新的项目工具入口；保留旧数据备份，不要让 v0.8 直接使用 v0.7 数据目录。
 
-默认一个人、一台电脑即可使用。少量用户可通过私网或 SSH 隧道，把 LAN/Ubuntu 服务器作为执行节点接入。主控必须开着且能连通；节点自己的项目目录、agent 登录和代码同步要分别准备。Beta 1 已验证 Mac→Ubuntu 24.04 ARM64 Docker 的真实 HTTPS 节点协议、资料版本一致性、断线恢复及撤销；节点执行测试使用确定性 fixture。Beta 1 的 Codex→Claude 真实模型邮件交接与固定资料读取在 Mac 上通过；Beta 3 原生接入验证、独立修改、同事固定交付审查和显式合入也已通过。香港、硅谷和真实 LAN 实体设备仍需各自部署验收。
+## 继续了解
 
-应用文件与数据目录分开。同一数据目录的兼容 v0.8 更新保留身份和项目。“关于与更新”提供稳定/Beta 渠道、显式检查、持久暂停接单、空闲检查和私有备份；按识别的安装方式手动替换程序，验证后恢复接单。自动更新/回滚、拖拽 workflow、任意 app 自动唤醒、完整成本治理和 AI ERP 尚未实现。更新备份包含 SQLite 与工作台身份/配置，不含 `home/task-workspaces/`、外部 Git 仓库或供应商原生登录；代码和保留的工作区需另行备份。Beta 1 已验证 Mac ARM64 app 与 Ubuntu ARM64 源码/节点，本轮结果另列证据；Windows 仍属未实测入口，CodeGraph 可选适配器在 Windows 明确不可用。
+[完整上手指南](docs/GITHUB-QUICKSTART.md) · [Beta 验收与平台边界](docs/BETA-ACCEPTANCE.md) · [Beta 3 验证证据](docs/evidence/v080/beta3-collaboration.md) · [可选设备接入](docs/NODES.md) · [安全说明](SECURITY.md)
 
-Apache-2.0 开源，由 NoFox 与贡献者维护；原有 MIT 声明保留在 LICENSES/MIT-Legacy.txt。GitHub 用来发现、讨论和下载；macOS 的签名、公证是发行身份验证，当前可选 app 尚无 Developer ID 签名。
+更新目前提供显式检查、暂停接单和私有备份，程序替换及恢复仍手动完成。数据库备份之外，还需保留项目仓库和独立工作区。跨设备修改隔离、自动更新、万能 app 控制、拖拽 workflow 编辑器和 AI ERP 尚未实现；完整限制集中在验收文档中。
 
-## 资料与协作
-
-登记 PRD、todo、daily update、架构图等文本后，可以查看实时文件或冻结一个团队确认版本。任务启动时固定该时刻已批准的资料清单，更新文件不改变正在执行的任务。员工提交版本是提案，需要 Human 确认；远端员工可显式提交最多 256 KiB 文本，不能覆盖协调端文件。新版从之后启动的任务使用，不自动同步 Git 工作区。
-
-CodeGraph 是可选的已有索引符号检索；archify 单文件 HTML 可隔离预览。AOCI-Code/Graft 没有宣称完整集成。左侧区分团队、当前项目和管理，工作日志记录真实派工、结果、邮件、笔记和版本确认。详见 [Beta 验收](docs/BETA-ACCEPTANCE.md)。
-
-## Beta 3：接入验证、独立工作区、交付验收
-
-查看员工接入检查不启动模型；点击验证创建项目绑定的只读任务，可选模型。成功需实际 `project_context` 与随机标记 `project_note` 工具回执及任务正常结束，不凭员工口头声称。原生登录与执行验证分开；远端接入验证暂不支持，发现 App 不代表已有自动执行适配器。同种员工名称仍默认共享该设备原生账号。
-
-本机修改任务必须选择干净、有提交的 Git 仓库根目录。系统在 `home/task-workspaces/<任务ID>` 建独立 worktree，原目录不直接修改；这不是操作系统沙箱。交付固定文本修改、基线、员工报告和系统事实；未运行的测试不会显示通过。**验收不等于合入**：验收后另行确认合入，校验原仓库基线与干净状态，不自动 commit/push。退回修改创建关联任务，在基线仍一致时继承上一轮固定 patch。
-
-员工可通过本项目的 `project_delivery(task_id)` 读取同事固定交付；受管任务现有 11 个项目 MCP 工具，不任意读取工作区文件。远端修改任务暂时拒绝，远端只读协作继续保留。二进制、符号链接、含凭据、不安全或过大修改不自动合入。工作区保留，不自动清理，也不包含在 SQLite 更新备份中。验证进度和限制见 [Beta 3 证据](docs/evidence/v080/beta3-collaboration.md)。
+© 2026 NoFox 与贡献者 · [Apache-2.0](LICENSE) · [NOTICE](NOTICE) · [原有 MIT 声明](LICENSES/MIT-Legacy.txt)

@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from agent_mailbox.workbench_fleet import FleetClient, FleetCoordinator
+from agent_mailbox.workbench_private import private_access
 from agent_mailbox.workbench_store import WorkbenchError, WorkbenchStore
 
 
@@ -33,7 +34,7 @@ def test_pair_response_loss_recovers_same_home_proof_without_plaintext_server_se
         FleetClient(root, invite)
     attempt_path = root / "workbench/fleet/pair-attempt.json"
     attempt = json.loads(attempt_path.read_text())
-    assert attempt_path.stat().st_mode & 0o777 == 0o600
+    assert private_access(attempt_path, 0o600)
     assert not (root / "workbench/fleet/client.json").exists()
     assert coordinator.state["invites"][invite["invite_id"]]["used"]
     coordinator.state["invites"][invite["invite_id"]]["expires_at"] = 0
@@ -327,9 +328,9 @@ def test_pairing_real_tls_private_credential_and_project_context(fleet, tmp_path
     assert client.credentials["device_id"] == client.store.local_node()["id"]
     assert client.credentials["coordinator_id"] == owner.local_node()["id"]
     assert client.credentials["device_id"] != owner.local_node()["id"]
-    assert client.credentials_path.stat().st_mode & 0o777 == 0o600
-    assert client.directory.stat().st_mode & 0o777 == 0o700
-    assert coordinator.state_path.stat().st_mode & 0o777 == 0o600
+    assert private_access(client.credentials_path, 0o600)
+    assert private_access(client.directory, 0o700)
+    assert private_access(coordinator.state_path, 0o600)
     assert (coordinator.directory / "tls-key.pem").stat().st_mode & 0o777 == 0o600
     context = client.context(project["id"])
     assert context["project"]["id"] == project["id"]
@@ -915,3 +916,50 @@ def test_remote_text_proposal_stays_unapproved_and_bound_to_active_run(fleet, tm
         with pytest.raises(WorkbenchError) as error:
             client.project_tool(project["id"], employee["id"], tool, args, **run)
         assert error.value.code == "permission_denied"
+
+
+def test_tls_listener_does_not_depend_on_reverse_dns(tmp_path, monkeypatch):
+    import socket
+
+    def unavailable(*args):
+        raise AssertionError("Reverse DNS must not run during TLS bind")
+
+    monkeypatch.setattr(socket, "getfqdn", unavailable)
+    owner = WorkbenchStore(tmp_path / "owner")
+    project = owner.create_project("Shared", tmp_path)
+    coordinator = FleetCoordinator(owner)
+    coordinator.start()
+    try:
+        client = FleetClient(tmp_path / "client", coordinator.issue_invite([project["id"]]))
+        assert client.projects() == [{"id": project["id"], "name": "Shared"}]
+    finally:
+        coordinator.stop()
+
+
+def test_stop_interrupts_claim_response_after_http_connection_releases_socket():
+    import socket
+
+    client = object.__new__(FleetClient)
+    client.connection_lock = threading.Lock()
+    client.claim_connection = None  # HTTP/1.0 response owns the socket now.
+    reading, peer = socket.socketpair()
+    client.claim_socket = reading
+    finished = threading.Event()
+    received = []
+
+    def read_response():
+        with reading.makefile("rb") as stream:
+            received.append(stream.readline())
+        finished.set()
+
+    worker = threading.Thread(target=read_response)
+    worker.start()
+    try:
+        client.interrupt_claim()
+        assert finished.wait(2)
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+        assert received == [b""]
+    finally:
+        reading.close()
+        peer.close()

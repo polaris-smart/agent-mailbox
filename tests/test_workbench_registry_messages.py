@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from agent_mailbox.workbench_private import private_access
 from agent_mailbox.workbench_store import (
     EMPLOYEE_KINDS,
     SCHEMA_VERSION,
@@ -452,9 +453,7 @@ def test_literal_v5_migration_preserves_identity_tokens_history_and_private_back
     assert store.task_detail("task-old")["events"][0]["id"] == "event-old"
     assert store.project_context("project-old")["memories"][0]["id"] == "memory-old"
     assert store.governance_events()[0]["id"] == "ledger-old"
-    assert (
-        store.migration_backup_path and store.migration_backup_path.stat().st_mode & 0o777 == 0o600
-    )
+    assert store.migration_backup_path and private_access(store.migration_backup_path, 0o600)
     with sqlite3.connect(store.migration_backup_path) as backup:
         assert backup.execute("PRAGMA user_version").fetchone()[0] == 5
         assert {r[1]: r[3] for r in backup.execute("PRAGMA table_info(employees)")}[

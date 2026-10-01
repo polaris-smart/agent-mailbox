@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.0b4 — release preparation (unpublished)
+
+- Keep the agent-mailbox brand, Python distribution and CLI as the replacement for v0.7; document the breaking configuration/data boundary and verified registry ownership.
+- Rewrite bilingual product introduction around Codex/Claude Code project collaboration, with a concrete review example and four-step onboarding.
+- Remove reverse DNS from local HTTP and fleet listener startup. Preserve and close the actual long-poll socket during remote shutdown.
+- Enforce protected Windows DACLs for workbench secrets and verify real ACLs instead of POSIX mode bits.
+- Gate release builds on six native regression jobs and extracted macOS/Windows/Linux archive HTTP/MCP checks. Tags build artifacts; registry publishing requires an explicit destination.
+
+
 ## 0.8.0b3 — local Beta 3 (2026-10-01, unpublished)
 
 - Explicit project-bound onboarding probes with optional model selection; actual context and marker-note receipts distinguish execution proof from model claims. Viewing checks does not invoke a model. Remote probes and unadapted apps remain unsupported.

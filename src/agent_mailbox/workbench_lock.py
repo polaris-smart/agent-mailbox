@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 
+from .workbench_private import private_mode
 from .workbench_store import WorkbenchError
 
 
@@ -10,7 +11,7 @@ class WorkbenchLock:
     def __init__(self, root: Path):
         path = root / "workbench/instance.lock"
         self.file = path.open("a+b")
-        path.chmod(0o600)
+        private_mode(path, 0o600)
         try:
             if os.name == "nt":
                 import msvcrt

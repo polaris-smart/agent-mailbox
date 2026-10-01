@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
 
+from .workbench_private import private_mode
 from .workbench_resources import scrub_credentials
 from .workbench_store import WorkbenchError, _now
 
@@ -151,6 +152,7 @@ def prepare_workspace(store, task, project):
     directory.mkdir(mode=0o700, exist_ok=True)
     if directory.is_symlink():
         raise WorkbenchError("delivery_unsafe", "工作区目录不安全。")
+    private_mode(directory, 0o700)
     destination = directory / task_id
     with store._transaction() as db:
         existing = db.execute(

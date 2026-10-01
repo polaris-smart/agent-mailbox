@@ -1,0 +1,63 @@
+"""Native filesystem access restrictions, not Windows chmod's read-only bit."""
+
+import os
+from types import SimpleNamespace
+
+import pytest
+
+from agent_mailbox.workbench_private import private_access, private_mode
+
+
+def test_private_file_and_directory_access(tmp_path):
+    directory = tmp_path / "private"
+    directory.mkdir()
+    private_mode(directory, 0o700)
+    assert private_access(directory, 0o700)
+    source = directory / "credential.json"
+    source.write_text("private fixture")
+    private_mode(source, 0o600)
+    assert private_access(source, 0o600)
+    assert source.read_text() == "private fixture"
+    # Restricting access must not make the current user's state read-only.
+    source.write_text("updated fixture")
+    assert source.read_text() == "updated fixture"
+
+
+def test_acl_failure_has_no_chmod_fallback(tmp_path, monkeypatch):
+    from agent_mailbox import workbench_private
+
+    source = tmp_path / "state"
+    source.write_text("fixture")
+
+    def failed():
+        raise OSError("ACL fixture failure")
+
+    monkeypatch.setattr(workbench_private, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(workbench_private, "_windows", failed)
+    with pytest.raises(OSError, match="ACL fixture failure"):
+        private_mode(source, 0o600)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires actual Windows security descriptors")
+def test_windows_removes_everyone_ace_and_inherited_acl(tmp_path):
+    from agent_mailbox.workbench_private import _windows
+
+    source = tmp_path / "credential"
+    source.write_text("fixture")
+    c, w, advapi, kernel, _sid = _windows()
+    descriptor = c.c_void_p()
+    assert advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        "D:P(A;;FA;;;WD)", 1, c.byref(descriptor), None
+    )
+    try:
+        present, defaulted, acl = w.BOOL(), w.BOOL(), c.c_void_p()
+        assert advapi.GetSecurityDescriptorDacl(
+            descriptor, c.byref(present), c.byref(acl), c.byref(defaulted)
+        )
+        assert advapi.SetNamedSecurityInfoW(str(source), 1, 0x80000004, None, None, acl, None) == 0
+    finally:
+        kernel.LocalFree(descriptor)
+    assert not private_access(source, 0o600)
+    private_mode(source, 0o600)
+    assert private_access(source, 0o600)
+    assert source.read_text() == "fixture"

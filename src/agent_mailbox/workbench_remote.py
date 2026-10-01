@@ -416,7 +416,9 @@ class RemoteWorker:
         for worker in workers:
             worker.join(timeout=8)
         for thread in self.threads:
-            thread.join(timeout=0.2)
+            # Allow the interrupted TLS request to unwind and release claim_lock
+            # before callers reuse this paired client after stopping the worker.
+            thread.join(timeout=2)
 
     def status(self):
         with self.lock:

@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from .workbench_private import private_mode
+
 
 class WorkbenchError(Exception):
     def __init__(self, code: str, message: str):
@@ -198,12 +200,12 @@ class WorkbenchStore:
         self.root = Path(root).expanduser().resolve()
         self.directory = self.root / "workbench"
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.directory.chmod(0o700)
+        private_mode(self.directory, 0o700)
         self.db_path = self.directory / "state.db"
         # Create privately before SQLite opens the database (no permissive window).
         fd = os.open(self.db_path, os.O_CREAT | os.O_RDWR, 0o600)
         os.close(fd)
-        self.db_path.chmod(0o600)
+        private_mode(self.db_path, 0o600)
         self.migration_backup_path = None
         with self._connection() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
@@ -223,6 +225,7 @@ class WorkbenchStore:
                         )
                         fd = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
                         os.close(fd)
+                        private_mode(destination, 0o600)
                         source = sqlite3.connect(self.db_path)
                         target = sqlite3.connect(destination)
                         try:
@@ -359,7 +362,7 @@ class WorkbenchStore:
             db.close()
             for suffix in ("", "-wal", "-shm"):
                 try:
-                    Path(str(self.db_path) + suffix).chmod(0o600)
+                    private_mode(Path(str(self.db_path) + suffix), 0o600)
                 except FileNotFoundError:
                     pass
 
@@ -2069,13 +2072,14 @@ class WorkbenchStore:
             destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             fd = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
             os.close(fd)
+            private_mode(destination, 0o600)
             with self._connection() as db:
                 target = sqlite3.connect(destination)
                 try:
                     db.backup(target)
                 finally:
                     target.close()
-            destination.chmod(0o600)
+            private_mode(destination, 0o600)
             return destination
         except FileExistsError as exc:
             raise WorkbenchError("invalid_path", "备份文件已存在，请选择新的文件名。") from exc

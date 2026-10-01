@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build an isolated macOS .app from already installed, pinned local runtimes.
+"""Build a native workbench bundle from already installed, pinned local runtimes.
 
 Run this script with an isolated Python environment containing the project and
 PyInstaller. It does not install dependencies, fetch updates, sign for distribution,
@@ -62,10 +62,8 @@ SOURCE = REPOSITORY / "src/agent_mailbox"
 
 
 def build(runtime_dir: Path, node: Path, output: Path, name: str) -> dict:
-    if sys.platform != "darwin":
-        raise RuntimeError(
-            "This build creates a macOS app; build Windows/Linux on their native hosts"
-        )
+    if sys.platform not in {"darwin", "win32", "linux"}:
+        raise RuntimeError("Build on a supported native macOS, Windows or Linux host")
     if importlib.util.find_spec("PyInstaller") is None:
         raise RuntimeError("Install PyInstaller in the selected isolated Python environment first")
     runtime_dir, node, output = runtime_dir.resolve(), node.resolve(), output.resolve()
@@ -114,7 +112,7 @@ def build(runtime_dir: Path, node: Path, output: Path, name: str) -> dict:
         make_spec(
             [str(SOURCE / "workbench_app.py")],
             name=name,
-            console=False,
+            console=sys.platform != "darwin",
             onefile=False,
             shorthand_manifest=None,
             bundle_identifier="com.polaris-smart.agent-mailbox",
@@ -137,15 +135,16 @@ def build(runtime_dir: Path, node: Path, output: Path, name: str) -> dict:
         )
     )
     content = spec.read_text()
-    bundle_start = "app = BUNDLE(\n    coll,\n"
-    if content.count(bundle_start) != 1:
-        raise RuntimeError("PyInstaller generated an unexpected macOS bundle specification")
-    spec.write_text(
-        content.replace(
-            bundle_start,
-            bundle_start + f"    version={short_version!r},\n    info_plist={info_plist!r},\n",
+    if sys.platform == "darwin":
+        bundle_start = "app = BUNDLE(\n    coll,\n"
+        if content.count(bundle_start) != 1:
+            raise RuntimeError("PyInstaller generated an unexpected macOS specification")
+        spec.write_text(
+            content.replace(
+                bundle_start,
+                bundle_start + f"    version={short_version!r},\n    info_plist={info_plist!r},\n",
+            )
         )
-    )
     command = [
         sys.executable,
         "-m",
@@ -160,10 +159,16 @@ def build(runtime_dir: Path, node: Path, output: Path, name: str) -> dict:
     ]
     environment = {**os.environ, "PYINSTALLER_CONFIG_DIR": str(output / "cache")}
     subprocess.run(command, cwd=REPOSITORY, env=environment, check=True)
-    app = output / "dist" / f"{name}.app"
+    app = output / "dist" / (f"{name}.app" if sys.platform == "darwin" else name)
+    executable = (
+        app / "Contents/MacOS" / name
+        if sys.platform == "darwin"
+        else app / (name + (".exe" if sys.platform == "win32" else ""))
+    )
     manifest = {
         "app": str(app),
-        "executable": str(app / "Contents/MacOS" / name),
+        "executable": str(executable),
+        "platform": sys.platform,
         "architecture": platform.machine(),
         "version": version,
         "bundle_short_version": short_version,
