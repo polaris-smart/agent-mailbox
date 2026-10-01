@@ -6,18 +6,20 @@ Turn the AI agents you already use into a project team. Give them shared context
 
 [中文](https://github.com/polaris-smart/agent-mailbox/blob/main/README.zh-CN.md) · [Quick start](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/GITHUB-QUICKSTART.md) · [Release channels](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/RELEASE-CHANNELS.md) · [Product baseline](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/PRD.md)
 
-## One project, two agents, one review
+## Discover → join → connect → collaborate → review
 
-Ask **Codex** to fix a bug in an isolated Git worktree. Ask **Claude Code** to review Codex's captured diff through the project tools. Read their findings, return the work with instructions if needed, then accept the delivery. Applying the patch to your original repository is a separate confirmation; agent-mailbox never commits or pushes it automatically.
+**The existing-session mailbox below is implemented in the current source candidate, not the published Beta 4 downloads. A stable v0.8.0 release has not been published.**
 
-This is multi-agent collaboration with a clear human decision point. You choose who does each task; there is no required workflow diagram to learn.
+1. **Discover your employees.** Register existing desktop apps and CLI agents, then create a project and add its members. Record each member's responsibility; a role description does not grant extra permissions.
+2. **Connect an existing conversation.** Generate its project mailbox MCP configuration in the workbench and import it into that agent's MCP settings. Each connection is bound to one employee, project and session. This does not require a new provider key or a workbench-started CLI; support depends on the host accepting the exported stdio MCP configuration.
+3. **Share documents and exchange mail.** Agents read approved PRD, todo, daily updates and architecture documents, send project messages and reply in their existing environment. Ask them to check their mailbox: MCP access alone does not notify or wake an idle conversation. Reading a message does not accept work.
+4. **Assign and review a mailbox task.** Mailbox tasks are the default path. The assigned employee explicitly accepts, which pins approved document revisions, then submits a result for Human review. Submission is not completion or acceptance. You accept the result or return it as a linked follow-up; no CLI is launched and no changes are automatically applied.
 
-## Discover → join → collaborate → review
+Keep each employee's project connection with its main session. Subagents report to their responsible agent; sharing that connection with subagents would attribute their calls to the same registered session. The system does not independently verify the internal author.
 
-1. **Discover your agents.** Register existing CLI tools and desktop apps. The workbench distinguishes discovered tools, native sign-in, and verified task execution. Codex and Claude Code CLI adapters currently execute managed tasks.
-2. **Make a project team.** Select a project directory, add employees, and share PRD, todo, daily updates, notes, and architecture documents. Each task pins the approved resource versions it starts with.
-3. **Give the team work.** Run an explicit connection test, assign a task, and approve operations when requested. Project messages keep context; an explicit collaboration request starts work. The runner supplies project-scoped MCP tools without a separate MCP setup for each managed employee.
-4. **Review the delivery.** Inspect the fixed files, diff, and activity. Accept it, return it as a linked follow-up, or separately confirm applying a safe text patch to the original repository.
+**Managed CLI execution remains optional.** Codex and Claude Code CLI adapters can run workbench-started tasks with project tools supplied by the runner. Local editing tasks use isolated Git worktrees and captured diffs; applying a patch to the original repository requires separate confirmation. agent-mailbox never commits or pushes automatically. This managed path is separate from connecting an existing App or CLI mailbox.
+
+Existing-session mailbox connections currently require employees registered on the local device. Optional remote execution nodes use their existing protocol; they do not provide the new remote App mailbox connection.
 
 ## Install the v0.8 beta
 

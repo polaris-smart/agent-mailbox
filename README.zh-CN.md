@@ -6,18 +6,20 @@
 
 [English](https://github.com/polaris-smart/agent-mailbox/blob/main/README.md) · [上手指南](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/GITHUB-QUICKSTART.md) · [发行渠道](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/RELEASE-CHANNELS.md) · [PRD 正典](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/PRD.md)
 
-## 一个项目，两名员工，一次验收
+## 发现 → 入组 → 接入 → 协作 → 验收
 
-让 **Codex** 在独立 Git 工作区修复一个 bug，再让 **Claude Code** 通过项目工具读取固定 diff、提出审查意见。你查看交付，需要修改就填写要求、退回为关联任务；满意后验收。把 patch 应用到原仓库需要另行确认，agent-mailbox 不会自动 commit 或 push。
+**以下既有会话邮箱已在当前源码候选实现，尚未包含在已发布的 Beta 4 下载包内；v0.8.0 正式版尚未发布。**
 
-这是一条可以直接使用的多 Agent 协作流程。你决定每件事交给谁，不必先学习或画一张 workflow 图。
+1. **发现已有员工。** 登记桌面 App、CLI，再创建项目、加入成员并填写职责。职责是分工说明，不额外授予权限。
+2. **接入正在使用的会话。** 在工作台为员工生成项目邮箱 MCP 配置，导入该 Agent 的 MCP 设置。每份接入绑定员工、项目和会话，不要求另外配置 provider/key，也不用工作台另开 CLI。宿主需要支持导出的 stdio MCP 配置。
+3. **共享资料、邮件交流。** 员工在原来的环境读取已批准的 PRD、todo、daily update、架构资料，收发项目邮件并回复。需要让员工主动查信：支持 MCP 不代表闲置会话会自动收到通知或被唤醒；读信不等于接单。
+4. **分配邮件任务、验收交付。** 邮件任务是默认路径。员工明确接受时固定已批准的资料版本，完成后提交结果，进入 Human 验收。提交不等于完成或验收通过；Human 可以通过或退回为关联任务。这个流程不启动 CLI、不自动修改原项目。
 
-## 发现 → 入组 → 协作 → 验收
+项目接入由主 Agent 保管；子代理向负责人汇报。若把同一接入交给子代理，它的调用会归到同一登记会话，系统不能独立核验宿主内部实际作者。
 
-1. **发现已有员工。** 登记本机 CLI 和桌面 app，分别查看入口、原生登录与实际执行验证。当前支持自动执行的是 Codex、Claude Code 的 CLI 适配器。
-2. **组成项目团队。** 选择项目目录，加入员工，共享 PRD、todo、daily update、笔记和架构资料。任务启动时固定已批准的资料版本。
-3. **交代工作。** 显式运行接入测试，再派任务、审批需要的操作。普通项目消息用于交流，明确的“请求协作”才启动工作。运行器提供项目范围内的 MCP 工具，不必给每个受管员工单独配置一次 MCP。
-4. **查看和验收。** 查看固定文件、diff 与工作日志，通过验收或退回补充；安全的文本 patch 由你另外确认应用到原仓库。
+**受管 CLI 执行保留为独立选项。** Codex、Claude Code CLI 可以由工作台启动任务，运行器提供项目工具；本机修改任务使用独立 Git worktree、保存固定 diff。应用到原仓库需要另行确认，工作台不自动 commit 或 push。这与接入原有 App/CLI 的邮箱是两条不同路径。
+
+既有会话邮箱目前只支持登记在本机的员工。可选远端执行节点继续使用现有协议，不代表已打通远端 App 的新邮箱接入。
 
 ## 安装 v0.8 Beta
 

@@ -395,6 +395,14 @@ class Handler(BaseHTTPRequestHandler):
                 raise WorkbenchError("UNAUTHORIZED", "This employee cannot notify this project.")
             self.server.notify()
             return self.send_value(200, {"status": "acknowledged"})
+        if self.command == "POST" and path == PREFIX + "/mailbox/tools":
+            from .workbench_mail_sessions import invoke
+
+            if set(data) != {"tool", "args"}:
+                raise WorkbenchError("INVALID_REQUEST", "Expected a project tool and arguments.")
+            result = invoke(self.server.store, token, data["tool"], data["args"])
+            self.server.ui_notify()
+            return self.send_value(200, result)
         if not token or not hmac.compare_digest(token, self.server.token):
             self.send_value(
                 401,
@@ -410,6 +418,46 @@ class Handler(BaseHTTPRequestHandler):
         route = path.removeprefix(PREFIX).strip("/").split("/")
         method = self.command
         result = None
+        if method == "POST" and route == ["mail-tasks"]:
+            from .workbench_mail_tasks import create_mail_task
+
+            result = create_mail_task(
+                store, data["project_id"], data["title"], data["prompt"], data["assignee_id"]
+            )
+            self.server.ui_notify()
+            return self.send_value(200, result)
+        if (
+            method == "POST"
+            and len(route) == 5
+            and route[0] == "projects"
+            and route[2] == "members"
+            and route[4] == "role"
+        ):
+            from .workbench_mail_tasks import set_project_role
+
+            return self.send_value(200, set_project_role(store, route[1], route[3], data["role"]))
+        if route == ["mailbox", "sessions"]:
+            from .workbench_mail_config import export_session
+            from .workbench_mail_sessions import list_sessions
+
+            if method == "POST":
+                result = export_session(
+                    store, data["employee_id"], data["project_id"], data.get("label", "")
+                )
+            elif method == "GET":
+                query = parse_qs(url.query)
+                result = {
+                    "sessions": list_sessions(
+                        store, query.get("employee_id", [""])[0], query.get("project_id", [""])[0]
+                    )
+                }
+            else:
+                raise WorkbenchError("NOT_FOUND", "Unknown mailbox session action.")
+            return self.send_value(200, result)
+        if len(route) == 3 and route[:2] == ["mailbox", "sessions"] and method == "DELETE":
+            from .workbench_mail_sessions import revoke_session
+
+            return self.send_value(200, revoke_session(store, route[2]))
         if method == "GET" and route == ["changes"]:
             return self.changes()
         if (

@@ -11,6 +11,11 @@ from pathlib import Path
 
 def main(argv: list[str] | None = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] == "mailbox-mcp":
+        from .mailbox_mcp import main as mailbox_main
+
+        mailbox_main(args[1:])
+        return
     if args and args[0] == "prepare":
         parser = argparse.ArgumentParser(
             description="Prepare this home's locked execution runtime."

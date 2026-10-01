@@ -335,6 +335,25 @@ def _apply_reason(task, row, payload, applied):
 def task_delivery(store, taskid):
     with store._connection() as db:
         task = store._required(db, "tasks", taskid)
+        if task["execution_mode"] == "mailbox":
+            return store._scrub(
+                db,
+                {
+                    "task_id": taskid,
+                    "workspace": None,
+                    "files": [],
+                    "diff": "",
+                    "summary": task["result"],
+                    "verification": {
+                        "status": "employee_report",
+                        "notes": "员工提交的结果；系统未独立捕获文件修改或验证测试。",
+                    },
+                    "capture_error": None,
+                    "applied": False,
+                    "can_apply": False,
+                    "apply_blocked_reason": "mailbox_report_only",
+                },
+            )
         row = db.execute("SELECT * FROM task_deliveries WHERE task_id=?", (taskid,)).fetchone()
         payload = (
             json.loads(row["payload"])

@@ -294,7 +294,7 @@ function taskIcon(status) {
 function taskRow(task) {
   return el("button", { type: "button", class: "task-row", "data-task": task.id, "aria-label": `${task.title} · ${statusLabels[task.status] || statusLabels.unknown}` },
     taskIcon(task.status), el("div", {}, el("div", { class: "task-title" }, task.title), el("div", { class: "task-meta" }, el("span", {}, employeeName(task.assignee_id)), el("span", {}, formatDate(task.updated_at || task.created_at)))),
-    el("div", { class: "task-row-end" }, tag(task.status), icon("arrow")));
+    el("div", { class: "task-row-end" }, task.execution_mode === "mailbox" ? el("span", { class: "small" }, t("邮件交办", "Mailbox task")) : null, task.execution_mode === "mailbox" && task.status === "queued" ? el("span", { class: "status-tag" }, t("待接单", "Awaiting acceptance")) : tag(task.status), icon("arrow")));
 }
 function taskSection(title, tasks, explanation, symbol) {
   return el("section", { class: "work-section" }, el("div", { class: "section-heading" }, el("h2", { class: "section-title" }, icon(symbol), title, el("span", { class: "section-count" }, tasks.length))),
@@ -308,7 +308,7 @@ function renderWelcome() {
       step(2, t("加入已有员工", "Connect your existing employees"), t("发现这台设备上已有的 AI 工具，把需要的员工加入项目。", "Discover AI tools on this computer and add employees to your project."), "discover", t("发现员工", "Discover employees"), false),
       step(3, t("交代第一件事", "Assign the first task"), t("写清要做什么、做到什么程度，再把任务交给员工。", "Describe the work and what a good result looks like, then assign it."), "new-task", t("创建任务", "Create task"), false)),
     el("aside", { class: "welcome-note" }, icon("users"), el("h2", {}, t("你负责目标，工作记录在这里", "You set the goal. The work stays here.")), el("p", {}, t("员工可以交接工作、共享资料。你只需要知道正在做什么、哪里需要你、交付了什么。", "Employees can hand off work and share context. See what is running, what needs you, and what was delivered.")),
-      el("ul", {}, el("li", {}, icon("folder"), t("围绕项目组织任务与资料", "Organize tasks and context by project")), el("li", {}, icon("review"), t("交付后由你验收", "You review completed work")), el("li", {}, icon("shield"), t("任务默认只读，授权由你决定", "Read-only by default. You control permissions"))),
+      el("ul", {}, el("li", {}, icon("folder"), t("围绕项目组织任务与资料", "Organize tasks and context by project")), el("li", {}, icon("review"), t("交付后由你验收", "You review completed work")), el("li", {}, icon("shield"), t("邮箱凭据限定项目，原生工具权限由你管理", "Mailbox access is project-scoped. You manage native tool permissions"))),
       el("p", { class: "welcome-footnote" }, t("当前显示真实服务状态，没有预置示例员工或任务。", "This page shows real service state, with no sample employees or tasks."))))];
 }
 function projectContext() {
@@ -329,18 +329,18 @@ function renderOverview() {
   if (!project()) return renderWelcome();
   const current = project();
   const tasks = projectTasks().slice().sort((a, b) => String(b.updated_at || b.created_at).localeCompare(String(a.updated_at || a.created_at)));
-  const people = assignableEmployees();
+  const people = projectEmployees().filter(e => e.lifecycle === "active");
   const finished = tasks.filter((task) => task.status === "done");
   const running = tasks.filter((task) => ["queued", "starting", "running"].includes(task.status));
   const reviewing = tasks.filter((task) => task.status === "review");
   const blocked = tasks.filter((task) => attentionStatuses.has(task.status));
   const firstRun = tasks.length === 0;
-  return [heading(current.name, t("把目标、进度和成果放在同一个项目里。", "Keep goals, progress, and outcomes in one project."), [button(t("新任务", "New task"), "new-task", { class: "primary", icon: "plus", disabled: !state.data })]), runtimeNotice(),
+  return [heading(current.name, t("把目标、进度和成果放在同一个项目里。", "Keep goals, progress, and outcomes in one project."), [button(t("新任务", "New task"), "new-task", { class: "primary", icon: "plus", disabled: !state.data })]),
     firstRun ? el("div", { class: "overview-layout" }, el("div", {}, el("section", { class: "onboarding-panel" },
       el("div", { class: "onboarding-step" }, el("span", { class: "step-number complete", "aria-hidden": "true" }, icon("check")), el("div", { class: "step-body" }, el("h2", {}, t("项目已准备好", "Your project is ready")), el("p", {}, el("code", {}, current.path)))),
-      el("div", { class: "onboarding-step" }, el("span", { class: `step-number ${people.length ? "complete" : "active"}`, "aria-hidden": "true" }, people.length ? icon("check") : "2"), el("div", { class: "step-body" }, el("h2", {}, people.length ? t("在岗员工已加入项目", "Active employees are connected") : t("准备项目员工", "Prepare project employees")), el("p", {}, people.length ? t(`${people.length} 位在岗员工已加入，可以分配第一件工作。`, `${people.length} active employees are connected. Assign their first task.`) : projectEmployees().length ? t("当前成员没有可自动执行的在岗员工。可加入支持任务执行的 CLI，或恢复已暂停员工。", "No active members support automatic execution. Add a supported CLI employee or resume assignments.") : t("从全局登记的员工中选择本项目成员。", "Choose project members from your global employee registry.")), !people.length ? button(projectEmployees().length ? t("管理员工", "Manage employees") : t("选择已有员工", "Choose existing employees"), projectEmployees().length ? "new-task" : "add-member", { class: "primary", icon: "users" }) : null)),
+      el("div", { class: "onboarding-step" }, el("span", { class: `step-number ${people.length ? "complete" : "active"}`, "aria-hidden": "true" }, people.length ? icon("check") : "2"), el("div", { class: "step-body" }, el("h2", {}, people.length ? t("在岗员工已加入项目", "Active employees are connected") : t("准备项目员工", "Prepare project employees")), el("p", {}, people.length ? t(`${people.length} 位在岗员工已加入，可以通过项目邮箱交办第一件工作。`, `${people.length} active employees are connected. Assign their first mailbox task.`) : projectEmployees().length ? t("当前成员已暂停或退役；请恢复在岗状态或添加员工。", "Current members are paused or retired. Resume them or add an active employee.") : t("从全局登记的员工中选择本项目成员。", "Choose project members from your global employee registry.")), !people.length ? button(projectEmployees().length ? t("管理员工", "Manage employees") : t("选择已有员工", "Choose existing employees"), projectEmployees().length ? "new-task" : "add-member", { class: "primary", icon: "users" }) : null)),
       el("div", { class: "onboarding-step" }, el("span", { class: `step-number${people.length ? " active" : ""}`, "aria-hidden": "true" }, "3"), el("div", { class: "step-body" }, el("h2", {}, t("交代第一件事", "Assign the first task")), el("p", {}, t("写清目标与验收标准，员工的执行记录会出现在任务里。", "Describe the goal and acceptance criteria. The task will record the employee's work.")), button(t("创建第一个任务", "Create your first task"), "new-task", { class: people.length ? "primary" : "", icon: "plus", disabled: !people.length })))),
-      el("p", { class: "welcome-footnote" }, t("默认只读资料。需要修改项目文件时，你可以在创建任务时选择。", "Tasks start read-only. Choose project write access when a task needs to edit files."))), projectContext()) :
+      el("p", { class: "welcome-footnote" }, t("先连接员工的项目 MCP 邮箱。邮件交办不启动 CLI，员工在原来的会话中处理；自动执行是另一个选项。", "Connect the employee project MCP mailbox first. Mailbox tasks run in the existing session; managed execution is a separate option."))), projectContext()) :
     el("div", { class: "overview-layout" }, el("div", {},
       taskSection(t("正在做", "In progress"), running, t("当前没有排队或执行中的任务。", "No tasks are queued or running."), "play"),
       taskSection(t("等你验收", "Ready for your review"), reviewing, t("员工完成后，成果会在这里等待验收。", "Completed work will appear here for your review."), "review"),
@@ -406,6 +406,45 @@ function executionGuide(employee, error = null) {
   }
   return el("section", { class: "connection-guide" }, el("h3", {}, title), el("p", {}, explanation), el("p", {}, next), code ? el("p", { class: "field-hint" }, t("诊断代码", "Diagnostic code"), " · ", el("code", {}, code)) : null);
 }
+function openMailConnection(employee) {
+  const body = openForm(t(`${employee.name} · 邮箱接入`, `${employee.name} · Mailbox connection`), t("连接员工已有的 App/CLI 会话，不启动新任务。", "Connect the employee's existing App/CLI session without starting a task."));
+  if (!body) return;
+  const projects = state.data.projects.filter(item => employee.project_ids?.includes(item.id) || employee.project_id === item.id);
+  const select = el("select", { id: "mail-session-project" }, projects.map(item => el("option", { value: item.id }, item.name)));
+  if (projects.some(item => item.id === state.projectId)) select.value = state.projectId;
+  const role = el("textarea", { id: "mail-session-role", maxlength: 4000, value: employee.project_roles?.[select.value] || "" });
+  const saveRole = button(t("保存项目职责", "Save project responsibility"), null, { disabled: !projects.length });
+  saveRole.addEventListener("click", async () => { try { await api.setProjectRole(select.value, employee.id, role.value); employee.project_roles = { ...employee.project_roles, [select.value]: role.value }; showToast(t("职责已保存，不改变权限。", "Responsibility saved; permissions unchanged.")); } catch (e) { formError(error, e); } });
+  const label = el("input", { id: "mail-session-label", value: `${employee.name} · ${employee.connection_type}`, maxlength: 120 });
+  const output = el("pre", { class: "mail-session-config field-hint" });
+  const records = el("div", {});
+  const error = errorBox();
+  const create = button(t("生成邮箱接入配置", "Generate mailbox connection"), null, { class: "primary", disabled: !projects.length || employee.lifecycle !== "active" || employee.node_id !== state.data.node.id });
+  const load = async () => {
+    if (!select.value) return;
+    const result = await api.mailSessions(employee.id, select.value);
+    records.replaceChildren(...result.sessions.map(item => {
+      const revoke = button(t("撤销", "Revoke"), null, { disabled: !!item.revoked_at });
+      revoke.addEventListener("click", async () => { try { await api.revokeMailSession(item.id); await load(); } catch (e) { formError(error, e); } });
+      return el("div", { class: "field-hint" }, `${item.label} · ${!item.active ? t("已失效", "Inactive") : t("已签发，未代表已连接", "Issued; connection unverified")} · ${item.expires_at}`, revoke);
+    }));
+  };
+  create.addEventListener("click", async () => {
+    create.disabled = true;
+    try {
+      const result = await api.createMailSession({ employee_id: employee.id, project_id: select.value, label: label.value });
+      output.textContent = JSON.stringify(result.config, null, 2);
+      await load();
+    } catch (e) { formError(error, e); }
+    finally { create.disabled = false; }
+  });
+  select.addEventListener("change", () => { role.value = employee.project_roles?.[select.value] || ""; output.textContent = ""; load().catch(e => formError(error, e)); });
+  body.append(formField(t("项目", "Project"), select), formField(t("项目职责（不改变权限）", "Project responsibility (does not change permissions)"), role), saveRole, formField(t("会话名称", "Session name"), label),
+    el("p", { class: "field-hint" }, t("将配置加入该 App/CLI 的 MCP 设置。供应商格式不同，可能需重新连接或重启会话。凭据仅限本人和本项目，不交给子代理；30 天后需重新签发。邮件保存不代表已读或已唤醒。", "Add this configuration to the App/CLI's MCP settings. Client formats differ; reconnect or restart may be needed. Credentials bind this employee and project; do not share with subagents. Reissue after 30 days. Stored mail does not prove it was read or woke the employee.")),
+    create, output, records, error);
+  load().catch(e => formError(error, e));
+}
+
 async function openConnectionGuide(employee) {
   const body = openForm(t(`${employee.name} · 接入验证`, `${employee.name} · Connection verification`), t("本次检查：安装、登录与实际执行分开；查看此页不会调用模型。", "Current check: installation, sign-in, and execution are separate. Viewing this page does not run a model."));
   if (!body) return;
@@ -506,6 +545,8 @@ function employeeRow(employee, { membership = false } = {}) {
   row.classList.add("employee-card");
   const projects = state.data.projects.filter(item => employee.project_ids?.includes(item.id) || employee.project_id === item.id);
   const mailbox = button(t("查看信箱", "Open mailbox"), null, { class: "small employee-mailbox-button", icon: "document" });
+  const connectMail = button(t("邮箱接入", "Connect mailbox"), null, { class: "small", disabled: employee.lifecycle !== "active" || !projects.length });
+  connectMail.addEventListener("click", () => openMailConnection(employee));
   mailbox.addEventListener("click", () => { state.mailboxEmployeeId = employee.id; state.mailboxFolder = "inbox"; selectView("mailboxes"); });
   const join = button(t("选择项目", "Choose project"), null, { class: "small", icon: "plus", disabled: lifecycle === "retired" });
   join.addEventListener("click", () => openEmployeeProjects(employee));
@@ -520,7 +561,7 @@ function employeeRow(employee, { membership = false } = {}) {
     el("div", { class: "employee-card-status" }, el("span", { class: `execution-pill ${verified ? "verified" : ""}` }, executionLabel), lifecycle !== "active" ? tag(lifecycle) : null),
     el("p", { class: "employee-sign-in" }, t("原生登录 · 上次记录", "Native sign-in · Last recorded"), " · ", statusLabels[employee.auth_status] || statusLabels.unknown),
     el("div", { class: "employee-projects" }, projects.length ? projects.map(item => el("span", { class: "employee-project-chip", title: item.name }, icon("folder"), item.name)) : el("span", { class: "muted" }, t("尚未加入项目", "No project yet"))),
-    el("div", { class: "employee-card-actions" }, mailbox, !membership ? join : null), details);
+    el("div", { class: "employee-card-actions" }, mailbox, connectMail, !membership ? join : null), details);
   if (!membership && lifecycle !== "retired") {
     row.addEventListener("dragstart", (event) => {
       if (event.target.closest("button, a, input, select, summary, details")) { event.preventDefault(); return; }
@@ -670,7 +711,7 @@ function renderMessages() {
       el("div", { class: "message-meta" }, el("strong", {}, sender), el("span", {}, "→ ", recipient), el("time", {}, formatDate(message.created_at, true))),
       el("h2", {}, message.title), message.reply_to ? el("p", { class: "message-attribution" }, t("回复消息", "Reply to message"), " · ", messages.find((item) => item.id === message.reply_to)?.title || t("较早的项目消息", "Earlier project message")) : null,
       el("p", { class: "message-body" }, message.body), attribution,
-      el("div", { class: "message-actions" }, reply, work, message.request_work ? el("span", { class: "status-tag" }, t("已请求只读协作", "Read-only collaboration requested")) : null)));
+      el("div", { class: "message-actions" }, reply, work, message.request_work ? el("span", { class: "status-tag" }, t("已请求 CLI 自动执行", "Managed CLI execution requested")) : null)));
   });
   const title = el("input", { id: "message-title", required: true, maxlength: 240, value: draft.title, placeholder: t("这条消息关于什么？", "What is this message about?") });
   const body = el("textarea", { id: "message-body", required: true, maxlength: 20000, value: draft.body, placeholder: t("共享背景、提出问题或补充资料…", "Share context, ask a question, or add information…") });
@@ -685,7 +726,7 @@ function renderMessages() {
   populateRecipients();
   const error = errorBox();
   const send = el("button", { type: "submit", class: "button primary" }, t("发送消息", "Send message"));
-  const explanation = el("p", { class: "field-hint" }, t("普通消息只保存沟通记录，不会启动员工。请求协作会创建关联的只读任务；执行与验收状态在任务中显示。", "Ordinary messages record communication without starting employees. Collaboration creates a linked read-only task; execution and review appear in that task."));
+  const explanation = el("p", { class: "field-hint" }, t("普通邮件不启动员工。使用项目 MCP 在已有会话中收信、回复；需要交办工作时创建邮件任务。下方自动执行选项会另开 CLI 会话。", "Ordinary mail does not start employees. Use project MCP to read and reply in an existing session; create a mailbox task to assign work. The managed option below starts a separate CLI session."));
   const capture = () => {
     draft.title = title.value; draft.body = body.value; draft.recipientId = recipient.value; draft.requestWork = requestWork.checked; draft.requestId = null;
     send.textContent = requestWork.checked ? t("发送并请求协作", "Send and request collaboration") : t("发送消息", "Send message");
@@ -694,7 +735,7 @@ function renderMessages() {
   requestWork.addEventListener("change", () => { populateRecipients(); capture(); });
   const form = el("form", { class: "message-composer" }, el("h2", {}, draft.replyTo ? t("回复项目消息", "Reply to a project message") : t("写一条消息", "Write a message")),
     formField(t("标题", "Title"), title), formField(t("收件人", "Recipient"), recipient), formField(t("内容", "Message"), body),
-    el("label", { class: "checkbox-choice" }, requestWork, el("span", {}, t("请求协作（创建只读工作任务）", "Request collaboration (creates a read-only task)"))), explanation, error,
+    el("label", { class: "checkbox-choice" }, requestWork, el("span", {}, t("启动 CLI 自动执行（另建只读任务）", "Start managed CLI execution (creates a read-only task)"))), explanation, error,
     el("div", { class: "message-actions" }, send));
   if (draft.replyTo) {
     const cancelReply = button(t("取消回复", "Cancel reply"), null, { class: "small" });
@@ -1566,17 +1607,20 @@ async function openEmployeeForm() {
   }
   retry.addEventListener("click", discover); await discover();
 }
-function openTaskForm() {
+function openTaskForm(mode = "mailbox") {
   if (!project()) { openProjectForm(); return; }
-  const people = assignableEmployees();
+  const people = mode === "mailbox" ? projectEmployees().filter(e => e.lifecycle === "active" && e.node_id === state.data.node.id) : assignableEmployees();
   if (!people.length) {
-    if (projectEmployees().length) { selectView("members"); showToast(t("当前项目没有支持自动执行的在岗员工。请加入已支持的 CLI 员工，或恢复其接单状态。", "No active employees support automatic execution in this project. Add a supported CLI employee or resume assignments.")); }
+    if (projectEmployees().length) { selectView("members"); showToast(mode === "mailbox" ? t("当前项目没有本机在岗员工。请添加成员或恢复在岗状态。", "No active local employees are available. Add a member or resume an employee.") : t("当前项目没有支持自动执行的在岗员工。请加入已支持的 CLI 员工，或恢复其接单状态。", "No active employees support automatic execution in this project. Add a supported CLI employee or resume assignments.")); }
     else openMemberForm();
     return;
   }
-  const body = openForm(t("交代一件工作", "Assign a task"), t("写清目标、背景和验收标准。任务默认只读，修改文件需要你主动选择。", "Describe the goal, context, and acceptance criteria. Choose write access explicitly if the task needs it."));
+  const body = openForm(t("交代一件工作", "Assign a task"), mode === "mailbox" ? t("通过邮件交办，员工在已有会话中处理；文件操作仍由原 App/CLI 的权限控制。", "Assign through mail for the existing session. File operations remain under the original App/CLI permissions.") : t("写清目标、背景和验收标准。修改文件需要主动选择。", "Describe the goal, context and acceptance criteria; choose write access explicitly."));
   if (!body) return;
   const projectId = state.projectId;
+  const method = el("select", { id: "task-method" }, el("option", { value: "mailbox" }, t("邮件交办 · 已有会话处理", "Mailbox task · Existing session")), el("option", { value: "managed" }, t("自动执行 · 新建受管会话", "Managed execution · New session")));
+  method.value = mode;
+  method.addEventListener("change", () => { formDialog.close(); openTaskForm(method.value); });
   const title = el("input", { id: "task-title", required: true, maxlength: 240, placeholder: t("用一句话说明这件事", "Describe the work in one sentence") });
   const prompt = el("textarea", { id: "task-prompt", required: true, placeholder: t("要做什么？可参考哪些资料？什么结果算完成？", "What should be done? Which context matters? What counts as complete?") });
   const assignee = el("select", { id: "task-assignee", required: true }, people.map((employee) => el("option", { value: employee.id }, `${employee.name} · ${employee.kind}`)));
@@ -1586,6 +1630,7 @@ function openTaskForm() {
   let modelRequest = 0;
   async function loadModels() {
     const requestId = ++modelRequest;
+    if (mode === "mailbox") { model.disabled = true; modelHint.textContent = t("员工在自己的 App/CLI 会话中使用原有模型处理，不由工作台启动。", "The employee handles this in its existing App/CLI with its own model; the workbench does not launch it."); return; }
     const employee = people.find((item) => item.id === assignee.value);
     model.replaceChildren(el("option", { value: "" }, t("复用员工设置", "Use employee settings")));
     if (employee?.node_id && employee.node_id !== state.data.node?.id) {
@@ -1617,17 +1662,18 @@ function openTaskForm() {
     el("label", { class: "radio-choice" }, readOnly, el("div", {}, el("strong", {}, t("只读资料", "Read-only")), el("p", {}, t("阅读与分析项目，不修改文件。", "Read and analyze the project without editing files.")))),
     el("label", { class: "radio-choice" }, write, el("div", {}, el("strong", {}, t("可修改项目文件", "Project write access")), el("p", {}, t("在独立 Git 工作区编辑。原仓库需有提交且干净（含未跟踪文件）；验收不会自动合入。工作区不是系统安全沙箱。", "Edit in an independent Git worktree. The repository must have a commit and be clean, including untracked files. Acceptance does not apply changes. A worktree is not an OS sandbox.")))));
   const box = errorBox();
-  const form = el("form", {}, formField(t("任务名称", "Task title"), title), formField(t("交给谁", "Assign to"), assignee), el("div", { class: "form-field" }, el("label", { for: model.id }, t("模型（可选）", "Model (optional)")), model, modelHint), formField(t("工作说明", "Instructions"), prompt), el("div", { class: "form-field" }, el("span", { class: "field-hint" }, t("这次任务的权限", "Permissions for this task")), permissions), box);
+  const form = el("form", {}, formField(t("任务名称", "Task title"), title), formField(t("交给谁", "Assign to"), assignee), el("div", { class: "form-field" }, el("label", { for: model.id }, t("模型（可选）", "Model (optional)")), model, modelHint), formField(t("工作说明", "Instructions"), prompt), el("div", { class: "form-field", hidden: mode === "mailbox" }, el("span", { class: "field-hint" }, t("这次任务的权限", "Permissions for this task")), permissions), box);
   const end = footer(t("派发任务", "Assign task"));
   const runtimeBox = el("div", { id: "task-runtime-status", role: "status" });
   const isRemote = () => { const employee = people.find((item) => item.id === assignee.value); return Boolean(employee?.node_id && employee.node_id !== state.data.node?.id); };
-  const canAssign = () => isRemote() || Boolean(state.data.runtime?.installed && state.data.runtime?.node_available);
+  const canAssign = () => mode === "mailbox" || isRemote() || Boolean(state.data.runtime?.installed && state.data.runtime?.node_available);
   const updateRuntime = () => {
     if (!formDialog.open || !body.isConnected) return;
-    write.disabled = isRemote();
+    write.disabled = mode === "mailbox" || isRemote();
     if (write.disabled) readOnly.checked = true;
     end.submit.disabled = !canAssign() || Boolean(end.submit.dataset.loading);
-    if (isRemote()) runtimeBox.replaceChildren(el("p", { class: "field-hint" }, t("这项工作在员工所在设备执行。远端暂仅支持只读任务，尚不支持独立修改工作区和合入。", "Work runs on the employee's device. Remote tasks currently support read-only work; isolated editing and applying changes are unavailable.")));
+    if (mode === "mailbox") runtimeBox.replaceChildren(el("p", { class: "field-hint" }, t("任务保存并发送到员工项目邮箱。员工需通过 MCP 查收、明确接单、提交结果；不会启动 CLI，也不代表已读或已唤醒。", "Saved to the employee project mailbox. The employee checks MCP, explicitly accepts and submits a result. No CLI is launched; saving does not prove reading or waking.")));
+    else if (isRemote()) runtimeBox.replaceChildren(el("p", { class: "field-hint" }, t("这项工作在员工所在设备执行。远端暂仅支持只读任务，尚不支持独立修改工作区和合入。", "Work runs on the employee's device. Remote tasks currently support read-only work; isolated editing and applying changes are unavailable.")));
     else runtimeBox.replaceChildren(runtimeNotice({ force: true }) || el("p", { class: "field-hint" }, t("本机执行环境已准备好。", "Local execution environment is ready.")));
   };
   state.taskFormUpdate = updateRuntime;
@@ -1637,17 +1683,17 @@ function openTaskForm() {
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     if (!title.value.trim() || !prompt.value.trim() || !assignee.value || !canAssign()) return;
-    submitAction(end.submit, box, () => api.createTask({ project_id: projectId, title: title.value.trim(), prompt: prompt.value.trim(), assignee_id: assignee.value, model: model.value || null, permission_mode: write.checked ? "workspace-write" : "read-only" }), async (result) => {
+    submitAction(end.submit, box, () => (mode === "mailbox" ? api.createMailTask : api.createTask)({ project_id: projectId, title: title.value.trim(), prompt: prompt.value.trim(), assignee_id: assignee.value, model: model.value || null, permission_mode: write.checked ? "workspace-write" : "read-only" }), async (result) => {
       formDialog.close();
       state.view = "tasks";
       state.taskFilter = "all";
-      showToast(t("任务已排队，启动和执行进度会在任务里更新。", "Task queued. Startup and execution progress will appear in its record."));
+      showToast(mode === "mailbox" ? t("邮件任务已保存，等待员工查收和接单。", "Mailbox task saved, awaiting employee check and acceptance.") : t("任务已排队，启动和执行进度会在任务里更新。", "Task queued. Startup and execution progress will appear in its record."));
       await refresh();
       const created = result.task || result;
       if (created.id) await openTaskDetail(created.id);
     });
   });
-  body.append(form);
+  body.append(formField(t("交办方式", "Assignment mode"), method), form);
   updateRuntime();
   title.focus();
   loadModels();
@@ -1748,6 +1794,7 @@ async function loadTaskDetail({ silent = false } = {}) {
 }
 function deliveryPanel(task, delivery, box) {
   const panel = el("section", { class: "detail-section delivery-panel" }, el("h3", {}, t("交付与代码变更", "Delivery & code changes")));
+  if (task.execution_mode === "mailbox") { panel.append(el("p", { class: "field-hint" }, t("员工在已有 App/CLI 中处理的邮件任务。结果为员工报告，系统未独立捕获代码变更或运行测试；验收不会自动合入。", "Mailbox task handled in the employee's existing App/CLI. The result is an employee report; code changes and tests were not independently captured. Acceptance does not apply changes."))); return panel; }
   if (!delivery) { panel.append(el("p", {}, t("尚无交付记录。", "No delivery recorded yet."))); return panel; }
   if (delivery.load_error) { panel.append(el("p", { class: "permission-expired" }, t("无法读取交付：", "Could not load delivery: "), delivery.load_error)); return panel; }
   const workspace = delivery.workspace;

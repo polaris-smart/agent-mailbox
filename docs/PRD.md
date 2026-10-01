@@ -6,6 +6,8 @@
 
 一个 human 把已有 AI Agent 组成项目小组的本地工作台：先发现并登记成员，再加入项目群，共享资料、进度，收发消息并交接工作。默认先解决单机；LAN 和远端 Ubuntu 执行节点是可选扩展。继续叫 agent-mailbox，沿用版本线。以容易上手、清楚派工、可靠回执和可积累项目知识为中心。
 
+本轮源码候选已实现既有会话的项目邮箱和邮件任务路径，尚未发布为正式版，也不属于下列历史 Beta 4 下载包的能力证明。邮件接入优先，受管 CLI 执行是独立选项。
+
 三条产品纪律：多员工协作要有实际价值；安装、连接、派工的障碍应在界面明确解决；数字必须有口径，失败不能静默。发现 app、依赖已安装、原生账号已登录、首次执行成功是不同事实，界面不能混称“可执行”。
 
 ## 2. 独立边界
@@ -19,8 +21,9 @@
 | 场景 | 行为 | 验收要求 |
 | --- | --- | --- |
 | 单机上手 | 发现并登记 app/CLI，再创建项目并从名册选择成员 | 零项目可登记；接入方式和执行能力分开；草稿保留 |
-| 派工 | 指派受支持员工，说明交付要求 | 一位员工避免并发冲突；结果进入人工验收 |
-| 项目协作 | 读取上下文、写笔记、普通消息/回复，显式请求同事协作 | 普通消息不触发；协作请求派只读任务；仅本项目范围；不需逐员工配置 MCP |
+| 邮件任务（当前源码候选） | 指派项目成员，填写职责与交付要求 | 不启动 CLI；员工明确接受→提交结果→Human 验收；接受时固定已批准资料版本 |
+| 可选受管执行 | 指派有执行适配器的员工 | Codex/Claude CLI；独立工作区、权限审批及结果验收保持原边界 |
+| 项目协作（当前源码候选） | 现有 App/CLI 导入项目邮箱 MCP；读共享资料、收发邮件 | 员工/项目/会话绑定；主动查信、不自动唤醒；读信不接单；不能切换身份；职责不增加权限 |
 | 工作沉淀 | 查看任务事件、结果、笔记、资源与员工状态 | 可追溯本地历史；不冒充防篡改审计系统 |
 | 可选节点 | 显式配对、映射节点目录、注册员工 | TLS 指纹匹配后才传秘密；权限按项目限制 |
 | 中断恢复 | 重启或丢失最终回包 | 不重复不确定执行；已保存结果重试相同回执 |
@@ -34,7 +37,9 @@
 | 任务执行与人工验收 | workbench_engine.py / workbench.py | Codex、Claude 受管 CLI；权限默认拒绝 |
 | 运行准备和模型发现 | workbench_runtime.py / runtime_bridge | 锁定依赖；发现与实际执行分开 |
 | 工作台 | workbench_assets | 本机浏览器；Mac ARM64、Windows x64、Linux x64 原生入口 |
-| 项目共享工具 | workspace_mcp.py / workbench_execution_resources.py | 11 个工具，含固定同事交付；指派任务自动注入，不接管所有既有对话 |
+| 受管项目工具 | workspace_mcp.py / workbench_execution_resources.py | 11 个工具，指派任务自动注入，不接管所有既有对话 |
+| 既有会话邮箱（当前源码候选） | mailbox_mcp.py / workbench_mail_sessions.py / workbench_mail_config.py | 12 个 MCP 工具；本机员工、项目、可撤销会话绑定；私有文件导出配置；主动查信 |
+| 邮件任务与职责（当前源码候选） | workbench_mail_tasks.py / workbench_store.py | 默认邮件任务；明确接受固定资料版本、提交待验收、Human 决定；描述性职责 |
 | 员工接入验证 | workbench_onboarding.py / workspace_mcp.py | 显式只读 probe，可选模型，context/note 实际回执 |
 | 独立工作区和固定交付 | workbench_workspaces.py | 本机 clean Git root；固定 patch，验收后显式 apply，不 commit/push |
 | 可选设备 | workbench_fleet.py / workbench_remote.py / workbench_node.py | pinned HTTPS；headless 节点；持久回执 |
@@ -43,7 +48,7 @@
 
 员工名册与项目成员分离，app/CLI 不自动合并。消息线程、协作任务和人工验收分别保存；同请求ID幂等，员工协作触发限制深度并拒绝向上游成员循环派工。退出项目撤销该项目凭证，不删除全局身份或历史。
 
-项目工具写入绑定有效 task/run；本机工具使用单次执行凭证，成员长期凭证仅可读。发信身份来自受管员工会话，不能由文本或工具参数冒用其他成员。宿主内部 subagent 如果共享工具权限，实际调用者仍不可独立核实；界面明确标记会话归因，不声称已隔离所有助手。默认要求助手向主 Agent 汇报，独立入组/授权代发留待正式协议。
+受管项目工具写入绑定有效 task/run；本机受管工具使用单次执行凭证，成员长期凭证仅可读。当前源码候选另提供可撤销的邮箱会话凭据，限定员工/项目/会话，可用于发信、笔记、资料提案及本人邮件任务的接受/提交，不授予受管执行、Human 验收、管理或任意文件读取权限。邮箱凭据导出到私有文件，MCP 配置不直接展示密钥；宿主需导入该 stdio 配置。发信身份来自绑定会话，不能由文本或工具参数冒用其他成员。宿主内部 subagent 如果共享工具权限，实际调用者仍不可独立核实；界面明确标记会话归因，不声称已隔离所有助手。默认要求助手向主 Agent 汇报，独立入组/授权代发留待正式协议。
 
 ## 5. 设备和系统
 
@@ -100,3 +105,12 @@ dsh-devices 的产品线负责人考核、成员入组审批、派单时指定 p
 Human 于 2026-10-01 决定产品、仓库、Python 包和 CLI 继续叫 agent-mailbox；v0.8 替代旧软件，各平台和已启用发行渠道保持同一产品版本。本轮工作台正式包渠道为 PyPI（账号 coolmax、维护者 polaris-smart）及 GitHub；TestPyPI、Homebrew 尚无发行。2026-10-01 核验补充：已有 npm 配套插件 `dsh-agent-mailbox@0.1.2`（维护者 polaris-smart、独立同名仓库），仍使用 v0.7 八个信箱工具，尚未适配 v0.8，不能当作工作台安装入口。作出该决定时，v0.8.0b4 是待验收目标，尚未公开。旧数据/后台服务/MCP 配置没有自动迁移，必须与兼容 v0.8 数据保留升级区分。发布必须完成六组 CI、对应原生安装包与升级验证。详见[渠道与发布门槛](RELEASE-CHANNELS.md)。
 
 上述决定已在 Beta 4 发行完成：GitHub `v0.8.0b4` 与 PyPI `0.8.0b4` 均公开，七个 GitHub 文件及两份 PyPI 发行文件核对哈希通过；源提交为 `420d136651ff8209b5a3fdc43f4b4bb985fa3c39`。六组回归和三平台安装包门禁通过，Mac/Linux 每组 365 passed、4 skipped，Windows 每组 321 passed、48 skipped。独立 PyPI 安装及 Mac 保留数据升级、真实浏览器检查通过；三平台无模型检查不能代替 Windows/Linux 原生账号实机验收。发行包未提供 Developer ID/Windows 发行者签名或 macOS 公证。详细证据见 [Beta 4 发行记录](evidence/v080/beta4-release.md)。
+
+
+## 当前源码候选：既有会话邮箱与邮件任务
+
+默认流程为登记员工→立项入组、填写职责→在现有 App/CLI 导入项目邮箱 MCP→共享批准资料、主动查信→明确接受任务→提交结果→Human 验收。邮箱接入与受管 CLI 执行分开；不能把“发现/入组”“配置导出”“宿主实际调用”“自动唤醒”混为成功。当前接入只面向本机员工，远端 App 邮箱尚未实现；宿主是否能导入配置需逐入口验证，不能宣称所有 Agent 均已验收。
+
+普通消息和查看邮箱不触发执行、不 ACK、不自动接单。邮件任务 `execution_mode=mailbox` 不进入受管执行队列；`queued` 表示待接受，`running` 表示员工已明确接受，`review` 表示结果待 Human 验收，`done` 仅由 Human 验收产生。接单时固定批准资料清单，并返回 `resource_manifest`，后续 `project_tasks()` 仍返回已保存清单；员工按清单中的 `version_id` 调用 `project_resource_read(resource_id, version_id)` 读取固定版本。未指定版本的普通资料读取仍返回已批准版本，不能当作任务固定版本读取。退回创建关联邮件任务。取消、离组、暂停或退役会结束仍活动的邮件任务；应用重启不把员工原有会话当作受管执行中断。邮件任务不授予工具执行凭据、不验证模型执行能力、不自动合入代码。
+
+源码验证落点：[邮件会话测试](../tests/test_workbench_mail_sessions.py)、[邮件任务测试](../tests/test_workbench_mail_tasks.py)、[真实 HTTP/stdio MCP 协议测试](../tests/test_mailbox_mcp.py)、[原生包检查脚本](../scripts/check-package.py)。这些是无供应商调用的协议/fixture 验证，不替代 ZCode、Hermes、WorkBuddy 等真实宿主接入验收，也不表示新候选已经公开发行。原生包与三平台结果必须另附执行证据。

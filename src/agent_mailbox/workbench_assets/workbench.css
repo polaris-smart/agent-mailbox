@@ -595,3 +595,5 @@ body.drawer-open { overflow: hidden; }
 .apply-confirm input { width: 18px; min-height: 18px; height: 18px; }
 
 .check-status { display: inline-block; margin-left: 10px; font-size: 12px; color: var(--muted); }
+
+.mail-session-config { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18rem; overflow: auto; }

@@ -33,7 +33,7 @@ class WorkbenchError(Exception):
 ACTIVE = frozenset({"starting", "running", "waiting_approval"})
 FINISH = frozenset({"review", "failed", "cancelled", "interrupted"})
 MAX_TEXT = 1024 * 1024
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 11
 EMPLOYEE_KINDS = frozenset(
     {
         "codex",
@@ -64,7 +64,17 @@ PERMISSION_TIMEOUT = 120
 LIFECYCLES = frozenset({"active", "paused", "retired"})
 EMPLOYEE_STATUSES = frozenset({"installed", "auth_required", "available", "unavailable", "unknown"})
 SECRET_KEYS = frozenset(
-    {"token", "secret_token", "tool_token", "password", "authorization", "api_key", "access_token"}
+    {
+        "token",
+        "secret_token",
+        "tool_token",
+        "password",
+        "authorization",
+        "api_key",
+        "access_token",
+        "token_hash",
+        "membership_hash",
+    }
 )
 
 
@@ -132,7 +142,7 @@ CREATE TABLE IF NOT EXISTS employees (
 CREATE TABLE IF NOT EXISTS memberships (
     employee_id TEXT NOT NULL REFERENCES employees(id),
     project_id TEXT NOT NULL REFERENCES projects(id),
-    secret_token TEXT NOT NULL,
+    secret_token TEXT NOT NULL, role TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (employee_id, project_id)
 );
 CREATE TABLE IF NOT EXISTS tasks (
@@ -145,7 +155,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     result TEXT NOT NULL DEFAULT '', error TEXT, model TEXT,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
     request_message_id TEXT REFERENCES messages(id), source_task_id TEXT REFERENCES tasks(id),
-    tool_token TEXT NOT NULL
+    tool_token TEXT NOT NULL, execution_mode TEXT NOT NULL DEFAULT 'managed'
 );
 CREATE INDEX IF NOT EXISTS tasks_queue ON tasks(node_id, status, created_at);
 CREATE TABLE IF NOT EXISTS events (
@@ -187,11 +197,17 @@ CREATE TABLE IF NOT EXISTS messages (
     reply_to TEXT REFERENCES messages(id), thread_id TEXT NOT NULL,
     request_work INTEGER NOT NULL DEFAULT 0, task_id TEXT REFERENCES tasks(id),
     source_task_id TEXT REFERENCES tasks(id), request_id TEXT, request_digest TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL, source_session_id TEXT REFERENCES mailbox_sessions(id)
 );
 CREATE INDEX IF NOT EXISTS messages_project ON messages(project_id,created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS messages_request ON messages(project_id,COALESCE(sender_id,''),request_id)
     WHERE request_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS mailbox_sessions (
+    id TEXT PRIMARY KEY, employee_id TEXT NOT NULL REFERENCES employees(id),
+    project_id TEXT NOT NULL REFERENCES projects(id), label TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE, membership_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL, expires_at TEXT NOT NULL, revoked_at TEXT
+);
 """
 
 
@@ -261,6 +277,15 @@ class WorkbenchStore:
                                 "WHERE employee_id=? AND project_id=?",
                                 (row[2], row[0], row[1]),
                             )
+                    if "role" not in columns:
+                        db.execute(
+                            "ALTER TABLE memberships ADD COLUMN role TEXT NOT NULL DEFAULT ''"
+                        )
+                    columns = {row[1] for row in db.execute("PRAGMA table_info(messages)")}
+                    if "source_session_id" not in columns:
+                        db.execute(
+                            "ALTER TABLE messages ADD COLUMN source_session_id TEXT REFERENCES mailbox_sessions(id)"
+                        )
                     columns = {row[1] for row in db.execute("PRAGMA table_info(tasks)")}
                     if "model" not in columns:
                         db.execute("ALTER TABLE tasks ADD COLUMN model TEXT")
@@ -268,6 +293,7 @@ class WorkbenchStore:
                         ("request_message_id", "TEXT REFERENCES messages(id)"),
                         ("source_task_id", "TEXT REFERENCES tasks(id)"),
                         ("tool_token", "TEXT"),
+                        ("execution_mode", "TEXT NOT NULL DEFAULT 'managed'"),
                     ):
                         if column not in columns:
                             db.execute(f"ALTER TABLE tasks ADD COLUMN {column} {definition}")
@@ -392,6 +418,8 @@ class WorkbenchStore:
         result.pop("secret_token", None)
         result.pop("tool_token", None)
         result.pop("request_digest", None)
+        result.pop("token_hash", None)
+        result.pop("membership_hash", None)
         for key in ("cancel_requested", "is_local", "execution_verified", "request_work"):
             if key in result:
                 result[key] = bool(result[key])
@@ -462,6 +490,12 @@ class WorkbenchStore:
                 (row["id"],),
             )
         ]
+        employee["project_roles"] = {
+            member["project_id"]: member["role"]
+            for member in db.execute(
+                "SELECT project_id,role FROM memberships WHERE employee_id=?", (row["id"],)
+            )
+        }
         return self._scrub(db, employee)
 
     def snapshot(self) -> dict:
@@ -641,7 +675,7 @@ class WorkbenchStore:
         if employee["lifecycle"] == "retired":
             raise WorkbenchError("employee_retired", "退役员工不能加入项目，请建立新身份。")
         added = db.execute(
-            "INSERT OR IGNORE INTO memberships VALUES(?,?,?)",
+            "INSERT OR IGNORE INTO memberships(employee_id,project_id,secret_token) VALUES(?,?,?)",
             (employee_id, project_id, secrets.token_urlsafe(32)),
         )
         if added.rowcount:
@@ -666,7 +700,7 @@ class WorkbenchStore:
             self._required(db, "projects", project_id)
             employee = self._required(db, "employees", employee_id)
             if db.execute(
-                "SELECT 1 FROM tasks WHERE project_id=? AND assignee_id=? AND status IN ('starting','running','waiting_approval')",
+                "SELECT 1 FROM tasks WHERE project_id=? AND assignee_id=? AND execution_mode='managed' AND status IN ('starting','running','waiting_approval')",
                 (project_id, employee_id),
             ).fetchone():
                 raise WorkbenchError(
@@ -676,14 +710,16 @@ class WorkbenchStore:
             if not self._membership(db, employee_id, project_id):
                 return self._employee(db, employee)
             for task in db.execute(
-                "SELECT id FROM tasks WHERE project_id=? AND assignee_id=? AND status='queued'",
+                "SELECT id FROM tasks WHERE project_id=? AND assignee_id=? AND (status='queued' OR (execution_mode='mailbox' AND status='running'))",
                 (project_id, employee_id),
             ).fetchall():
                 db.execute(
                     "UPDATE tasks SET status='cancelled',cancel_requested=1,updated_at=? WHERE id=?",
                     (_now(), task[0]),
                 )
-                self._event(db, task[0], "member_removed", "员工已移出项目，排队任务已取消。")
+                self._event(
+                    db, task[0], "member_removed", "员工已移出项目，邮件任务和排队任务已取消。"
+                )
             db.execute(
                 "DELETE FROM memberships WHERE project_id=? AND employee_id=?",
                 (project_id, employee_id),
@@ -767,17 +803,19 @@ class WorkbenchStore:
                 (status, reason, timestamp, employee_id),
             )
             tasks = []
-            if status == "retired":
+            if status in {"paused", "retired"}:
                 # Validation revokes every project capability in this transaction.
                 # Retain old secrets privately so historical redaction still works.
                 for task in db.execute(
-                    "SELECT * FROM tasks WHERE assignee_id=? AND status IN ('queued','starting','running','waiting_approval')",
-                    (employee_id,),
+                    "SELECT * FROM tasks WHERE assignee_id=? AND status IN ('queued','starting','running','waiting_approval') AND (?='retired' OR execution_mode='mailbox')",
+                    (employee_id, status),
                 ).fetchall():
                     db.execute(
                         "UPDATE tasks SET status=?,cancel_requested=1,updated_at=? WHERE id=?",
                         (
-                            "cancelled" if task["status"] == "queued" else task["status"],
+                            "cancelled"
+                            if task["status"] == "queued" or task["execution_mode"] == "mailbox"
+                            else task["status"],
                             timestamp,
                             task["id"],
                         ),
@@ -786,8 +824,10 @@ class WorkbenchStore:
                     self._event(
                         db,
                         task["id"],
-                        "employee_retired",
-                        "员工退役，排队任务已取消；执行中的任务已请求停止。",
+                        "employee_retired" if status == "retired" else "employee_paused",
+                        "员工状态已变更，邮件任务和排队任务已取消。"
+                        if task["execution_mode"] == "mailbox"
+                        else "员工退役，排队任务已取消；执行中的任务已请求停止。",
                     )
                     tasks.append(self._entity(self._required(db, "tasks", task["id"])))
             self._governance(
@@ -936,7 +976,7 @@ class WorkbenchStore:
         }
         message["attribution_scope"] = message["attribution"]["scope"]
         message["internal_actor_verified"] = False
-        message["sender_session_id"] = None
+        message["sender_session_id"] = row["source_session_id"]
         message["source_run_id"] = None
         if row["source_task_id"]:
             source = self._required(db, "tasks", row["source_task_id"])
@@ -1029,6 +1069,7 @@ class WorkbenchStore:
         request_work: bool = False,
         source_task_id: str | None = None,
         request_id: str | None = None,
+        mailbox_token: str | None = None,
     ) -> dict:
         title = _text(title, "消息标题", 300).strip()
         body = _text(body, "消息内容")
@@ -1036,19 +1077,37 @@ class WorkbenchStore:
             raise WorkbenchError("invalid_field", "请明确是否请求员工执行工作。")
         if request_id is not None:
             request_id = _text(request_id, "请求编号", 200)
+        if mailbox_token is not None:
+            if not isinstance(mailbox_token, str) or not mailbox_token:
+                raise WorkbenchError("UNAUTHORIZED", "项目邮箱凭据无效。")
+            title = title.replace(mailbox_token, "[redacted]")
+            body = body.replace(mailbox_token, "[redacted]")
         digest = hashlib.sha256(
             _json([title, body, recipient_id, reply_to, request_work, source_task_id]).encode()
         ).hexdigest()
         with self._transaction() as db:
             self._required(db, "projects", project_id)
+            source_session_id = None
+            if mailbox_token is not None:
+                from .workbench_mail_sessions import validate_session
+
+                session = validate_session(self, db, mailbox_token)
+                if (
+                    session["employee_id"] != sender_id
+                    or session["project_id"] != project_id
+                    or source_task_id is not None
+                    or request_work
+                ):
+                    raise WorkbenchError("UNAUTHORIZED", "邮箱会话不能冒用其他身份或触发受管执行。")
+                source_session_id = session["id"]
             if sender_id is not None:
                 self._message_member(db, project_id, sender_id)
-                if source_task_id is None:
+                if source_task_id is None and source_session_id is None:
                     raise WorkbenchError(
                         "MESSAGE_SOURCE_REQUIRED", "员工消息需要绑定当前受管执行。"
                     )
-                source = self._required(db, "tasks", source_task_id)
-                if (
+                source = self._required(db, "tasks", source_task_id) if source_task_id else None
+                if source is not None and (
                     source["project_id"] != project_id
                     or source["assignee_id"] != sender_id
                     or source["status"] not in ACTIVE
@@ -1066,6 +1125,13 @@ class WorkbenchStore:
             parent = self._required(db, "messages", reply_to) if reply_to is not None else None
             if parent and parent["project_id"] != project_id:
                 raise WorkbenchError("permission_denied", "回复必须留在同一个项目和消息线程。")
+            if (
+                parent
+                and sender_id
+                and parent["recipient_id"] is not None
+                and sender_id not in (parent["sender_id"], parent["recipient_id"])
+            ):
+                raise WorkbenchError("permission_denied", "不能回复无权查看的私信。")
             if request_id is not None:
                 previous = db.execute(
                     "SELECT * FROM messages WHERE project_id=? AND sender_id IS ? AND request_id=?",
@@ -1081,7 +1147,7 @@ class WorkbenchStore:
                 self._check_request_chain(db, source_task_id, recipient_id)
             message_id, timestamp = _id("message"), _now()
             db.execute(
-                "INSERT INTO messages(id,project_id,title,body,sender_id,recipient_id,reply_to,thread_id,request_work,source_task_id,request_id,request_digest,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO messages(id,project_id,title,body,sender_id,recipient_id,reply_to,thread_id,request_work,source_task_id,request_id,request_digest,created_at,source_session_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     message_id,
                     project_id,
@@ -1096,6 +1162,7 @@ class WorkbenchStore:
                     request_id,
                     digest,
                     timestamp,
+                    source_session_id,
                 ),
             )
             if request_work:
@@ -1156,12 +1223,12 @@ class WorkbenchStore:
                 scope_clause = f" AND t.project_id IN ({placeholders}) "
                 params.extend(project_ids)
             row = db.execute(
-                "SELECT t.* FROM tasks t WHERE t.node_id=? AND t.status='queued' "
+                "SELECT t.* FROM tasks t WHERE t.node_id=? AND t.status='queued' AND t.execution_mode='managed' "
                 + scope_clause
                 + "AND EXISTS (SELECT 1 FROM employees e WHERE e.id=t.assignee_id AND e.lifecycle='active' AND e.kind IN ('codex','claude') AND e.connection_type='cli') "
                 + "AND EXISTS (SELECT 1 FROM memberships m WHERE m.employee_id=t.assignee_id AND m.project_id=t.project_id) "
                 + "AND NOT EXISTS (SELECT 1 FROM tasks a WHERE a.assignee_id=t.assignee_id "
-                "AND a.status IN ('starting','running','waiting_approval')) "
+                "AND a.execution_mode='managed' AND a.status IN ('starting','running','waiting_approval')) "
                 "ORDER BY t.created_at,t.rowid LIMIT 1",
                 params,
             ).fetchone()
@@ -1409,15 +1476,28 @@ class WorkbenchStore:
                     "UPDATE_PAUSED", "更新准备期间暂停创建补充任务，请先恢复接单。"
                 )
             prompt = f"Follow up task {task_id}. Human follow-up requirements:\n{note}\nOriginal request excerpt:\n{parent['prompt'][:20000]}\nPrevious reported result excerpt:\n{parent['result'][:20000]}\nRead the full fixed delivery with project_delivery(task_id='{task_id}'). Use the inherited isolated workspace for edits when provided. Delivery still requires human acceptance."
-            task = self._create_task(
-                db,
-                parent["project_id"],
-                "补充 / Follow-up: " + parent["title"][:260],
-                prompt[: MAX_TEXT // 2],
-                parent["assignee_id"],
-                parent["permission_mode"],
-                parent["model"],
-            )
+            if parent["execution_mode"] == "mailbox":
+                from .workbench_mail_sessions import _bound_store
+                from .workbench_mail_tasks import create_mail_task
+
+                prompt = f"Follow up mail task {task_id}. Human requirements:\n{note}\nOriginal request:\n{parent['prompt'][:20000]}\nPrevious reported result:\n{parent['result'][:20000]}\nUse project_delivery(task_id='{task_id}') to read the delivery. Work in your existing session. Explicitly accept the new mail task before submitting. Human acceptance is still required."
+                task = create_mail_task(
+                    _bound_store(self, db),
+                    parent["project_id"],
+                    "补充 / Follow-up: " + parent["title"][:260],
+                    prompt[: MAX_TEXT // 2],
+                    parent["assignee_id"],
+                )
+            else:
+                task = self._create_task(
+                    db,
+                    parent["project_id"],
+                    "补充 / Follow-up: " + parent["title"][:260],
+                    prompt[: MAX_TEXT // 2],
+                    parent["assignee_id"],
+                    parent["permission_mode"],
+                    parent["model"],
+                )
             db.execute(
                 "INSERT INTO task_links(task_id,parent_task_id,relation) VALUES(?,?,'follow_up')",
                 (task["id"], task_id),
@@ -1449,7 +1529,11 @@ class WorkbenchStore:
             task = self._required(db, "tasks", task_id)
             if task["status"] not in ACTIVE | {"queued"}:
                 raise WorkbenchError("invalid_state", "任务已结束，无需取消。")
-            status = "cancelled" if task["status"] == "queued" else task["status"]
+            status = (
+                "cancelled"
+                if task["status"] == "queued" or task["execution_mode"] == "mailbox"
+                else task["status"]
+            )
             db.execute(
                 "UPDATE tasks SET status=?,cancel_requested=1,updated_at=? WHERE id=?",
                 (status, _now(), task_id),
@@ -1460,7 +1544,9 @@ class WorkbenchStore:
                     db,
                     task_id,
                     "cancel_requested",
-                    "已请求取消，等待执行器停止。" if status != "cancelled" else "排队任务已取消。",
+                    "已请求取消，等待执行器停止。"
+                    if status != "cancelled"
+                    else "邮件任务或排队任务已取消。",
                 )
             return self._entity(self._required(db, "tasks", task_id))
 
@@ -1469,7 +1555,7 @@ class WorkbenchStore:
             self._required(db, "devices", node_id)
             rows = db.execute(
                 "SELECT id FROM tasks WHERE node_id=? "
-                "AND status IN ('starting','running','waiting_approval')",
+                "AND execution_mode='managed' AND status IN ('starting','running','waiting_approval')",
                 (node_id,),
             ).fetchall()
             recovered = []
@@ -1895,10 +1981,11 @@ class WorkbenchStore:
 
     def project_context(self, project_id: str, employee_id: str | None = None) -> dict:
         with self._connection() as db:
-            db.execute("BEGIN")
+            if not db.in_transaction:
+                db.execute("BEGIN")
             project = self._entity(self._required(db, "projects", project_id))
             team = db.execute(
-                "SELECT e.* FROM employees e JOIN memberships m ON m.employee_id=e.id WHERE m.project_id=? ORDER BY e.name,e.id",
+                "SELECT e.*,m.role AS project_role FROM employees e JOIN memberships m ON m.employee_id=e.id WHERE m.project_id=? ORDER BY e.name,e.id",
                 (project_id,),
             ).fetchall()
             result: dict[str, Any] = {
@@ -1918,6 +2005,7 @@ class WorkbenchStore:
                             "execution_supported",
                             "execution_verified",
                             "auth_status",
+                            "project_role",
                         )
                     }
                     for employee in (self._employee(db, row) for row in team)
@@ -2003,7 +2091,8 @@ class WorkbenchStore:
             task = self._required(db, "tasks", task_id)
             employee = self._required(db, "employees", task["assignee_id"])
             if (
-                task["status"] not in ACTIVE
+                task["execution_mode"] != "managed"
+                or task["status"] not in ACTIVE
                 or task["cancel_requested"]
                 or employee["lifecycle"] == "retired"
                 or not self._membership(db, employee["id"], task["project_id"])
@@ -2037,6 +2126,7 @@ class WorkbenchStore:
                 return False
             return bool(
                 task
+                and task["execution_mode"] == "managed"
                 and matched
                 and task["status"] in ACTIVE
                 and not task["cancel_requested"]

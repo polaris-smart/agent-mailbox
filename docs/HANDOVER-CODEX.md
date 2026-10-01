@@ -17,3 +17,16 @@
 ### 0.8.0a7 员工信箱
 
 员工 `project_messages(folder="inbox"|"sent"|"group", limit=1..100)` 默认收件；本人广播在 sent。本地/远端工具和受管启动上下文使用绑定身份，不读取他人定向消息作为最近消息。管理员与设备级授权上下文仍为共享范围，不能声称端到端保密；任务/产物本身为项目共享。查看无 ACK/任务副作用。路线图建议见 docs/designs/2026-09-30-v08-user-journey-roadmap.md，未经确认不得把其余提案写成 PRD 事实。
+
+
+### 当前源码候选：优先连接既有员工会话
+
+当前开发主线是“员工→项目组/职责→共享资料→邮箱→邮件任务→Human 验收”；新路径尚未作为正式版发布，不能以公开 Beta 4 包证明它可用。既有 App/CLI 在工作台导出员工/项目/session 绑定的私有配置，再导入宿主 stdio MCP。`mailbox-mcp --session-file <private-file>` 读取本 home 实例信息，通过受限 HTTP 员工工具连接工作台；端口变化不要求重新发凭据。禁止把 owner 凭据当员工凭据、把令牌写进项目资料或共享主会话配置给子代理。
+
+`mailbox_mcp.py` 提供 12 个员工工具，包含 `project_tasks`、`project_task_accept`、`project_task_submit`。读取不接单、不触发模型；当前通知方式是主动查信，MCP 接入不等于自动唤醒。角色字段 `employees[].project_role` 仅说明职责，不改变权限。邮箱会话只能操作本项目本人邮件任务，不能进行 Human 验收或受管执行；离组、生命周期变化、过期或撤销必须即时影响授权。
+
+`workbench_mail_tasks.py` 创建普通邮件和 `execution_mode=mailbox` 任务；接受时冻结已批准资料清单并返回 `resource_manifest`，后续 `project_tasks()` 仍返回已保存清单；员工用其中的 `version_id` 显式调用 `project_resource_read(resource_id, version_id)`。未指定版本的普通资料读取不能宣称自动绑定当前任务。状态是 queued→明确 accept 后 running→submit 后 review→Human accept 后 done。提交不是验收，员工报告不是真实模型执行验证；禁止因此置 `execution_verified`。退回保留 mailbox 模式；取消/离组/暂停/退役结束活动邮件任务，重启不自动重派。受管 claim/recover 与执行凭据验证须排除 mailbox 任务。
+
+受管 Codex/Claude CLI 是独立选项，保留 11 个运行器自动注入的项目工具及原来的权限、工作区、交付/apply 边界。新邮箱当前只接本机员工；远端 App 会话接入仍需另行实现和验证。共享文档、任务结果是项目范围；不要声称所有内部子代理作者已独立核验。
+
+改动时验证 `tests/test_workbench_mail_sessions.py`、`tests/test_workbench_mail_tasks.py`、`tests/test_mailbox_mcp.py` 和 `scripts/check-package.py`，并保留受管测试。Fixture 仅证明协议与隔离；真实宿主、三平台安装包和正式发行分别记录，不以代码存在或导出配置替代成功接入。

@@ -161,7 +161,7 @@ def test_schema8_upgrade_preserves_rows_and_private_backup(fixture):
     assert upgraded.snapshot()["employees"] == before["employees"]
     assert private_access(upgraded.migration_backup_path, 0o600)
     with sqlite3.connect(upgraded.db_path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 11
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
