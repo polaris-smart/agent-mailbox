@@ -291,10 +291,17 @@ def test_other_platforms_only_discover_known_cli_entries(discovery, monkeypatch,
     monkeypatch.setattr(
         runtime, "application_directories", lambda: pytest.fail("App scanning is macOS-only")
     )
-    fake_binary(directories[0] / "ollama", "raise SystemExit()\n")
+    # Discovery uses the real host's shutil.which/PATHEXT rules even when
+    # selecting another platform's application-scan branch. This entry is only
+    # discovered, never executed; unsupported tools must stay unverified.
+    binary = directories[0] / ("ollama.exe" if os.name == "nt" else "ollama")
+    fake_binary(binary, "raise SystemExit()\n")
     rows = runtime.discover_employees()
     assert all(r["connection_type"] == "cli" for r in rows)
-    assert next(r for r in rows if r["kind"] == "ollama")["auth_status"] == "not_checked"
+    entry = next(r for r in rows if r["kind"] == "ollama")
+    assert entry["entrypoint"] == str(binary.resolve())
+    assert entry["auth_status"] == "not_checked"
+    assert not entry["execution_supported"] and not entry["execution_verified"]
 
 
 def test_discovery_searches_user_python_script_directories(tmp_path, monkeypatch):
