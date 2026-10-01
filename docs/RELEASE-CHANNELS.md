@@ -8,12 +8,12 @@
 
 | 产物或渠道 | 目标版本 | 规则 |
 | --- | --- | --- |
-| Python / PyPI / wheel | `0.8.0` | 稳定版；公开后独立安装核验 |
-| GitHub Release / tag | `v0.8.0` | 通过门禁后发布非 prerelease、设为 Latest |
+| Python / PyPI / wheel | `0.8.0` | 已公开；独立官方索引安装返回 0.8.0 |
+| GitHub Release / tag | `v0.8.0` | 已公开，非 prerelease，Latest 为 v0.8.0；8 份资产 digest 核验通过 |
 | macOS App 与平台程序显示 | `0.8.0` | 同一发行源提交，原生安装包分别验收 |
 | npm 配套插件 | `dsh-agent-mailbox@0.8.0` | 独立插件仓库；不是工作台安装包，单独安装/接口测试 |
 
-GitHub/PyPI/平台工作台产物来自同一最终发行提交；插件来自独立源码提交，版本一致不表示二进制来源相同。预期 [GitHub 正式版](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0) 与 [PyPI 精确版本](https://pypi.org/project/agent-mailbox/0.8.0/) 尚待公开核验。最终 CI 已通过，实证见下；公开发行与 asset hash 核验单独进行。
+GitHub/PyPI/平台工作台产物来自同一最终发行提交；插件来自独立源码提交，版本一致不表示二进制来源相同。[PyPI 精确版本](https://pypi.org/project/agent-mailbox/0.8.0/) 已公开并完成独立官方索引安装与版本检查；[GitHub 正式版](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0) 已公开，非 draft、非 prerelease，Latest 为 v0.8.0；8 份资产官方 digest 与本地逐一匹配。最终 CI 已通过，实证见下；公开发行与 asset hash 核验单独进行。
 
 默认现有会话 MCP 邮箱只支持本机员工，主动查信，不自动唤醒；员工角色不增加权限；邮件任务由员工明确接受/提交，再由 Human 验收。受管 CLI 是独立选项。
 
@@ -52,4 +52,18 @@ TestPyPI、Homebrew 若未来启用，再加入对应门禁。已有 npm 插件�
 
 源码提交 `4201b34dad503529d113b904ae67a23be7cc5644` 的 [CI](https://github.com/polaris-smart/agent-mailbox/actions/runs/36865817096) 完成 9/9 门禁：六组回归和三平台原生包检查。Mac/Linux 各组 404 passed、4 skipped；Windows 各组 360 passed、48 skipped。后台线程异常提升为测试失败；本次无后台警告。原生包实际解压、启动，并分别验证 12 个既有会话邮箱 MCP 工具和 11 个受管项目 MCP 工具；协议 fixture 不调用供应商模型。Mac 新原生包在真实数据副本上验证 schema 9→11，20 名员工、2 个项目及历史记录保留。
 
-这些是发行准备和安装/协议证据，不是 GitHub/PyPI/npm 已公开证明。ZCode 隔离 CLI、DeepSeek Harness 无模型接口验证也不能代表所有正在运行的真实 App 会话已热加载 MCP 或自动唤醒。真实宿主、物理设备和跨设备验收按实际范围单列。Beta 4 历史证据不覆盖本轮结果。
+这些测试本身不能代称渠道公开；当前 GitHub/PyPI 已公开、npm 尚未公开，分别以渠道核验记录为准。ZCode 隔离 CLI、DeepSeek Harness 无模型接口验证也不能代表所有正在运行的真实 App 会话已热加载 MCP 或自动唤醒。真实宿主、物理设备和跨设备验收按实际范围单列。Beta 4 历史证据不覆盖本轮结果。
+
+
+## v0.8.0 当前发行状态
+
+最终工作台源 `4413fbad7332501590919ed37b378fdb6c666eb8`。[发布流程 36868116924](https://github.com/polaris-smart/agent-mailbox/actions/runs/36868116924) 首次 Win 3.10 超时，重跑失败任务后全部成功；PyPI `0.8.0` 已公开，独立官方索引安装 `--version` 返回 `0.8.0`。GitHub 已公开，非 draft、非 prerelease，Latest 为 v0.8.0，8 份资产官方 digest 与本地逐一匹配；PyPI 两份资产官方 digest 同样匹配。
+
+Mac 最终 CI ZIP 制成 DMG 后实际升级 `/Applications/Agent Mailbox.app`，bootstrap 为 `0.8.0`；真实 home schema 9→11 保留 20 员工、2 项目、1 邮件、0 任务，私有一致性备份已存。此前 4201b34 的 404/4 与 360/48 回归统计保留，不假写为最终重跑的独立统计。
+
+独立 npm 插件候选 `ae43aa7582ed6dcb57458475a9fde7fe37e4d8f0` 的[三平台 CI](https://github.com/polaris-smart/dsh-agent-mailbox/actions/runs/36868122488) 通过；`0.8.0` 发布返回 `EOTP`，尚未公开，后续浏览器认证流程等待后返回 E404、认证流程失效，仍待用户二次验证和官方 registry 发布/安装核验。不是所有渠道已同步。详细来源与失败/重跑记录见[正式版证据](evidence/v080/stable-release.md)。
+
+
+正式版公开核验：tag 指向 `4413fbad7332501590919ed37b378fdb6c666eb8`；GitHub 8 资产及 PyPI 两份发行文件官方 digest 匹配，具体文件清单见[正式版证据](evidence/v080/stable-release.md)。Mac 真实 UI 展示 20 张员工卡，无 JavaScript 错误，390px 宽视图无横向溢出。npm 仍未发布，不能声称全部渠道已同步。
+
+公开 GitHub 下载 URL 的 `SHA256SUMS` 已实际下载，字节与本地完全匹配。npm 官方 registry 当前查询仍为 `0.1.2`，`0.8.0` 未发布，渠道尚未全部对齐。

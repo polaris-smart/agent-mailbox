@@ -1,12 +1,12 @@
 # agent-mailbox v0.8 产品基线
 
-版本：1.3 · 2026-10-01。依据：human 明确决定“v0.8 开始完全独立”。当前公开版本为 0.8.0b4 Beta 4，已发布 GitHub 与 PyPI；发行物统一源于 `420d136`。旧 v0.7 正典仅作为[历史归档](archive/v07/PRD.md)，不约束本版运行架构。
+版本：1.3 · 2026-10-01。PyPI `0.8.0` 已公开，最终工作台发行源为 `4413fbad7332501590919ed37b378fdb6c666eb8`；GitHub `v0.8.0` 已公开，非 draft、非 prerelease，Latest 为 `v0.8.0`，8 份资产官方 digest 与本地逐一匹配。独立 npm 插件目标 `0.8.0` 尚未发布，首次 `EOTP` 后浏览器认证流程因 `E404` 失效，待用户二次验证，不能声称全部渠道已同步。详见[正式版发行记录](evidence/v080/stable-release.md)。Beta 4 `0.8.0b4` / `420d136` 为已公开历史发行，保留[历史证据](evidence/v080/beta4-release.md)，不改写旧 tag 或发行物。旧 v0.7 正典仅作历史参考，不约束本版运行架构。TestPyPI、Homebrew 未启用。
 
 ## 1. 定位
 
 一个 human 把已有 AI Agent 组成项目小组的本地工作台：先发现并登记成员，再加入项目群，共享资料、进度，收发消息并交接工作。默认先解决单机；LAN 和远端 Ubuntu 执行节点是可选扩展。继续叫 agent-mailbox，沿用版本线。以容易上手、清楚派工、可靠回执和可积累项目知识为中心。
 
-本轮 v0.8.0 已实现既有会话的项目邮箱和邮件任务路径，尚未发布为正式版，也不属于下列历史 Beta 4 下载包的能力证明。邮件接入优先，受管 CLI 执行是独立选项。
+本轮 v0.8.0 已实现既有会话的项目邮箱和邮件任务路径，已作为 PyPI `0.8.0` 提供；GitHub 已公开并完成资产核验，不属于下列历史 Beta 4 下载包的能力证明。邮件接入优先，受管 CLI 执行是独立选项。
 
 三条产品纪律：多员工协作要有实际价值；安装、连接、派工的障碍应在界面明确解决；数字必须有口径，失败不能静默。发现 app、依赖已安装、原生账号已登录、首次执行成功是不同事实，界面不能混称“可执行”。
 
@@ -113,11 +113,21 @@ Human 于 2026-10-01 决定产品、仓库、Python 包和 CLI 继续叫 agent-m
 
 普通消息和查看邮箱不触发执行、不 ACK、不自动接单。邮件任务 `execution_mode=mailbox` 不进入受管执行队列；`queued` 表示待接受，`running` 表示员工已明确接受，`review` 表示结果待 Human 验收，`done` 仅由 Human 验收产生。接单时固定批准资料清单，并返回 `resource_manifest`，后续 `project_tasks()` 仍返回已保存清单；员工按清单中的 `version_id` 调用 `project_resource_read(resource_id, version_id)` 读取固定版本。未指定版本的普通资料读取仍返回已批准版本，不能当作任务固定版本读取。退回创建关联邮件任务。取消、离组、暂停或退役会结束仍活动的邮件任务；应用重启不把员工原有会话当作受管执行中断。邮件任务不授予工具执行凭据、不验证模型执行能力、不自动合入代码。
 
-源码验证落点：[邮件会话测试](../tests/test_workbench_mail_sessions.py)、[邮件任务测试](../tests/test_workbench_mail_tasks.py)、[真实 HTTP/stdio MCP 协议测试](../tests/test_mailbox_mcp.py)、[原生包检查脚本](../scripts/check-package.py)。这些是无供应商调用的协议/fixture 验证，不替代 ZCode、Hermes、WorkBuddy 等真实宿主接入验收，也不表示新候选已经公开发行。原生包与三平台结果必须另附执行证据。
+源码验证落点：[邮件会话测试](../tests/test_workbench_mail_sessions.py)、[邮件任务测试](../tests/test_workbench_mail_tasks.py)、[真实 HTTP/stdio MCP 协议测试](../tests/test_mailbox_mcp.py)、[原生包检查脚本](../scripts/check-package.py)。这些是无供应商调用的协议/fixture 验证，不替代 ZCode、Hermes、WorkBuddy 等真实宿主接入验收，协议检查不代称所有发行渠道已公开。原生包与三平台结果必须另附执行证据。
 
 
 ### v0.8.0 发行准备实证（不代称公开发行）
 
 源码提交 `4201b34dad503529d113b904ae67a23be7cc5644` 的 [CI](https://github.com/polaris-smart/agent-mailbox/actions/runs/36865817096) 完成 9/9 门禁：六组回归和三平台原生包检查。Mac/Linux 各组 404 passed、4 skipped；Windows 各组 360 passed、48 skipped。后台线程异常提升为测试失败；本次无后台警告。原生包实际解压、启动，并分别验证 12 个既有会话邮箱 MCP 工具和 11 个受管项目 MCP 工具；协议 fixture 不调用供应商模型。Mac 新原生包在真实数据副本上验证 schema 9→11，20 名员工、2 个项目及历史记录保留。
 
-这些是发行准备和安装/协议证据，不是 GitHub/PyPI/npm 已公开证明。ZCode 隔离 CLI、DeepSeek Harness 无模型接口验证也不能代表所有正在运行的真实 App 会话已热加载 MCP 或自动唤醒。真实宿主、物理设备和跨设备验收按实际范围单列。Beta 4 历史证据不覆盖本轮结果。
+这些测试本身不能代称渠道公开；当前 GitHub/PyPI 已公开、npm 尚未公开，分别以渠道核验记录为准。ZCode 隔离 CLI、DeepSeek Harness 无模型接口验证也不能代表所有正在运行的真实 App 会话已热加载 MCP 或自动唤醒。真实宿主、物理设备和跨设备验收按实际范围单列。Beta 4 历史证据不覆盖本轮结果。
+
+
+### v0.8.0 分渠道发行与收尾
+
+PyPI `0.8.0` 独立官方索引安装、版本检查已通过；最终发布流程首次 Win 3.10 超时后 `rerun --failed` 成功，原失败保留。Mac 最终 CI ZIP 制成 DMG 后在真实 home 升级至 0.8.0，schema 9→11 保留 20 员工、2 项目、1 邮件、0 任务，私有一致性备份已保存。GitHub 正式版已公开，Latest 为 v0.8.0，8 份资产 digest 已核验；PyPI 两份资产官方 digest 亦核验匹配。npm 插件三平台 CI 通过，但首次 EOTP 后浏览器认证流程因 E404 失效，仍需用户二次验证、实际发布及官方安装核验，不能把登录、CI 或 draft 上传代称公开，也不代称所有真实 App 热加载或自动唤醒。详见[正式版证据](evidence/v080/stable-release.md)。
+
+
+正式版公开核验：tag 指向 `4413fbad7332501590919ed37b378fdb6c666eb8`；GitHub 8 资产及 PyPI 两份发行文件官方 digest 匹配，具体文件清单见[正式版证据](evidence/v080/stable-release.md)。Mac 真实 UI 展示 20 张员工卡，无 JavaScript 错误，390px 宽视图无横向溢出。npm 仍未发布，不能声称全部渠道已同步。
+
+公开 GitHub 下载 URL 的 `SHA256SUMS` 已实际下载，字节与本地完全匹配。npm 官方 registry 当前查询仍为 `0.1.2`，`0.8.0` 未发布，渠道尚未全部对齐。
