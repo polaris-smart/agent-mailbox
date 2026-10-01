@@ -1024,6 +1024,7 @@ class FleetClient:
         connection = http.client.HTTPSConnection(
             self.host, self.port, context=context, timeout=timeout
         )
+        response = None
         try:
             connection.connect()
             actual = (
@@ -1079,6 +1080,10 @@ class FleetClient:
                 if self.claim_connection is connection:
                     self.claim_connection = None
                     self.claim_socket = None
+            if response is not None:
+                # Connection: close transfers the live makefile to the response;
+                # closing the connection alone cannot release that I/O reference.
+                response.close()
             connection.close()
 
     def interrupt_claim(self):
@@ -1088,20 +1093,20 @@ class FleetClient:
             if transport:
                 try:
                     # HTTPResponse may keep a live fd on an SSLSocket that
-                    # HTTPConnection has marked closed. The SSL override checks
-                    # that flag before reaching shutdown; call the native base
-                    # operation to wake POSIX reads on the still-live fd.
+                    # HTTPConnection has marked closed. The SSL override clears
+                    # _sslobj; keep that state intact for the concurrent reader
+                    # and shut down only the native transport here.
                     _socket.socket.shutdown(transport, socket.SHUT_RDWR)
                 except OSError:
                     pass
-                # socket.close() defers the OS close while HTTPResponse's
-                # makefile retains an I/O reference. Winsock shutdown alone
-                # need not interrupt an already waiting receive, and SSL's
-                # shutdown rejects a socket marked closed by HTTPConnection.
-                # Close through the same native operation as socket._real_close:
-                # it invalidates this object's fd, so later response/connection
-                # cleanup cannot close a subsequently reused descriptor.
-                _socket.socket.close(transport)
+                if os.name == "nt":
+                    # Winsock needs an actual close to cancel a pending recv;
+                    # makefile references otherwise defer socket.close(). This
+                    # native close invalidates the object fd, making subsequent
+                    # cleanup safe. POSIX keeps the shutdown fd alive until the
+                    # reader unwinds: closing concurrently can race its SSL
+                    # select/read and descriptor reuse instead of waking it.
+                    _socket.socket.close(transport)
 
     def device(self):
         return self._request("GET", "/v1/device")

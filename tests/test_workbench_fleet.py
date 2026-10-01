@@ -937,6 +937,7 @@ def test_tls_listener_does_not_depend_on_reverse_dns(tmp_path, monkeypatch):
 
 
 def test_stop_interrupts_claim_response_after_http_connection_releases_socket():
+    import os
     import socket
 
     client = object.__new__(FleetClient)
@@ -971,7 +972,8 @@ def test_stop_interrupts_claim_response_after_http_connection_releases_socket():
     try:
         assert ready.wait(2)
         client.interrupt_claim()
-        assert reading.fileno() == -1
+        if os.name == "nt":
+            assert reading.fileno() == -1
         assert finished.wait(2)
         worker.join(timeout=2)
         assert not worker.is_alive()
@@ -986,6 +988,9 @@ def test_stop_interrupts_real_tls_close_response_and_preserves_control(
     fleet, tmp_path, monkeypatch
 ):
     import http.client
+    import os
+    import sys
+    import traceback
 
     _, project, _, coordinator = fleet
     client = FleetClient(tmp_path / "tls-stop", coordinator.issue_invite([project["id"]]))
@@ -1045,11 +1050,18 @@ def test_stop_interrupts_real_tls_close_response_and_preserves_control(
         assert reading.wait(2)
         transport = client.claim_socket
         client.interrupt_claim()
-        assert transport.fileno() == -1
-        assert finished.wait(2)
+        if os.name == "nt":
+            assert transport.fileno() == -1
+        if not finished.wait(2):
+            frame = sys._current_frames().get(worker.ident)
+            pytest.fail(
+                "Claim cancellation exceeded 2 seconds; worker stack:\n"
+                + ("".join(traceback.format_stack(frame)) if frame else "worker already exited")
+            )
         worker.join(timeout=2)
         assert not worker.is_alive()
         assert errors == ["network_error"]
+        assert transport.fileno() == -1  # Response cleanup released its I/O reference.
         assert client.claim_lock.acquire(blocking=False)
         client.claim_lock.release()
         assert client.claim_socket is None
