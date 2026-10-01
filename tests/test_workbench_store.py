@@ -310,6 +310,15 @@ def test_resource_scoped_utf8_and_live_validation(store, project, tmp_path):
         ("binary.md", b"x\0y"),
         ("not-utf8.md", b"\xff\xfe"),
     ],
+    ids=[
+        "dotenv",
+        "dotenv-local",
+        "auth-json",
+        "credentials",
+        "oversized",
+        "binary",
+        "invalid-utf8",
+    ],
 )
 def test_sensitive_oversized_and_binary_resources_rejected(store, project, tmp_path, name, body):
     file = tmp_path / name
