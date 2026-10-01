@@ -1087,7 +1087,11 @@ class FleetClient:
             transport = self.claim_socket
             if transport:
                 try:
-                    transport.shutdown(socket.SHUT_RDWR)
+                    # HTTPResponse may keep a live fd on an SSLSocket that
+                    # HTTPConnection has marked closed. The SSL override checks
+                    # that flag before reaching shutdown; call the native base
+                    # operation to wake POSIX reads on the still-live fd.
+                    _socket.socket.shutdown(transport, socket.SHUT_RDWR)
                 except OSError:
                     pass
                 # socket.close() defers the OS close while HTTPResponse's

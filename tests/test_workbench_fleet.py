@@ -1013,6 +1013,9 @@ def test_stop_interrupts_real_tls_close_response_and_preserves_control(
         response = original_response(self)
         if self is client.claim_connection:
             assert self.sock is None  # HTTPConnection transferred socket ownership.
+            assert client.claim_socket._closed
+            assert client.claim_socket._io_refs > 0
+            assert client.claim_socket.fileno() >= 0
             original_read = response.read
 
             def read(*args, **kwargs):
