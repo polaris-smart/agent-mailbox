@@ -72,7 +72,7 @@ def check(manifest_path, output_path):
             fixture.create_employee("Fixture CLI", "deepseek", mail_project["id"]),
         ]
         document = project_root / "PRD.md"
-        document.write_text("Approved package fixture specification\n", encoding="utf-8")
+        document.write_bytes(b"Approved package fixture specification\n")
         resource = fixture.add_resource(mail_project["id"], "Fixture PRD", "prd", document)
         revision = fixture.capture_resource_version(mail_project["id"], resource["id"], "Fixture")
         fixture.approve_resource_version(mail_project["id"], resource["id"], revision["id"])
