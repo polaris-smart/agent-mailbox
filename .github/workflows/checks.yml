@@ -33,6 +33,7 @@ jobs:
       - run: ruff check src tests
       - run: ruff format --check src tests
       - name: Run full regression and preserve diagnostics
+        shell: bash
         run: |
           python - <<'PYTHON'
           import os, pathlib, subprocess, sys
