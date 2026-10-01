@@ -331,7 +331,7 @@ def test_pairing_real_tls_private_credential_and_project_context(fleet, tmp_path
     assert private_access(client.credentials_path, 0o600)
     assert private_access(client.directory, 0o700)
     assert private_access(coordinator.state_path, 0o600)
-    assert (coordinator.directory / "tls-key.pem").stat().st_mode & 0o777 == 0o600
+    assert private_access(coordinator.directory / "tls-key.pem", 0o600)
     context = client.context(project["id"])
     assert context["project"]["id"] == project["id"]
     assert "path" not in context["project"]

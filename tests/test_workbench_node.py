@@ -14,7 +14,7 @@ from agent_mailbox.workbench import WorkbenchHTTP
 from agent_mailbox.workbench_engine import WorkbenchEngine
 from agent_mailbox.workbench_fleet import FleetCoordinator
 from agent_mailbox.workbench_node import _client, main, run_node
-from agent_mailbox.workbench_private import private_access
+from agent_mailbox.workbench_private import private_access, private_mode
 from agent_mailbox.workbench_store import WorkbenchError, WorkbenchStore
 
 
@@ -39,7 +39,7 @@ def node(tmp_path):
     home = tmp_path / "node"
     invitation = tmp_path / "invite.json"
     invitation.write_text(json.dumps(coordinator.issue_invite([project["id"]])))
-    invitation.chmod(0o600)
+    private_mode(invitation, 0o600)
     try:
         yield owner, coordinator, home, project, private, invitation
     finally:
@@ -124,10 +124,17 @@ def test_actual_product_module_cli_join_and_failure_exit_code(node):
     assert json.loads(rejected.stderr)["error"]["code"] == "permission_denied"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX private invitation mode")
 def test_public_invitation_file_rejected_without_pairing(node, capsys):
     _, coordinator, home, _, _, invitation = node
-    invitation.chmod(0o644)
+    if os.name == "nt":
+        # chmod cannot grant public Windows access: exercise a real Everyone ACE.
+        subprocess.run(
+            ["icacls", str(invitation), "/grant", "*S-1-1-0:(R)"],
+            check=True,
+            capture_output=True,
+        )
+    else:
+        invitation.chmod(0o644)
     assert main(["--home", str(home), "join", "--invite", str(invitation)]) == 1
     assert "private_file_required" in capsys.readouterr().err
     assert coordinator.public_devices() == []
