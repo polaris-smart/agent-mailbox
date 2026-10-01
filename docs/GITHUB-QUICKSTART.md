@@ -58,7 +58,7 @@ Codex 若返回 `MODEL_UNSUPPORTED`，新建任务时从服务实际提供的模
 
 远端员工可通过项目工具显式提交小于 256 KiB 的资料文本作为提案，不能直接覆盖协调端文件。资料 API 读取共享版本，不自动拷贝整个项目或同步 Git。工作日志记录派工、结果、消息、笔记及资料确认；查看不会自动 ACK 或验收。
 
-Beta 1 验证平台为 macOS ARM64 app 与 Ubuntu 24.04 ARM64 源码节点。Windows 可以尝试源码入口，但未完成实机验收，CodeGraph 适配器明确不支持。当前 GitHub CI 仍有 macOS/Windows 失败待处理；本机验证不代表 CI 全绿，发行门槛见渠道文档。
+Beta 1 的 Mac/Ubuntu 记录是历史基线。Beta 4 原生包范围为 macOS ARM64、Windows x64、Linux x64；构建和无模型 HTTP/MCP 检查与实体设备真实模型验收是不同证据。Windows CodeGraph 适配器明确不支持。具体提交的 CI、跳过项和功能边界见[验收记录](BETA-ACCEPTANCE.md)，最终下载状态以对应 GitHub Release 为准。
 
 ## 修改、退回和合入
 

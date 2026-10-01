@@ -1,6 +1,6 @@
-# v0.8.0 Beta 3 验收边界
+# v0.8 Beta 验收边界
 
-2026-10-01，本地版本 **0.8.0b3**。默认路径：发现员工 → 登记并检查能力 → 创建项目组 → 加入员工和资料 → 分配任务 → 邮件交接 → human 验收。基础闭环已验证；尚未公开发布 GitHub/PyPI。
+2026-10-01。本文保留 Beta 1–3 的历史验收，并补充 Beta 4 发行门槛。目标版本 **0.8.0b4**，实际发行状态以对应 GitHub Release 和 PyPI 页面为准。默认路径：发现员工 → 登记并检查能力 → 创建项目组 → 加入员工和资料 → 分配任务 → 邮件交接 → human 验收。历史通过结果不等于后续提交的门禁已通过。
 
 | 范围 | 当前能力（含 Beta 1 基线验证） | 边界 |
 | --- | --- | --- |
@@ -12,7 +12,19 @@
 | 检索工具 | 可选 CodeGraph 本机 CLI 与已有索引；失败原因与新鲜度未知可见 | 不自动建立索引；Windows 适配器明确不支持；AOCI-Code 索引路径错误，完整治理未整合；Graft 未整合 |
 | 跨设备 | Mac 协调端 → Ubuntu ARM64 容器节点，配对、HTTPS 身份校验、授权、映射、任务回执、版本校验、断线恢复、撤销 | 节点任务使用确定性测试执行器；Ubuntu 原生 LLM 适配器和真实 HK/US 服务器未验证 |
 | UI | 左侧团队/当前项目/管理分组，项目选择器，中英文，手机抽屉与键盘操作，带样式的协议与帮助 | 其他语言未声明支持 |
-| 安装升级 | Mac ARM64 独立 wheel、打包 App、本机保留数据升级与迁移备份 | App 无 Developer ID 签名/公证；手动升级，无自动更新器；Windows 发布产物未验证 |
+| 安装升级 | Mac ARM64 独立 wheel、打包 App、本机保留数据升级与迁移备份 | App 无 Developer ID 签名/公证；手动升级，无自动更新器；Beta 4 三平台包检查见下节，真实 Windows/Linux 模型仍未验 |
+
+## Beta 4 发行检查
+
+- 统一版本 `0.8.0b4`，GitHub tag 为 `v0.8.0b4`，原生包和 Python 发行物必须来自同一提交。只有 GitHub 与 PyPI；没有 TestPyPI、Homebrew 或 npm 发行。
+- 提交 `3a2cfdb` 的 [CI 36846081917](https://github.com/polaris-smart/agent-mailbox/actions/runs/36846081917) 完整 9 作业通过：Mac/Linux × Python 3.10/3.13 每组 365 passed、4 skipped；Windows × Python 3.10/3.13 每组 321 passed、48 skipped。后续测试预算修正必须按对应提交重新执行门禁，最终结果见版本发行说明。
+- 三平台原生包均实际压缩、解压、启动并验证认证、私有权限、版本、退出和 11 个 frozen MCP 工具；这些检查不调用模型。Windows CodeGraph 不支持，POSIX 专属 fixture 及信号/链接测试按平台跳过，不计为验证通过。
+- 真实 Codex/Claude 的项目探针、独立编辑、固定交付审查及显式验收/应用在 Mac 验证；验收由获授权的 owner 测试脚本调用，不冒充人工点击。首次探针未调用工具的失败也保留。
+- 本机 Beta 3 → Beta 4 升级完成私有一致性备份，员工、项目、任务及邮件表 hash 未变；真实浏览器 10 项检查通过、页面错误 0。后续提交的程序来源以构建记录为准。
+- SQLite 更新备份显式关闭连接并转为独立 DELETE journal 文件，清单和文件使用实际平台私有权限；邀请导入同样检查 Windows 受保护 ACL。
+- 原生包范围为 macOS ARM64、Windows x64、Linux x64，不提供 Intel Mac 或 Windows ARM 原生包。没有发行者签名或 macOS 公证。实体设备首次下载体验、真实 HK/US 部署及 Windows/Linux 原生模型调用没有被 CI 代替。
+
+逐轮失败、修正和来源见 [Beta 4 证据](evidence/v080/beta4-release.md)。安装和保留数据升级见[安装指南](BETA-INSTALL.md)。
 
 ## Beta 1 基线验证记录（历史基线，非 Beta 3 重跑）
 
