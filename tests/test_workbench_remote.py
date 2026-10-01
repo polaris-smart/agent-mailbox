@@ -367,9 +367,15 @@ def test_remote_restore_reconnects_when_coordinator_starts_later(remote):
     thread = threading.Thread(target=restored.serve_forever, daemon=True)
     thread.start()
     try:
-        deadline = time.monotonic() + 2
+        # Restoration performs a real FleetClient request with a 10-second
+        # connection budget. Winsock need not refuse a closed port immediately;
+        # wait for that bounded attempt, not the unrelated 2-second stop budget.
+        deadline = time.monotonic() + 12
         while restored.fleet_error is None and time.monotonic() < deadline:
             time.sleep(0.02)
+        assert restored.fleet_error is not None, (
+            "Offline coordinator did not report restore failure"
+        )
         assert restored.fleet_error["code"] == "DEVICE_RESTORE_FAILED"
         coordinator.start(port=port)
         deadline = time.monotonic() + 7

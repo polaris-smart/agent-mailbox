@@ -95,8 +95,15 @@ def private_mode(path, mode):
         path.chmod(mode)
         return
     c, w, advapi, kernel, sid = _windows()
+    directory = path.is_dir()
+    # Inspect every time: SQLite opens this path frequently, but external ACL
+    # changes must never be hidden by a cached permission result. A protected,
+    # already private descriptor needs no rewrite (or inheritance propagation).
+    control, entries = _native_acl(path)
+    if _allowed_acl(control, entries, sid, directory):
+        return
     descriptor = c.c_void_p()
-    inherit = "OICI" if path.is_dir() else ""
+    inherit = "OICI" if directory else ""
     sddl = "D:P" + "".join(f"(A;{inherit};FA;;;{who})" for who in (sid, "SY", "BA"))
     if not advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
         sddl, 1, c.byref(descriptor), None
@@ -118,7 +125,7 @@ def private_mode(path, mode):
     finally:
         kernel.LocalFree(descriptor)
     control, entries = _native_acl(path)
-    if not _allowed_acl(control, entries, sid, path.is_dir()):
+    if not _allowed_acl(control, entries, sid, directory):
         diagnostic = ""
         if os.environ.get("CI"):
             diagnostic = f" (SID={sid}, control={control:#x}, ACEs={entries!r})"
