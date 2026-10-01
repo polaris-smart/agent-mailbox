@@ -4,7 +4,7 @@
 
 让你已经在用的 Codex、Claude Code 围绕同一个项目共享资料、邮件交接、分工协作。你看交付、做验收，再决定是否把代码变更合入。项目记录留在自己的电脑上，工作台不需要额外的管理 LLM 账号。
 
-[English](README.md) · [上手指南](docs/GITHUB-QUICKSTART.md) · [发行渠道](docs/RELEASE-CHANNELS.md) · [PRD 正典](docs/PRD.md)
+[English](https://github.com/polaris-smart/agent-mailbox/blob/main/README.md) · [上手指南](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/GITHUB-QUICKSTART.md) · [发行渠道](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/RELEASE-CHANNELS.md) · [PRD 正典](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/PRD.md)
 
 ## 一个项目，两名员工，一次验收
 
@@ -21,7 +21,7 @@
 
 ## 安装 v0.8 Beta
 
-**Beta 4：`0.8.0b4`。** 在 [GitHub 发行页](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0b4)核对文件和校验值。只有检查通过、文件实际上传后才有可下载的发行版；[渠道与门槛](docs/RELEASE-CHANNELS.md)区分发行准备和已发布。
+**Beta 4：`0.8.0b4`。** 在 [GitHub 发行页](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0b4)核对文件和校验值。只有检查通过、文件实际上传后才有可下载的发行版；[渠道与门槛](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/RELEASE-CHANNELS.md)区分发行准备和已发布。
 
 | 你的电脑 | 原生下载 |
 | --- | --- |
@@ -29,7 +29,7 @@
 | Windows x64 | `Agent-Mailbox-0.8.0b4-win32-x64.zip` |
 | Linux x64 | `Agent-Mailbox-0.8.0b4-linux-x64.tar.gz` |
 
-完整解压后启动 **Agent Mailbox**，不要只移动其中的可执行文件。原生包自带 Python、Node 和锁定的任务运行组件。macOS 包没有 Developer ID 签名和公证，Windows 下载可能显示信誉提示，详见[安装与升级步骤](docs/BETA-INSTALL.md)。本 Beta 不提供 Intel Mac 或 Windows ARM 原生包。
+完整解压后启动 **Agent Mailbox**，不要只移动其中的可执行文件。原生包自带 Python、Node 和锁定的任务运行组件。macOS 包没有 Developer ID 签名和公证，Windows 下载可能显示信誉提示，详见[安装与升级步骤](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/BETA-INSTALL.md)。本 Beta 不提供 Intel Mac 或 Windows ARM 原生包。
 
 喜欢 Python 安装？使用 Python 3.10+ 和独立虚拟环境。在 PyPI 对应预发布版本实际可用后：
 
@@ -42,7 +42,7 @@ agent-mailbox --home ~/.agent-mailbox-v08
 
 Windows 改用 `py -m venv .venv` 和 `.venv\Scripts\Activate.ps1`。PyPI Beta 需要指定版本或 `--pre`，普通稳定版安装不会选择 Beta。Python/源码执行任务需要 Node.js 22.13+，并在页面点“准备运行环境”。已有入口为 [PyPI agent-mailbox](https://pypi.org/project/agent-mailbox/)，没有 TestPyPI、Homebrew 或 npm 发行；同名无 scope npm 包属于其他项目。
 
-Codex、Claude Code 使用各自原生登录。查看接入检查不会调用模型，点击接入测试会消耗原生模型额度。如果默认模型不可用，可以明确选择执行服务提供的模型。[上手指南](docs/GITHUB-QUICKSTART.md)包含源码安装和第一次协作步骤。
+Codex、Claude Code 使用各自原生登录。查看接入检查不会调用模型，点击接入测试会消耗原生模型额度。如果默认模型不可用，可以明确选择执行服务提供的模型。[上手指南](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/GITHUB-QUICKSTART.md)包含源码安装和第一次协作步骤。
 
 ## 与你已有的工具一起工作
 
@@ -56,8 +56,8 @@ Codex、Claude Code 使用各自原生登录。查看接入检查不会调用模
 
 ## 继续了解
 
-[完整上手指南](docs/GITHUB-QUICKSTART.md) · [Beta 验收与平台边界](docs/BETA-ACCEPTANCE.md) · [Beta 3 验证证据](docs/evidence/v080/beta3-collaboration.md) · [可选设备接入](docs/NODES.md) · [安全说明](SECURITY.md)
+[完整上手指南](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/GITHUB-QUICKSTART.md) · [Beta 验收与平台边界](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/BETA-ACCEPTANCE.md) · [Beta 3 验证证据](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/evidence/v080/beta3-collaboration.md) · [可选设备接入](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/NODES.md) · [安全说明](https://github.com/polaris-smart/agent-mailbox/blob/main/SECURITY.md)
 
 更新目前提供显式检查、暂停接单和私有备份，程序替换及恢复仍手动完成。数据库备份之外，还需保留项目仓库和独立工作区。跨设备修改隔离、自动更新、万能 app 控制、拖拽 workflow 编辑器和 AI ERP 尚未实现；完整限制集中在验收文档中。
 
-© 2026 NoFox 与贡献者 · [Apache-2.0](LICENSE) · [NOTICE](NOTICE) · [原有 MIT 声明](LICENSES/MIT-Legacy.txt)
+© 2026 NoFox 与贡献者 · [Apache-2.0](https://github.com/polaris-smart/agent-mailbox/blob/main/LICENSE) · [NOTICE](https://github.com/polaris-smart/agent-mailbox/blob/main/NOTICE) · [原有 MIT 声明](https://github.com/polaris-smart/agent-mailbox/blob/main/LICENSES/MIT-Legacy.txt)
