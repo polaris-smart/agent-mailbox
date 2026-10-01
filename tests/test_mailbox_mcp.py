@@ -6,6 +6,7 @@ import os
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 
 import pytest
 from mcp import ClientSession, StdioServerParameters
@@ -53,8 +54,14 @@ def connection(tmp_path):
                 ).encode()
             )
 
+    class LoopbackServer(ThreadingHTTPServer):
+        def server_bind(self):
+            # A literal loopback test listener does not need reverse DNS.
+            TCPServer.server_bind(self)
+            self.server_name, self.server_port = self.server_address[:2]
+
     def start():
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server = LoopbackServer(("127.0.0.1", 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         servers.append((server, thread))
