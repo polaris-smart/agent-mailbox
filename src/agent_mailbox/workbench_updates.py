@@ -332,6 +332,7 @@ def private_backup(store):
         }
         fd = os.open(target / "manifest.json", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         with os.fdopen(fd, "w") as stream:
+            private_mode(target / "manifest.json", 0o600)
             json.dump(manifest, stream, ensure_ascii=False, indent=2)
             stream.flush()
             os.fsync(stream.fileno())

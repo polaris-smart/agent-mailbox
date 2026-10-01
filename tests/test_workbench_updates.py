@@ -165,6 +165,7 @@ def test_backup_restores_private_identity_and_excludes_runtime(setup, tmp_path):
     assert (backup / "workbench/fleet/device.key").read_bytes() == b"private device material"
     assert not (backup / "workbench/runtime").exists()
     assert not (backup / "workbench/instance.json").exists()
+    assert private_access(backup / "manifest.json", 0o600)
     restored_root = tmp_path / "restored"
     shutil.copytree(backup / "workbench", restored_root / "workbench")
     restored = WorkbenchStore(restored_root)
