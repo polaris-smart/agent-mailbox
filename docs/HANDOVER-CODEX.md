@@ -1,6 +1,6 @@
 # agent-mailbox v0.8 维护入口
 
-PyPI `0.8.0` 已公开，最终工作台发行源为 `4413fbad7332501590919ed37b378fdb6c666eb8`；GitHub `v0.8.0` 已公开，非 draft、非 prerelease，Latest 为 `v0.8.0`，8 份资产官方 digest 与本地逐一匹配。独立 npm 插件目标 `0.8.0` 尚未发布，首次 `EOTP` 后浏览器认证流程因 `E404` 失效，待用户二次验证，不能声称全部渠道已同步。详见[正式版发行记录](evidence/v080/stable-release.md)。Beta 4 `0.8.0b4` / `420d136` 为已公开历史发行，保留[历史证据](evidence/v080/beta4-release.md)，不改写旧 tag 或发行物。旧 v0.7 正典仅作历史参考，不约束本版运行架构。TestPyPI、Homebrew 未启用。
+PyPI `0.8.0` 已公开，最终工作台发行源为 `4413fbad7332501590919ed37b378fdb6c666eb8`；GitHub `v0.8.0` 已公开，非 draft、非 prerelease，Latest 为 `v0.8.0`，8 份资产官方 digest 与本地逐一匹配。独立 npm 插件 `dsh-agent-mailbox@0.8.0` 已公开并完成官方 registry 独立安装；GitHub/PyPI/npm 三个已启用渠道统一为 0.8.0。详见[正式版发行记录](evidence/v080/stable-release.md)。Beta 4 `0.8.0b4` / `420d136` 为已公开历史发行，保留[历史证据](evidence/v080/beta4-release.md)，不改写旧 tag 或发行物。旧 v0.7 正典仅作历史参考，不约束本版运行架构。TestPyPI、Homebrew 未启用。
 
 先读 [PRD](PRD.md)、[独立实现决定](designs/2026-09-30-v080-independent.md) 和 [审查记录](reviews/2026-09-30-v080-independence.md)。员工卡片及信箱见 [设计](designs/2026-09-30-employee-cards-mailboxes.md) 和 [验证](evidence/v080/employee-cards-mailboxes.md)。当前接入与 NoFox / Apache-2.0 署名见 [设计](designs/2026-09-30-connection-guidance.md) 和 [验证](evidence/v080/connection-guidance.md)。本轮员工与项目组见 [设计](designs/2026-09-30-project-groups.md) 和 [验证](evidence/v080/project-groups.md)。v0.8 完全独立，不继续承载 v0.7 运行路径；旧 Git 历史和 docs/archive/v07 只供参考。
 
@@ -36,14 +36,16 @@ PyPI `0.8.0` 已公开，最终工作台发行源为 `4413fbad7332501590919ed37b
 
 源码提交 `4201b34dad503529d113b904ae67a23be7cc5644` 的 [CI](https://github.com/polaris-smart/agent-mailbox/actions/runs/36865817096) 完成 9/9 门禁：六组回归和三平台原生包检查。Mac/Linux 各组 404 passed、4 skipped；Windows 各组 360 passed、48 skipped。后台线程异常提升为测试失败；本次无后台警告。原生包实际解压、启动，并分别验证 12 个既有会话邮箱 MCP 工具和 11 个受管项目 MCP 工具；协议 fixture 不调用供应商模型。Mac 新原生包在真实数据副本上验证 schema 9→11，20 名员工、2 个项目及历史记录保留。
 
-这些测试本身不能代称渠道公开；当前 GitHub/PyPI 已公开、npm 尚未公开，分别以渠道核验记录为准。ZCode 隔离 CLI、DeepSeek Harness 无模型接口验证也不能代表所有正在运行的真实 App 会话已热加载 MCP 或自动唤醒。真实宿主、物理设备和跨设备验收按实际范围单列。Beta 4 历史证据不覆盖本轮结果。
+这些测试本身不能代称渠道公开；当前 GitHub/PyPI/npm 均已公开 0.8.0，分别以渠道核验记录为准。ZCode 隔离 CLI、DeepSeek Harness 无模型接口验证也不能代表所有正在运行的真实 App 会话已热加载 MCP 或自动唤醒。真实宿主、物理设备和跨设备验收按实际范围单列。Beta 4 历史证据不覆盖本轮结果。
 
 
 ### v0.8.0 分渠道发行与收尾
 
-PyPI `0.8.0` 独立官方索引安装、版本检查已通过；最终发布流程首次 Win 3.10 超时后 `rerun --failed` 成功，原失败保留。Mac 最终 CI ZIP 制成 DMG 后在真实 home 升级至 0.8.0，schema 9→11 保留 20 员工、2 项目、1 邮件、0 任务，私有一致性备份已保存。GitHub 正式版已公开，Latest 为 v0.8.0，8 份资产 digest 已核验；PyPI 两份资产官方 digest 亦核验匹配。npm 插件三平台 CI 通过，但首次 EOTP 后浏览器认证流程因 E404 失效，仍需用户二次验证、实际发布及官方安装核验，不能把登录、CI 或 draft 上传代称公开，也不代称所有真实 App 热加载或自动唤醒。详见[正式版证据](evidence/v080/stable-release.md)。
+PyPI `0.8.0` 独立官方索引安装、版本检查已通过；最终发布流程首次 Win 3.10 超时后 `rerun --failed` 成功，原失败保留。Mac 最终 CI ZIP 制成 DMG 后在真实 home 升级至 0.8.0，schema 9→11 保留 20 员工、2 项目、1 邮件、0 任务，私有一致性备份已保存。GitHub 正式版已公开，Latest 为 v0.8.0，8 份资产 digest 已核验；PyPI 两份资产官方 digest 亦核验匹配。npm 插件三平台 CI 通过，用户浏览器二次验证成功后完成发布；官方 registry 0.8.0 已可见并通过独立安装及 dist/plugin.js 导入验证，不能把登录、CI 或 draft 上传代称公开，也不代称所有真实 App 热加载或自动唤醒。详见[正式版证据](evidence/v080/stable-release.md)。
 
 
-正式版公开核验：tag 指向 `4413fbad7332501590919ed37b378fdb6c666eb8`；GitHub 8 资产及 PyPI 两份发行文件官方 digest 匹配，具体文件清单见[正式版证据](evidence/v080/stable-release.md)。Mac 真实 UI 展示 20 张员工卡，无 JavaScript 错误，390px 宽视图无横向溢出。npm 仍未发布，不能声称全部渠道已同步。
+正式版公开核验：tag 指向 `4413fbad7332501590919ed37b378fdb6c666eb8`；GitHub 8 资产及 PyPI 两份发行文件官方 digest 匹配，具体文件清单见[正式版证据](evidence/v080/stable-release.md)。Mac 真实 UI 展示 20 张员工卡，无 JavaScript 错误，390px 宽视图无横向溢出。npm 0.8.0 已公开并完成独立官方安装，三个已启用渠道版本已对齐。
 
-公开 GitHub 下载 URL 的 `SHA256SUMS` 已实际下载，字节与本地完全匹配。npm 官方 registry 当前查询仍为 `0.1.2`，`0.8.0` 未发布，渠道尚未全部对齐。
+公开 GitHub 下载 URL 的 `SHA256SUMS` 已实际下载，字节与本地完全匹配。npm 官方 registry 当前已可见 `0.8.0`；独立官方 registry 安装成功，dist/plugin.js 导入的 name/apply 正确。三个已启用渠道均为 0.8.0；npm 官方 tarball SHA-1、SHA-512 integrity 已匹配，gitHead 对应独立插件源提交。
+
+独立 npm 插件发行源保持 `ae43aa7582ed6dcb57458475a9fde7fe37e4d8f0`，沿用独立源码的 MIT 协议；不是 agent-mailbox 工作台安装器。工作台 Apache-2.0 与插件 MIT 分别保留，TestPyPI/Homebrew 未启用。

@@ -42,7 +42,7 @@ python -m pip install 'agent-mailbox==0.8.0'
 agent-mailbox --home ~/.agent-mailbox-v08
 ```
 
-Windows 改用 `py -m venv .venv` 和 `.venv\Scripts\Activate.ps1`。下方精确版本命令须待公开后使用，不能以旧稳定版安装替代。Python/源码执行任务需要 Node.js 22.13+，并在页面点“准备运行环境”。已有入口为 [PyPI agent-mailbox](https://pypi.org/project/agent-mailbox/)，没有 TestPyPI 或 Homebrew 发行。已有 npm 包 [dsh-agent-mailbox](https://www.npmjs.com/package/dsh-agent-mailbox) 是独立的 DeepSeek Harness 插件，配套发布目标为 `0.8.0`，公开状态另行核验，不是工作台安装入口；无 scope 的 `agent-mailbox` 属于其他项目。
+Windows 改用 `py -m venv .venv` 和 `.venv\Scripts\Activate.ps1`。使用下方精确版本命令核对安装结果。Python/源码执行任务需要 Node.js 22.13+，并在页面点“准备运行环境”。已有入口为 [PyPI agent-mailbox](https://pypi.org/project/agent-mailbox/)，没有 TestPyPI 或 Homebrew 发行。已有 npm 包 [dsh-agent-mailbox](https://www.npmjs.com/package/dsh-agent-mailbox) 是独立的 DeepSeek Harness 插件，配套版本 `0.8.0` 已在官方 npm 发布并通过独立安装核验，不是工作台安装入口；无 scope 的 `agent-mailbox` 属于其他项目。
 
 Codex、Claude Code 使用各自原生登录。查看接入检查不会调用模型，点击接入测试会消耗原生模型额度。如果默认模型不可用，可以明确选择执行服务提供的模型。[上手指南](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/GITHUB-QUICKSTART.md)包含源码安装和第一次协作步骤。
 

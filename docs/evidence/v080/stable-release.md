@@ -9,7 +9,7 @@
 | PyPI 工作台 | `agent-mailbox==0.8.0` | 已公开；独立环境从官方索引安装，`agent-mailbox --version` 返回 `0.8.0` | 两份发行文件官方 digest 已与本地匹配，最终源为 4413fbad7332501590919ed37b378fdb6c666eb8 |
 | GitHub 工作台 | `v0.8.0` | 已公开，非 draft、非 prerelease，Latest 为 v0.8.0；8 资产均 uploaded，官方 digest 与本地逐一匹配 | 下载时对照 SHA256SUMS；本次公开状态与 digest 核验已完成 |
 | 本机 Mac App | `0.8.0` | 最终 CI ZIP 制成 DMG 后安装升级，bootstrap 返回 `0.8.0` | 该本机验证不等于所有电脑首次下载体验 |
-| npm 配套插件 | `dsh-agent-mailbox@0.8.0` | 独立三平台 CI 通过；发布命令返回 `EOTP`，未公开 | 首次 EOTP 后浏览器认证流程等待返回 E404、失效；待用户二次验证、实际发布与官方安装核验 |
+| npm 配套插件 | `dsh-agent-mailbox@0.8.0` | 已公开；用户浏览器二次验证成功，registry processing 后版本可见，官方独立安装及插件导入验证通过 | 官方 tarball SHA-1、SHA-512 integrity 和 gitHead 已核验匹配 |
 
 [PyPI 0.8.0](https://pypi.org/project/agent-mailbox/0.8.0/) 是已确认入口；[GitHub v0.8.0](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0) 同样是已确认的公开入口，tag 指向 `4413fbad7332501590919ed37b378fdb6c666eb8`。插件不是工作台安装包。没有新增 TestPyPI 或 Homebrew 渠道。
 
@@ -29,9 +29,9 @@
 
 ## 独立 npm 插件
 
-插件候选源提交为 `ae43aa7582ed6dcb57458475a9fde7fe37e4d8f0`，独立仓库 [polaris-smart/dsh-agent-mailbox](https://github.com/polaris-smart/dsh-agent-mailbox)。[三平台 CI 36868122488](https://github.com/polaris-smart/dsh-agent-mailbox/actions/runs/36868122488) 通过。插件版本目标为 `0.8.0`，保持 `dsh-agent-mailbox` 包名，不使用其他项目的无 scope `agent-mailbox` 包。
+插件发行源提交为 `ae43aa7582ed6dcb57458475a9fde7fe37e4d8f0`，独立仓库 [polaris-smart/dsh-agent-mailbox](https://github.com/polaris-smart/dsh-agent-mailbox)。[三平台 CI 36868122488](https://github.com/polaris-smart/dsh-agent-mailbox/actions/runs/36868122488) 通过。插件公开版本为 `0.8.0`，保持 `dsh-agent-mailbox` 包名，不使用其他项目的无 scope `agent-mailbox` 包。
 
-官方 registry 发布返回 `EOTP`，后续 TTY 浏览器认证流程等待后返回 `E404`、认证流程失效，仍需用户二次验证；这是认证流程失败，不表示现有 npm 包不存在。登录成功、CI 通过和本地 pack 均不能代称新版本公开。必须在实际发布后核对官方 registry 的版本、来源、tarball 和独立安装。显式使用 `--registry=https://registry.npmjs.org`，不输出 token；不把 npmmirror 当发布目标。
+早期官方 registry 发布返回 `EOTP`，一次 TTY 浏览器认证流程等待后返回 `E404`、失效；这是认证流程失败，不表示 npm 包不存在。随后用户完成浏览器发布验证，命令返回 `+ dsh-agent-mailbox@0.8.0`。等待 registry processing 数分钟后，官方版本已可见 0.8.0；独立官方 registry 安装成功，dist/plugin.js 导入的 name/apply 正确。保留该失败、用户验证及处理等待历史；官方 tarball SHA-1 和 SHA-512 integrity 已匹配，gitHead 对应上述插件源提交。显式使用 `--registry=https://registry.npmjs.org`，不输出 token；不把 npmmirror 当发布目标。
 
 ## 保留边界
 
@@ -55,12 +55,16 @@ v0.7 数据库、后台服务、MCP 配置没有自动迁移；兼容 v0.8 数�
 - `native-provenance.json`
 - `SHA256SUMS`
 
-PyPI 的 wheel 与 sdist 两份官方 digest 亦与本地文件匹配。GitHub Release 非 draft、非 prerelease；公开 `/releases/latest` 指向 `v0.8.0`。npm 仍未发布，不能声称全部渠道同步。
+PyPI 的 wheel 与 sdist 两份官方 digest 亦与本地文件匹配。GitHub Release 非 draft、非 prerelease；公开 `/releases/latest` 指向 `v0.8.0`。npm 0.8.0 已公开并完成独立官方安装，三个已启用渠道版本已对齐。
 
 ## Mac 浏览器实际检查
 
 真实工作台显示 20 张员工卡，没有 JavaScript 错误；390px 宽视图无横向溢出。此项是本机 UI 证据，不能扩展为所有系统或所有 Agent 宿主热加载验收。
 
-公开 GitHub 下载 URL 的 `SHA256SUMS` 已实际下载，字节与本地完全匹配。npm 官方 registry 当前查询仍为 `0.1.2`，`0.8.0` 未发布，渠道尚未全部对齐。
+公开 GitHub 下载 URL 的 `SHA256SUMS` 已实际下载，字节与本地完全匹配。npm 官方 registry 当前已可见 `0.8.0`；独立官方 registry 安装成功，dist/plugin.js 导入的 name/apply 正确。三个已启用渠道均为 0.8.0；npm 官方 tarball SHA-1、SHA-512 integrity 已匹配，gitHead 对应独立插件源提交。
 
 AOCI rules/overview 仍返回 `index_invalid` / `code_object_path_unresolved`；不能声称索引维护已完成。此项沿用既有诊断，未用公开发行成功掩盖索引错误。
+
+独立 npm 插件发行源保持 `ae43aa7582ed6dcb57458475a9fde7fe37e4d8f0`，沿用独立源码的 MIT 协议；不是 agent-mailbox 工作台安装器。工作台 Apache-2.0 与插件 MIT 分别保留，TestPyPI/Homebrew 未启用。
+
+官方 npm 下载包 SHA-1：`f6bc31a2abd04ea04cc26ad3cce9e77739c86b15`。SHA-512 integrity 与 registry 元数据逐字匹配，`gitHead` 为 `ae43aa7582ed6dcb57458475a9fde7fe37e4d8f0`，`latest` 为 `0.8.0`。
