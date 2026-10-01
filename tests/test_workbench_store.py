@@ -285,7 +285,9 @@ def test_resource_scoped_utf8_and_live_validation(store, project, tmp_path):
     file.write_text("中文资料\n' DROP TABLE tasks;", encoding="utf-8")
     resource = store.add_resource(project["id"], "Brief", "document", file)
     read = store.read_resource(project["id"], resource["id"])
-    assert read["content"] == file.read_text(encoding="utf-8")
+    # Resource versions preserve the source bytes, including Windows CRLF;
+    # read_text() would normalize newlines and hide that fidelity guarantee.
+    assert read["content"].encode("utf-8") == file.read_bytes()
     assert read["source"] == str(file.resolve())
     other = store.create_project("Other", tmp_path)
     with pytest.raises(WorkbenchError) as error:

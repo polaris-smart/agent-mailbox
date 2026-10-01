@@ -19,6 +19,11 @@ import pytest
 from agent_mailbox.runtime_bridge import bridge_path
 from agent_mailbox.workbench_runtime import BridgeExecution
 
+# Normal protocol fixtures can initialize a session and configure its mode in
+# separate 15-second phases, with several turns in one test. This is only a
+# deadlock guard; explicit startup/prompt/cancellation deadlines stay unchanged.
+pytestmark = pytest.mark.timeout(90)
+
 FAKE_ACP = r"""
 import json, sys, uuid, time
 from pathlib import Path
@@ -278,16 +283,31 @@ class Bridge:
             **value,
         )
 
-    def until(self, predicate, timeout=20):
+    def until(self, predicate, timeout=35):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            message = self.messages.get(timeout=max(0.01, deadline - time.monotonic()))
+            try:
+                message = self.messages.get(timeout=max(0.01, deadline - time.monotonic()))
+            except queue.Empty:
+                break
             assert "non_protocol_stdout" not in message, message
             assert message["protocol"] == 1
             self.seen.append(message)
             if predicate(message):
                 return message
-        raise AssertionError("No expected bridge event")
+        methods = []
+        if self.trace.exists():
+            for line in self.trace.read_text(errors="replace").splitlines()[-12:]:
+                try:
+                    methods.append(json.loads(line).get("method"))
+                except ValueError:
+                    pass  # A trace write may be in progress.
+        raise AssertionError(
+            f"No expected bridge event within {timeout}s; "
+            f"process_exit={self.process.poll()}; "
+            f"event_types={[m.get('type') for m in self.seen[-12:]]}; "
+            f"request_methods={methods}"
+        )
 
     def result(self, run_id="r1"):
         return self.until(lambda m: m["type"] == "result" and m["run_id"] == run_id)
