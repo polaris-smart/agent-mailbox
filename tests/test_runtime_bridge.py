@@ -437,7 +437,9 @@ def test_queued_cancel_does_not_cancel_other_run(launch):
 )
 def test_explicit_errors_and_timeouts(launch, flavor, prompt, expected):
     bridge = launch(flavor)
-    bridge.run(prompt=prompt, timeout_ms=100)
+    # Only the intentional prompt hang races a short task deadline. Crash/error
+    # cases must observe the actual failure, including Windows process cleanup.
+    bridge.run(prompt=prompt, timeout_ms=100 if prompt == "hang" else 10000)
     result = bridge.result()
     assert result["status"] == "failed"
     assert result["error"]["code"] == expected, result.get("error")
