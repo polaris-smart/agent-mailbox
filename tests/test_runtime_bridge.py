@@ -325,7 +325,15 @@ def test_injects_mcp_and_returns_complete_output(launch):
     }
     bridge.run(mcp_servers=[server])
     result = bridge.result()
-    assert result["status"] == "completed"
+    assert result["status"] == "completed", {
+        "error": result.get("error"),
+        "event_types": [message.get("type") for message in bridge.seen],
+        "request_methods": [record.get("method") for record in bridge.requests()]
+        if bridge.trace.exists()
+        else [],
+        "python_executable_suffix": Path(sys.executable).suffix,
+        "platform": sys.platform,
+    }
     assert result["output_text"] == "Hello world"
     assert result["runtime_result"]["_meta"] == {"fake": "complete"}
     assert any(m["type"] == "started" for m in bridge.seen)
