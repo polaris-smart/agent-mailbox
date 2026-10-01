@@ -67,6 +67,12 @@ def build(runtime_dir: Path, node: Path, output: Path, name: str) -> dict:
     if importlib.util.find_spec("PyInstaller") is None:
         raise RuntimeError("Install PyInstaller in the selected isolated Python environment first")
     runtime_dir, node, output = runtime_dir.resolve(), node.resolve(), output.resolve()
+    # Git Bash which omits PATHEXT; Windows can execute that name but PyInstaller
+    # requires the actual on-disk executable, including its .exe suffix.
+    if sys.platform == "win32" and not node.is_file() and node.with_suffix(".exe").is_file():
+        node = node.with_suffix(".exe")
+    if not node.is_file():
+        raise ValueError("Choose the existing Node.js executable file")
     if output.is_relative_to(REPOSITORY) or output in REPOSITORY.parents:
         raise ValueError("Choose an isolated build output directory")
     node_version = validate_runtime(runtime_dir, node)
