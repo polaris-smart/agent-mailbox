@@ -575,3 +575,23 @@ body.drawer-open { overflow: hidden; }
   .update-maintenance .update-actions { width: 100%; padding-left: 28px; }
   .update-node-list li { align-items: flex-start; flex-direction: column; gap: 6px; }
 }
+
+/* Beta 3: actual connection checks and explicit delivery review. */
+.connection-checklist { list-style: none; padding: 0; margin: 0 0 20px; display: grid; gap: 12px; }
+.connection-check { display: flex; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.connection-check > svg { flex: 0 0 20px; margin-top: 2px; }
+.connection-check p { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
+.connection-check.passed > svg { color: var(--success); }
+.connection-check.blocked > svg { color: var(--warning); }
+.delivery-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 16px; font-size: 13px; }
+.delivery-facts dt { color: var(--muted); }
+.delivery-facts dd { margin: 0; overflow-wrap: anywhere; }
+.delivery-files { padding-left: 20px; overflow-wrap: anywhere; font-size: 13px; }
+.delivery-diff { max-height: 360px; overflow: auto; font-size: 12px; }
+.apply-confirm { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; margin: 16px 0; }
+.apply-confirm input { flex: 0 0 auto; margin-top: 3px; }
+@media (max-width: 540px) { .delivery-facts { grid-template-columns: 1fr; gap: 4px; } .delivery-facts dd { margin-bottom: 10px; } }
+
+.apply-confirm input { width: 18px; min-height: 18px; height: 18px; }
+
+.check-status { display: inline-block; margin-left: 10px; font-size: 12px; color: var(--muted); }

@@ -10,7 +10,8 @@ from pathlib import Path
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from .workbench_execution_resources import execution_project_context
+from .workbench_execution_resources import execution_project_context, project_task_delivery
+from .workbench_onboarding import record_probe_step
 from .workbench_store import WorkbenchError, WorkbenchStore
 
 
@@ -34,7 +35,9 @@ def build_server(store, employee_id, project_id, token, endpoint="", task_id="",
     def project_context() -> dict:
         """Read this project's shared resources, memory and employee membership."""
         guard()
-        return execution_project_context(store, project_id, employee_id, task_id, run_id)
+        result = execution_project_context(store, project_id, employee_id, task_id, run_id)
+        record_probe_step(store, task_id, run_id, "context")
+        return result
 
     @server.tool()
     def project_memory_search(query: str) -> dict:
@@ -77,6 +80,12 @@ def build_server(store, employee_id, project_id, token, endpoint="", task_id="",
             raise ToolError(f"{exc.code}: {exc}") from None
 
     @server.tool()
+    def project_delivery(task_id: str) -> dict:
+        """Read a colleague's fixed delivery in this project for review; no apply permission."""
+        guard()
+        return project_task_delivery(store, project_id, task_id)
+
+    @server.tool()
     def project_code_search(query: str) -> dict:
         """Search this project's optional CodeGraph symbol index. No index rebuild or LLM call."""
         guard()
@@ -89,7 +98,9 @@ def build_server(store, employee_id, project_id, token, endpoint="", task_id="",
     def project_note(title: str, body: str) -> dict:
         """Record a project note attributed to this employee; human decisions stay separate."""
         guard(write=True)
-        return store.add_memory(project_id, title, body, source=f"employee:{employee_id}")
+        result = store.add_memory(project_id, title, body, source=f"employee:{employee_id}")
+        record_probe_step(store, task_id, run_id, "note", body)
+        return result
 
     @server.tool()
     def project_messages(folder: str = "inbox", limit: int = 100) -> dict:
@@ -243,6 +254,11 @@ def build_remote_server(client, employee_id, project_id, task_id="", run_id=""):
             )
         except WorkbenchError as exc:
             raise ToolError(f"{exc.code}: {exc}") from None
+
+    @server.tool()
+    def project_delivery(task_id: str) -> dict:
+        """Read a fixed colleague delivery from the authorized project."""
+        return call("task_delivery", {"target_task_id": task_id})
 
     @server.tool()
     def project_code_search(query: str) -> dict:

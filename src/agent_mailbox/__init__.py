@@ -1,3 +1,3 @@
 """agent-mailbox: local AI employee and project workbench."""
 
-__version__ = "0.8.0b2"
+__version__ = "0.8.0b3"

@@ -23,9 +23,11 @@ from .workbench_activity import project_activity
 from .workbench_compatibility import compatibility_nodes
 from .workbench_engine import WorkbenchEngine
 from .workbench_lock import WorkbenchLock
+from .workbench_onboarding import create_probe, onboarding_status
 from .workbench_runtime import available_models, discover_employees, runtime_status
 from .workbench_store import WorkbenchError, WorkbenchStore
 from .workbench_updates import UpdateService
+from .workbench_workspaces import apply_delivery, task_delivery
 
 ASSETS = Path(__file__).parent / "workbench_assets"
 PREFIX = "/api/workbench"
@@ -571,11 +573,38 @@ class Handler(BaseHTTPRequestHandler):
         elif method == "GET" and route == ["governance"]:
             query = parse_qs(url.query)
             result = {"events": store.governance_events(query.get("project_id", [None])[0])}
+        elif (
+            len(route) == 3
+            and route[0] == "employees"
+            and route[2] == "onboarding"
+            and method == "GET"
+        ):
+            result = onboarding_status(
+                store, route[1], parse_qs(url.query).get("project_id", [None])[0]
+            )
+        elif (
+            len(route) == 3
+            and route[0] == "employees"
+            and route[2] == "verify"
+            and method == "POST"
+        ):
+            result = create_probe(store, route[1], data["project_id"], model=data.get("model"))
+            self.server.notify()
+        elif len(route) == 3 and route[0] == "tasks" and route[2] == "delivery" and method == "GET":
+            result = task_delivery(store, route[1])
         elif method == "GET" and len(route) == 2 and route[0] == "tasks":
             result = store.task_detail(route[1])
         elif method == "POST" and len(route) == 3 and route[0] == "tasks":
             if route[2] == "cancel":
                 result = store.cancel_task(route[1])
+            elif route[2] == "follow-up":
+                result = store.follow_up_task(route[1], data["note"])
+            elif route[2] == "apply":
+                if data.get("confirm") is not True:
+                    raise WorkbenchError("APPLY_CONFIRM_REQUIRED", "请明确确认应用已验收修改。")
+                if store.update_maintenance()["paused"]:
+                    raise WorkbenchError("UPDATE_PAUSED", "更新准备期间暂停合入，请先恢复接单。")
+                result = apply_delivery(store, route[1])
             elif route[2] == "review":
                 result = store.review_task(route[1], data["decision"], data.get("note", ""))
             else:

@@ -618,6 +618,10 @@ class FleetCoordinator:
                 result["version"].pop("source", None)
             result["source"] = f"resource:{result['resource']['id']}:{result['resource']['name']}"
             return result
+        if tool == "task_delivery":
+            from .workbench_execution_resources import project_task_delivery
+
+            return project_task_delivery(self.store, project_id, args.get("target_task_id"))
         if tool == "resource_versions":
             result = self.store.resource_versions(project_id, args.get("resource_id"))
             for version in result["versions"]:

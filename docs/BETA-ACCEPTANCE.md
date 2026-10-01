@@ -1,6 +1,6 @@
-# v0.8.0 Beta 2 验收边界
+# v0.8.0 Beta 3 验收边界
 
-2026-10-01，本地版本 **0.8.0b2**。默认路径：发现员工 → 登记并检查能力 → 创建项目组 → 加入员工和资料 → 分配任务 → 邮件交接 → human 验收。基础闭环已验证；尚未公开发布 GitHub/PyPI。
+2026-10-01，本地版本 **0.8.0b3**。默认路径：发现员工 → 登记并检查能力 → 创建项目组 → 加入员工和资料 → 分配任务 → 邮件交接 → human 验收。基础闭环已验证；尚未公开发布 GitHub/PyPI。
 
 | 范围 | 当前能力（含 Beta 1 基线验证） | 边界 |
 | --- | --- | --- |
@@ -14,7 +14,7 @@
 | UI | 左侧团队/当前项目/管理分组，项目选择器，中英文，手机抽屉与键盘操作，带样式的协议与帮助 | 其他语言未声明支持 |
 | 安装升级 | Mac ARM64 独立 wheel、打包 App、本机保留数据升级与迁移备份 | App 无 Developer ID 签名/公证；手动升级，无自动更新器；Windows 发布产物未验证 |
 
-## Beta 1 基线验证记录（继承能力，非 Beta 2 重跑）
+## Beta 1 基线验证记录（历史基线，非 Beta 3 重跑）
 
 - Mac 完整回归：309 passed、1 skipped、0 failed（310 项）。
 - Ubuntu ARM64 完整回归：269 passed、41 skipped、0 failed；41 项为未安装 Node/ACPX 的运行时协议测试，不冒充已验证。
@@ -35,3 +35,13 @@ Paperclip 的固定源码参考包含 SSH 执行目标及工作区传输，可�
 ## Beta 2 增量
 
 新增更新设置/准备、私有备份、持久暂停、远端不确定领取保护与节点版本协议。安装升级仍手动完成，公开版本未发行。Beta 1 的真实 LLM/Ubuntu 证据为基础版本记录；Beta 2 增量验证详见[更新证据](evidence/v080/beta2-updates.md)，不得把历史 Ubuntu/LLM 结果冒充 Beta 2 的重跑结果。
+
+## Beta 3 增量及验证状态
+
+- 显式员工接入 probe：可选模型，实际上下文与随机标记笔记回执；查看检查不启动模型。取消/离组/退役不算成功。远端 probe 不支持，未适配 App 明确不可执行；原生账号仍共享。
+- 本机 clean、committed Git 根目录的独立 worktree；非 Git/子目录/脏目录不降级原地修改。不是 OS 沙箱。远端 workspace-write 暂拒绝。
+- 固定文本交付及校验值、来源分明的验证信息。Human 验收不等于合入；显式 apply 检查源仓库基线与干净状态，不 commit/push。退回创建关联任务并在基线一致时继承 patch。
+- 项目工具新增 `project_delivery(task_id)`，共 11 项；读取本项目固定同事交付，不任意复制工作区文件。二进制、符号链接、凭据、不安全或过大 patch 不自动合入。
+- SQLite/身份更新备份不含 home/task-workspaces、外部 Git 或供应商登录；工作区保留但须独立备份。
+
+当前证据草稿：Mac 回归 349 passed、1 skipped；UI 27 项检查（原 20 项流程及 7 项模型 payload/元数据场景）、0 页面异常；7 项补充场景没有运行模型。Beta 3 真实 Codex/Claude 已通过 context/note probe、独立编辑、project_delivery 固定差异审查、Human 验收与显式合入。初次默认模型 MODEL_UNSUPPORTED 的失败另行保留，成功重跑由显式选择 gpt-6-luna 完成。Windows/Linux 实体设备和真实 HK/US 未验收。最终结果以[Beta 3 证据](evidence/v080/beta3-collaboration.md)及对应构建目录记录为准；历史 Beta 1/2 的 provider、Ubuntu 或安装包证据不视为本轮重跑。

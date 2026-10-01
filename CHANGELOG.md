@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0b3 — local Beta 3 (2026-10-01, unpublished)
+
+- Explicit project-bound onboarding probes with optional model selection; actual context and marker-note receipts distinguish execution proof from model claims. Viewing checks does not invoke a model. Remote probes and unadapted apps remain unsupported.
+- Clean, committed local Git roots receive detached task worktrees; original files are not edited directly. This is not an OS sandbox or native-account isolation. Remote write tasks are refused.
+- Freeze text deliveries with integrity checks and separate employee reports/system facts. Human acceptance and explicitly confirmed application are separate; guarded application never commits or pushes. Follow-up tasks inherit the previous patch only at the same baseline.
+- Add project-scoped colleague delivery retrieval (`project_delivery`), bringing managed project MCP tools to 11. Reject unsafe, credential-bearing, binary, symlink or oversized patches.
+- Schema 9 preserves business identities. Existing update backups cover SQLite and workbench identities/configuration, not retained task workspaces or external Git repositories. Platform/provider verification is recorded separately from prior Beta evidence.
+
 ## 0.8.0b2 — local prerelease (2026-10-01)
 
 - Explicit stable/Beta GitHub release checks with numeric version ordering; no automatic polling, downloads or replacement. Public releases may be older than this local Beta.

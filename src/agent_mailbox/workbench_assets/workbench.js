@@ -406,30 +406,73 @@ function executionGuide(employee, error = null) {
   }
   return el("section", { class: "connection-guide" }, el("h3", {}, title), el("p", {}, explanation), el("p", {}, next), code ? el("p", { class: "field-hint" }, t("诊断代码", "Diagnostic code"), " · ", el("code", {}, code)) : null);
 }
-function openConnectionGuide(employee) {
-  const body = openForm(t(`${employee.name} · 接入指引`, `${employee.name} · Connection guide`), t("分清安装、登录与受管执行，按实际结果处理。", "Installation, sign-in and managed execution are separate checks."));
+async function openConnectionGuide(employee) {
+  const body = openForm(t(`${employee.name} · 接入验证`, `${employee.name} · Connection verification`), t("本次检查：安装、登录与实际执行分开；查看此页不会调用模型。", "Current check: installation, sign-in, and execution are separate. Viewing this page does not run a model."));
   if (!body) return;
-  const latest = (state.data.tasks || []).filter(task => task.assignee_id === employee.id).sort((a,b) => String(b.created_at).localeCompare(String(a.created_at)))[0];
-  body.append(executionGuide(employee, latest?.error), el("p", {}, t("连接入口", "Entry point"), " · ", el("code", {}, employee.entrypoint || t("旧身份入口尚未绑定", "Legacy identity has no bound entry point"))));
-  if (employee.execution_supported && ["claude", "codex"].includes(employee.kind) && employee.auth_status !== "authenticated") {
-    const command = employee.kind === "claude" ? "claude auth login" : "codex login";
-    body.append(el("p", {}, t("在本机终端执行", "Run in a terminal on this device"), " · ", el("code", {}, command)));
+  const projectId = state.projectId;
+  const stage = el("div", { class: "onboarding-checks", role: "status" });
+  const box = errorBox();
+  body.append(stage, box);
+  body.append(el("p", { class: "field-hint" }, t("员工入口", "Employee entry point"), " · ", el("code", {}, employee.entrypoint || t("未绑定入口", "No bound entry point"))));
+  if (["claude", "codex"].includes(employee.kind) && employee.auth_status !== "authenticated" && (!employee.node_id || employee.node_id === state.data.node?.id)) body.append(el("p", { class: "field-hint" }, t("原生登录可在本机终端完成：", "Sign in through the native tool in a local terminal: "), el("code", {}, employee.kind === "claude" ? "claude auth login" : "codex login")));
+  let requestId = 0;
+  async function load() {
+    const current = ++requestId;
+    stage.replaceChildren(el("p", {}, t("正在读取接入检查…", "Loading connection checks…")));
+    try {
+      const result = await api.employeeOnboarding(employee.id, projectId);
+      if (current !== requestId || !body.isConnected || !formDialog.open) return;
+      if (!Array.isArray(result.checks)) throw new ApiError("invalid_response");
+      stage.replaceChildren(el("ul", { class: "connection-checklist" }, result.checks.map(item => el("li", { class: `connection-check ${item.status}` },
+        icon(item.status === "passed" ? "check" : item.status === "blocked" ? "warning" : "clock"),
+        el("div", {}, el("strong", {}, item.message?.[english ? "en" : "zh"] || item.id), el("span", { class: "check-status" }, item.status === "passed" ? t("已通过", "Passed") : item.status === "blocked" ? t("需处理", "Needs attention") : t("未确认", "Unconfirmed")), el("p", {}, item.action?.[english ? "en" : "zh"] || ""))))));
+      if (result.shared_native_identity) stage.append(el("p", { class: "field-hint" }, t("同类员工默认共享本机原生工具登录；员工身份不等于独立模型账号。", "Employees of the same tool share this device's native sign-in by default. Employee identity is not a separate model account.")));
+      if (result.probe) {
+        const probe = result.probe;
+        const open = button(probe.verified ? t("查看验证记录", "View verified run") : t("查看验证进度", "View verification progress"), null);
+        open.addEventListener("click", () => { formDialog.close(); openTaskDetail(probe.task_id); });
+        stage.append(el("p", {}, probe.verified ? t("工具调用与任务结束已确认。", "Tool calls and task completion are confirmed.") : t("验证尚未完成，请查看实际记录。", "Verification is not complete. Check its actual record.")), open);
+      }
+      const model = el("select", { id: "probe-model" }, el("option", { value: "" }, t("保留原生模型设置", "Keep native model settings")));
+      const modelHint = el("p", { class: "field-hint", id: "probe-model-hint" }, t("可选。默认保持原生设置，不会自动替换模型；这里只查询模型元数据，不调用模型生成内容。", "Optional. Native settings stay unchanged by default. This only reads model metadata, without generating content."));
+      model.setAttribute("aria-describedby", modelHint.id);
+      stage.append(formField(t("验证模型（可选）", "Verification model (optional)"), model), modelHint);
+      if (employee.kind === "codex" && result.can_verify) {
+        model.disabled = true;
+        api.models(employee.kind).then(value => {
+          if (current !== requestId || !model.isConnected || !formDialog.open) return;
+          if (!Array.isArray(value.models)) throw new ApiError("invalid_response");
+          for (const item of value.models) model.append(el("option", { value: item.id }, item.name || item.id));
+          modelHint.textContent = value.models.length ? t("保持原生设置，或选择执行服务确认支持的模型。默认模型不受支持时，请显式选择后再验证；不会修改原生工具配置。", "Keep native settings or explicitly select a model advertised by the execution service. If the default is unsupported, select one before testing. Native configuration is not changed.") : t("未确认可选模型。仍保留原生设置，实际验证可能返回模型不受支持。", "No optional models were confirmed. Native settings remain unchanged; the test may report an unsupported model.");
+        }).catch(error => {
+          if (current !== requestId || !model.isConnected || !formDialog.open) return;
+          modelHint.textContent = `${t("模型列表未确认，仍保留原生设置。", "The model list is unconfirmed. Native settings remain unchanged.")} ${errorText(error)}`;
+        }).finally(() => { if (current === requestId && model.isConnected) model.disabled = false; });
+      } else if (employee.kind !== "codex" || !result.can_verify) model.disabled = true;
+      const verify = button(t("运行只读接入测试", "Run read-only connection test"), null, { class: "primary", disabled: result.can_verify !== true });
+      stage.append(el("p", { class: "field-hint" }, t("点击会调用员工的原生模型、消耗额度，并可能需要你确认工具权限；会读取项目上下文并写一条验证笔记，不修改项目文件。", "Clicking uses the employee's native model quota and may require tool approval. It reads project context and writes a verification note, without editing project files.")), verify);
+      verify.addEventListener("click", () => submitAction(verify, box, () => api.verifyEmployee(employee.id, projectId, model.value), async result => {
+        if (!body.isConnected || !formDialog.open) return;
+        formDialog.close(); await refresh();
+        const taskId = result.task?.id || result.task_id;
+        if (taskId) await openTaskDetail(taskId);
+      }));
+    } catch (error) {
+      if (current !== requestId || !body.isConnected || !formDialog.open) return;
+      stage.replaceChildren(executionGuide(employee)); formError(box, error);
+    }
   }
-  const done = button(t("知道了", "Done"), null); done.addEventListener("click", () => formDialog.close()); body.append(done);
+  const retry = button(t("重新读取检查", "Refresh checks"), null);
+  retry.addEventListener("click", load); body.append(retry);
+  await load();
 }
 
 function employeeRow(employee, { membership = false } = {}) {
   const lifecycle = employee.lifecycle || "active";
   const controls = el("div", { class: "employee-actions" });
   const check = button(t("检查连接", "Check connection"), null, { class: "small", icon: "refresh", attrs: { "aria-label": t(`检查 ${employee.name} 的连接`, `Check connection for ${employee.name}`) } });
-  check.addEventListener("click", async () => {
-    check.disabled = true;
-    try { await api.checkEmployee(employee.id); await refresh(); showToast(t("连接与登录状态已重新检查；执行验证保持原记录。", "Connection and sign-in were rechecked; execution verification keeps its existing record.")); }
-    catch (error) { showToast(errorText(error), true); check.disabled = false; }
-  });
-  const guide = button(t("接入指引", "Connection guide"), null, { class: "small" });
-  guide.addEventListener("click", () => openConnectionGuide(employee));
-  controls.append(check, guide);
+  check.addEventListener("click", () => openConnectionGuide(employee));
+  controls.append(check);
   if (lifecycle !== "retired") {
     const change = button(lifecycle === "paused" ? t("恢复接任务", "Resume assignments") : t("暂停接任务", "Pause assignments"), null, { class: "small" });
     change.addEventListener("click", () => openLifecycleForm(employee, lifecycle === "paused" ? "active" : "paused"));
@@ -452,7 +495,7 @@ function employeeRow(employee, { membership = false } = {}) {
   const facts = el("dl", { class: "employee-facts" },
     el("div", {}, el("dt", {}, t("设备", "Device")), el("dd", {}, deviceName(employee.node_id))),
     el("div", {}, el("dt", {}, t("触发方式", "Trigger")), el("dd", {}, employee.execution_supported ? t("受管任务会话", "Managed task session") : t("仅登记，自动执行暂不支持", "Registered; automatic execution unsupported"))),
-    el("div", {}, el("dt", {}, t("原生登录", "Native sign-in")), el("dd", {}, tag(employee.auth_status || "unknown"))),
+    el("div", {}, el("dt", {}, t("原生登录 · 上次记录", "Native sign-in · Last recorded")), el("dd", {}, tag(employee.auth_status || "unknown"))),
     el("div", {}, el("dt", {}, t("执行验证", "Execution check")), el("dd", {}, verified ? t("已验证", "Verified") : t("尚未验证", "Not verified"))));
   const row = el("article", { class: "employee-row employee-registry-row", "data-employee-id": employee.id, draggable: String(!membership && lifecycle !== "retired") }, avatar(employee.name),
     el("div", { class: "employee-profile" }, el("div", { class: "employee-title" }, el("h2", { class: "employee-name" }, employee.name), tag(lifecycle)),
@@ -475,7 +518,7 @@ function employeeRow(employee, { membership = false } = {}) {
     el("div", { class: "employee-card-identity" }, el("h2", { class: "employee-name" }, employee.name), el("p", { class: "employee-kind" }, employee.kind, " · ", deviceName(employee.node_id))),
     el("span", { class: "employee-entry-type" }, connection)),
     el("div", { class: "employee-card-status" }, el("span", { class: `execution-pill ${verified ? "verified" : ""}` }, executionLabel), lifecycle !== "active" ? tag(lifecycle) : null),
-    el("p", { class: "employee-sign-in" }, t("原生登录", "Native sign-in"), " · ", statusLabels[employee.auth_status] || statusLabels.unknown),
+    el("p", { class: "employee-sign-in" }, t("原生登录 · 上次记录", "Native sign-in · Last recorded"), " · ", statusLabels[employee.auth_status] || statusLabels.unknown),
     el("div", { class: "employee-projects" }, projects.length ? projects.map(item => el("span", { class: "employee-project-chip", title: item.name }, icon("folder"), item.name)) : el("span", { class: "muted" }, t("尚未加入项目", "No project yet"))),
     el("div", { class: "employee-card-actions" }, mailbox, !membership ? join : null), details);
   if (!membership && lifecycle !== "retired") {
@@ -1085,7 +1128,7 @@ function renderUpdateSection() {
     }
   }
   const kind = { app: t("桌面应用", "Desktop app"), wheel: t("Python 安装包", "Python package"), source: t("源码运行", "Source checkout"), unknown: t("安装方式未确认", "Installation type unconfirmed") };
-  section.append(el("h3", {}, t("当前安装与操作", "Installation & next steps")), el("p", {}, kind[data.installation?.kind] || kind.unknown, " · ", data.installation?.platform || "", " / ", data.installation?.architecture || ""));
+  section.append(el("h3", {}, t("当前安装与操作", "Installation & next steps")), el("p", {}, kind[data.installation?.kind] || kind.unknown, " · ", ({ darwin: "macOS", Darwin: "macOS", win32: "Windows", linux: "Linux" })[data.installation?.platform] || data.installation?.platform || "", " / ", data.installation?.architecture || ""));
   const instructions = data.installation?.instructions || [];
   if (instructions.length) section.append(el("ol", {}, instructions.map(item => el("li", {}, english ? item.en || item.zh : item.zh || item.en))));
   if (data.installation?.home) section.append(el("p", { class: "update-location" }, t("数据目录", "Data directory"), " · ", el("code", {}, data.installation.home)));
@@ -1572,7 +1615,7 @@ function openTaskForm() {
   const write = el("input", { type: "radio", name: "permission", value: "workspace-write" });
   const permissions = el("fieldset", { class: "radio-group" }, el("legend", { class: "sr-only" }, t("任务权限", "Task permissions")),
     el("label", { class: "radio-choice" }, readOnly, el("div", {}, el("strong", {}, t("只读资料", "Read-only")), el("p", {}, t("阅读与分析项目，不修改文件。", "Read and analyze the project without editing files.")))),
-    el("label", { class: "radio-choice" }, write, el("div", {}, el("strong", {}, t("可修改项目文件", "Project write access")), el("p", {}, t("允许在这个项目中完成编辑工作，额外权限仍需确认。", "Allow edits in this project. Additional permissions still need approval.")))));
+    el("label", { class: "radio-choice" }, write, el("div", {}, el("strong", {}, t("可修改项目文件", "Project write access")), el("p", {}, t("在独立 Git 工作区编辑。原仓库需有提交且干净（含未跟踪文件）；验收不会自动合入。工作区不是系统安全沙箱。", "Edit in an independent Git worktree. The repository must have a commit and be clean, including untracked files. Acceptance does not apply changes. A worktree is not an OS sandbox.")))));
   const box = errorBox();
   const form = el("form", {}, formField(t("任务名称", "Task title"), title), formField(t("交给谁", "Assign to"), assignee), el("div", { class: "form-field" }, el("label", { for: model.id }, t("模型（可选）", "Model (optional)")), model, modelHint), formField(t("工作说明", "Instructions"), prompt), el("div", { class: "form-field" }, el("span", { class: "field-hint" }, t("这次任务的权限", "Permissions for this task")), permissions), box);
   const end = footer(t("派发任务", "Assign task"));
@@ -1581,8 +1624,10 @@ function openTaskForm() {
   const canAssign = () => isRemote() || Boolean(state.data.runtime?.installed && state.data.runtime?.node_available);
   const updateRuntime = () => {
     if (!formDialog.open || !body.isConnected) return;
+    write.disabled = isRemote();
+    if (write.disabled) readOnly.checked = true;
     end.submit.disabled = !canAssign() || Boolean(end.submit.dataset.loading);
-    if (isRemote()) runtimeBox.replaceChildren(el("p", { class: "field-hint" }, t("这项工作在员工所在设备执行，不需要准备主控的执行环境。远端是否能执行将在任务状态中确认。", "Work runs on the employee's device, without setting up execution on the coordinator. The task status will confirm whether remote execution succeeds.")));
+    if (isRemote()) runtimeBox.replaceChildren(el("p", { class: "field-hint" }, t("这项工作在员工所在设备执行。远端暂仅支持只读任务，尚不支持独立修改工作区和合入。", "Work runs on the employee's device. Remote tasks currently support read-only work; isolated editing and applying changes are unavailable.")));
     else runtimeBox.replaceChildren(runtimeNotice({ force: true }) || el("p", { class: "field-hint" }, t("本机执行环境已准备好。", "Local execution environment is ready.")));
   };
   state.taskFormUpdate = updateRuntime;
@@ -1675,14 +1720,15 @@ async function loadTaskDetail({ silent = false } = {}) {
   const taskId = state.detailTaskId;
   const requestId = ++state.detailRequest;
   try {
-    const result = await api.taskDetail(taskId);
+    const [result, deliveryResult] = await Promise.all([api.taskDetail(taskId), api.taskDelivery(taskId).catch(error => ({ load_error: errorText(error) }))]);
+    result.delivery = deliveryResult.delivery || deliveryResult;
     if (requestId !== state.detailRequest || taskId !== state.detailTaskId || !detailDialog.open) return;
     if (!result.task || !Array.isArray(result.events) || !Array.isArray(result.permissions)) throw new ApiError("invalid_response");
     state.detailError = "";
     const fingerprint = JSON.stringify(result);
     if (silent && fingerprint === state.detailFingerprint) return;
     // Do not interrupt a human writing review notes with a polling refresh.
-    if (silent && detailContent.contains(document.activeElement) && document.activeElement.tagName === "TEXTAREA") return;
+    if (silent && detailContent.contains(document.activeElement) && ["TEXTAREA", "INPUT"].includes(document.activeElement.tagName)) return;
     state.detailFingerprint = fingerprint;
     renderTaskDetail(result);
   } catch (error) {
@@ -1700,7 +1746,36 @@ async function loadTaskDetail({ silent = false } = {}) {
     detailContent.replaceChildren(el("div", { class: "detail-content" }, el("h2", { id: "detail-dialog-title" }, t("无法读取任务", "Could not load this task")), el("p", { class: "device-info" }, errorText(error)), el("div", { class: "approval-actions" }, retry, close)));
   }
 }
-function renderTaskDetail({ task, events, permissions }) {
+function deliveryPanel(task, delivery, box) {
+  const panel = el("section", { class: "detail-section delivery-panel" }, el("h3", {}, t("交付与代码变更", "Delivery & code changes")));
+  if (!delivery) { panel.append(el("p", {}, t("尚无交付记录。", "No delivery recorded yet."))); return panel; }
+  if (delivery.load_error) { panel.append(el("p", { class: "permission-expired" }, t("无法读取交付：", "Could not load delivery: "), delivery.load_error)); return panel; }
+  const workspace = delivery.workspace;
+  if (workspace) panel.append(el("dl", { class: "delivery-facts" },
+    el("dt", {}, t("原项目目录", "Original project")), el("dd", {}, el("code", {}, workspace.source_path)),
+    el("dt", {}, t("独立工作区", "Isolated workspace")), el("dd", {}, el("code", {}, workspace.path)),
+    el("dt", {}, t("起始提交", "Base commit")), el("dd", {}, el("code", {}, workspace.base_commit))));
+  else panel.append(el("p", { class: "field-hint" }, t("此任务没有独立修改工作区。", "This task has no isolated editing workspace.")));
+  if (delivery.capture_error) panel.append(el("p", { class: "permission-expired" }, t("交付捕获未完成：", "Delivery capture incomplete: "), typeof delivery.capture_error === "string" ? delivery.capture_error : delivery.capture_error.message || delivery.capture_error.code));
+  if (delivery.summary && delivery.summary !== task.result) panel.append(el("p", { class: "prose" }, delivery.summary));
+  if (delivery.files?.length) panel.append(el("ul", { class: "delivery-files" }, delivery.files.map(file => el("li", {}, el("code", {}, typeof file === "string" ? file : file.path || file.name || ""), typeof file === "object" && file.status ? ` · ${file.status}` : ""))));
+  if (delivery.diff) panel.append(el("details", { class: "operation-details" }, el("summary", {}, t("查看代码差异", "View code diff")), el("pre", { class: "delivery-diff" }, el("code", {}, delivery.diff))));
+  panel.append(el("p", { class: "field-hint" }, t("员工报告的验证结果不等于系统独立验证。", "Employee-reported verification is not independent system verification.")));
+  if (delivery.system?.tests_run === false) panel.append(el("p", { class: "field-hint" }, t("系统未独立运行测试。请查看员工的验证记录与交付内容后决定验收。", "The system did not independently run tests. Review the employee's evidence and delivery before accepting.")));
+  else if (delivery.verification?.notes) panel.append(el("p", { class: "prose" }, Array.isArray(delivery.verification.notes) ? delivery.verification.notes.join("\n") : delivery.verification.notes));
+
+  if (delivery.applied) panel.append(el("p", {}, t("代码变更已应用到原项目目录，尚不代表已提交或推送。", "Changes were applied to the original project. This does not mean they were committed or pushed.")));
+  else if (task.status === "done" && delivery.can_apply) {
+    const confirm = el("input", { type: "checkbox", id: "delivery-apply-confirm" });
+    const apply = button(t("将变更应用到原项目", "Apply changes to original project"), null, { class: "primary", disabled: true });
+    panel.append(el("label", { class: "apply-confirm" }, confirm, t("我确认将此固定交付应用到原目录；系统不会自动提交或推送。", "I confirm applying this captured delivery to the original directory. Nothing is committed or pushed automatically.")), apply);
+    confirm.addEventListener("change", () => { apply.disabled = !confirm.checked; });
+    apply.addEventListener("click", () => { if (!confirm.checked) return; submitAction(apply, box, () => api.applyDelivery(task.id), async () => { await loadTaskDetail(); await refresh({ silent: true }); }); });
+  } else if (workspace && !delivery.applied) panel.append(el("p", { class: "field-hint" }, task.status !== "done" ? t("人工验收通过后，才能另外确认合入。", "After accepting the work, you can separately confirm applying changes.") : ({ no_changes: t("此交付没有文件变更，无需合入。", "This delivery has no file changes to apply."), unsafe_or_no_workspace: t("交付未通过安全检查或没有独立工作区，不能自动合入。", "The delivery has no safe captured patch or isolated workspace; automatic application is unavailable."), delivery_integrity_error: t("交付校验失败，不能合入。", "Delivery integrity validation failed. Changes cannot be applied.") })[delivery.apply_blocked_reason] || t("当前交付不能自动应用，请检查基线和原仓库状态。", "This delivery cannot be applied automatically. Check the base commit and original repository state.")));
+  return panel;
+}
+
+function renderTaskDetail({ task, events, permissions, delivery, links = [] }) {
   const close = el("button", { class: "icon-button", type: "button", "aria-label": t("关闭任务详情", "Close task details") }, icon("close"));
   close.addEventListener("click", () => detailDialog.close());
   const top = el("div", { class: "detail-top" }, el("div", { class: "dialog-heading" }, el("h2", { id: "detail-dialog-title" }, t("任务详情", "Task details")), close), el("h3", { class: "detail-title" }, task.title), el("div", { class: "detail-meta" }, tag(task.status), el("span", {}, employeeName(task.assignee_id)), el("span", {}, task.model || t("复用员工模型设置", "Employee model settings")), el("span", {}, formatDate(task.created_at, true))));
@@ -1735,6 +1810,11 @@ function renderTaskDetail({ task, events, permissions }) {
       !expired ? el("div", { class: "approval-actions" }, allow, deny) : null));
   }
   content.append(el("section", { class: "detail-section" }, el("h3", {}, t("工作说明", "Instructions")), el("p", { class: "prose" }, task.prompt || t("没有工作说明。", "No instructions recorded."))));
+  content.append(deliveryPanel(task, delivery, box));
+  if (links.length) content.append(el("section", { class: "detail-section" }, el("h3", {}, t("关联任务", "Related tasks")), links.map(link => {
+    const control = button(`${link.direction === "parent" ? t("上一轮", "Previous task") : t("后续任务", "Follow-up task")} · ${link.title || link.task_id}`, null, { class: "text-button" });
+    control.addEventListener("click", () => openTaskDetail(link.task_id)); return control;
+  })));
   if (task.result) content.append(el("section", { class: "detail-section" }, el("h3", {}, t("员工交付", "Employee output")), el("div", { class: "result-block" }, el("p", { class: "prose" }, typeof task.result === "string" ? task.result : JSON.stringify(task.result, null, 2)))));
   if (task.error) content.append(el("section", { class: "detail-section" }, el("h3", {}, t("需要处理的问题", "Issue to resolve")), el("p", { class: "prose" }, typeof task.error === "string" ? task.error : task.error.message || JSON.stringify(task.error))));
   if (task.error?.code === "MODEL_UNSUPPORTED") content.append(el("p", { class: "field-hint" }, t("这个模型不适用于员工当前的登录方式。新建任务时，从模型列表选择服务实际提供的模型；原任务保留为失败，不会自动换模型重跑。", "This model is not supported by the employee's current sign-in method. Create a new task and select a model advertised by the service. The failed task is retained and is not automatically retried with another model.")));
@@ -1748,8 +1828,17 @@ function renderTaskDetail({ task, events, permissions }) {
       showToast(decision === "accept" ? t("任务已通过验收。", "Task accepted.") : t("任务已退回，后续状态以任务记录为准。", "Task returned. Check the task record for its next status."));
       await loadTaskDetail(); await refresh({ silent: true });
     });
-    accept.addEventListener("click", () => review(accept, "accept")); reject.addEventListener("click", () => review(reject, "reject"));
-    content.append(el("section", { class: "review-panel" }, el("h3", {}, t("成果已交付，等你验收", "The work is ready for your review")), el("p", {}, t("通过后才会记为已完成。需要补充时可以退回并写明要求。", "The task is complete only after you accept it. Return it with clear follow-up instructions if needed.")), note, el("div", { class: "approval-actions" }, accept, reject)));
+    accept.addEventListener("click", () => review(accept, "accept"));
+    reject.addEventListener("click", () => {
+      if (!note.value.trim()) { formError(box, new ApiError(t("请写明还需要补充什么。", "Describe what needs to be changed."))); note.focus(); return; }
+      submitAction(reject, box, () => api.followUpTask(task.id, note.value.trim()), async result => {
+        showToast(t("原任务已退回，后续任务保留上一轮交付与修改要求。", "Work returned. The follow-up retains the previous delivery and your instructions."));
+        await refresh({ silent: true });
+        const nextId = result.task?.id || result.task_id;
+        if (nextId) await openTaskDetail(nextId); else await loadTaskDetail();
+      });
+    });
+    content.append(el("section", { class: "review-panel" }, el("h3", {}, t("成果已交付，等你验收", "The work is ready for your review")), el("p", {}, t("通过验收不会合入代码。退回时请写明要求，系统会创建保留上下文的后续任务。", "Acceptance does not apply code changes. Returning work requires instructions and creates a follow-up task with context.")), note, el("div", { class: "approval-actions" }, accept, reject)));
   }
   const timelineEvents = events.filter((event) => event.payload?.event?.type !== "text_delta");
   content.append(box, el("section", { class: "detail-section" }, el("h3", {}, t("工作时间线", "Work timeline")), timelineEvents.length ? el("ol", { class: "timeline" }, timelineEvents.map((event) => {

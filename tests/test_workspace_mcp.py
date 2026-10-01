@@ -79,6 +79,7 @@ def test_project_mcp_context_message_wakes_colleague(tmp_path, monkeypatch):
                 "project_resource_versions",
                 "project_resource_propose",
                 "project_code_search",
+                "project_delivery",
                 "project_note",
                 "team_message",
                 "project_message",

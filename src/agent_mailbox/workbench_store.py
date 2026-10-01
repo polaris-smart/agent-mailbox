@@ -31,7 +31,7 @@ class WorkbenchError(Exception):
 ACTIVE = frozenset({"starting", "running", "waiting_approval"})
 FINISH = frozenset({"review", "failed", "cancelled", "interrupted"})
 MAX_TEXT = 1024 * 1024
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 EMPLOYEE_KINDS = frozenset(
     {
         "codex",
@@ -237,6 +237,11 @@ class WorkbenchStore:
                     from .workbench_resources import RESOURCE_SCHEMA
 
                     for statement in RESOURCE_SCHEMA:
+                        db.execute(statement)
+                    from .workbench_onboarding import ONBOARDING_SCHEMA
+                    from .workbench_workspaces import WORKSPACE_SCHEMA
+
+                    for statement in (*ONBOARDING_SCHEMA, *WORKSPACE_SCHEMA):
                         db.execute(statement)
                     columns = {row[1] for row in db.execute("PRAGMA table_info(devices)")}
                     if "last_seen" not in columns:
@@ -861,6 +866,11 @@ class WorkbenchStore:
             raise WorkbenchError(
                 "ADAPTER_UNSUPPORTED", "已登记此员工连接，但当前还没有可执行任务的适配器。"
             )
+        if permission_mode == "workspace-write" and employee["node_id"] != self.local_node()["id"]:
+            raise WorkbenchError(
+                "WORKSPACE_REMOTE_UNSUPPORTED",
+                "远端修改任务尚未支持独立工作区；请使用只读任务或在本机执行修改。",
+            )
         title, prompt = self._scrub(db, title), self._scrub(db, prompt)
         task_id, timestamp = _id("task"), _now()
         db.execute(
@@ -1154,6 +1164,17 @@ class WorkbenchStore:
             ).fetchone()
             if row is None:
                 return None
+            if row["permission_mode"] == "workspace-write" and node_id != self.local_node()["id"]:
+                error = {
+                    "code": "WORKSPACE_REMOTE_UNSUPPORTED",
+                    "message": "远端修改任务尚未支持独立工作区，请改为只读或本机修改任务。",
+                }
+                db.execute(
+                    "UPDATE tasks SET status='failed',error=?,updated_at=? WHERE id=?",
+                    (_json(error), _now(), row["id"]),
+                )
+                self._event(db, row["id"], "failed", error["message"], {"error": error})
+                return None
             db.execute(
                 "UPDATE tasks SET status='starting',updated_at=? WHERE id=?", (_now(), row["id"])
             )
@@ -1184,6 +1205,14 @@ class WorkbenchStore:
                     "task": task,
                     "events": [self._entity(r) for r in events],
                     "permissions": [self._entity(r) for r in permissions],
+                    "links": [
+                        dict(r)
+                        for r in db.execute(
+                            "SELECT t.id AS task_id,t.title,t.status,l.relation,'parent' AS direction FROM task_links l JOIN tasks t ON t.id=l.parent_task_id WHERE l.task_id=? "
+                            "UNION ALL SELECT t.id AS task_id,t.title,t.status,l.relation,'child' AS direction FROM task_links l JOIN tasks t ON t.id=l.task_id WHERE l.parent_task_id=?",
+                            (task_id, task_id),
+                        )
+                    ],
                 },
             )
 
@@ -1261,6 +1290,20 @@ class WorkbenchStore:
             raise WorkbenchError("invalid_state", "这次执行已结束或尚未开始。")
         if task["cancel_requested"] and status in {"review", "failed"}:
             status = "cancelled"
+        probe = db.execute("SELECT * FROM employee_probes WHERE task_id=?", (task_id,)).fetchone()
+        if probe is not None and status == "review":
+            employee = self._required(db, "employees", task["assignee_id"])
+            if not (
+                probe["context_seen"]
+                and probe["note_seen"]
+                and employee["lifecycle"] == "active"
+                and self._membership(db, employee["id"], task["project_id"])
+            ):
+                status = "failed"
+                error = {
+                    "code": "PROBE_INCOMPLETE",
+                    "message": "模型已结束，但绑定项目的上下文读取与验证回执未全部完成。",
+                }
         if status == "review" and task["status"] == "running" and error is None:
             db.execute(
                 "UPDATE employees SET execution_verified=1 WHERE id=?", (task["assignee_id"],)
@@ -1351,6 +1394,52 @@ class WorkbenchStore:
                 payload={"decision": decision, "run_id": task["run_id"]},
             )
             return self._entity(self._required(db, "tasks", task_id))
+
+    def follow_up_task(self, task_id: str, note: str) -> dict:
+        note = _text(note, "补充要求", 10000).strip()
+        with self._transaction() as db:
+            parent = self._required(db, "tasks", task_id)
+            if parent["status"] != "review":
+                raise WorkbenchError("invalid_state", "只有待验收任务可以退回并创建后续任务。")
+            if db.execute("SELECT paused FROM update_settings WHERE id=1").fetchone()[0]:
+                raise WorkbenchError(
+                    "UPDATE_PAUSED", "更新准备期间暂停创建补充任务，请先恢复接单。"
+                )
+            prompt = f"Follow up task {task_id}. Human follow-up requirements:\n{note}\nOriginal request excerpt:\n{parent['prompt'][:20000]}\nPrevious reported result excerpt:\n{parent['result'][:20000]}\nRead the full fixed delivery with project_delivery(task_id='{task_id}'). Use the inherited isolated workspace for edits when provided. Delivery still requires human acceptance."
+            task = self._create_task(
+                db,
+                parent["project_id"],
+                "补充 / Follow-up: " + parent["title"][:260],
+                prompt[: MAX_TEXT // 2],
+                parent["assignee_id"],
+                parent["permission_mode"],
+                parent["model"],
+            )
+            db.execute(
+                "INSERT INTO task_links(task_id,parent_task_id,relation) VALUES(?,?,'follow_up')",
+                (task["id"], task_id),
+            )
+            db.execute(
+                "UPDATE tasks SET status='failed',error=?,updated_at=? WHERE id=?",
+                (_json({"code": "REVIEW_REJECTED", "message": note}), _now(), task_id),
+            )
+            self._event(
+                db,
+                task_id,
+                "reviewed",
+                note,
+                {"decision": "reject", "follow_up_task_id": task["id"]},
+            )
+            self._governance(
+                db,
+                "task_reviewed",
+                project_id=parent["project_id"],
+                task_id=task_id,
+                employee_id=parent["assignee_id"],
+                reason=note,
+                payload={"decision": "reject", "follow_up_task_id": task["id"]},
+            )
+            return {"task": task, "parent_task": self._entity(self._required(db, "tasks", task_id))}
 
     def cancel_task(self, task_id: str) -> dict:
         with self._transaction() as db:

@@ -8,7 +8,8 @@ from pathlib import Path
 
 from .workbench_execution_resources import execution_project_context
 from .workbench_runtime import BridgeExecution, context_prompt, workspace_server_command
-from .workbench_store import WorkbenchStore
+from .workbench_store import WorkbenchError, WorkbenchStore
+from .workbench_workspaces import capture_delivery, prepare_workspace
 
 
 class WorkbenchEngine:
@@ -79,6 +80,7 @@ class WorkbenchEngine:
             project = next(p for p in snapshot["projects"] if p["id"] == task["project_id"])
             employee = next(e for e in snapshot["employees"] if e["id"] == task["assignee_id"])
             task = {**task, "kind": employee["kind"]}
+            project = prepare_workspace(self.store, task, project)
             if self.execution.command is None:
                 task["prompt"] = context_prompt(
                     task,
@@ -172,9 +174,17 @@ class WorkbenchEngine:
             status = {"completed": "review", "cancelled": "cancelled"}.get(
                 result.get("status"), "failed"
             )
-            self.store.finish_task(
+            delivery = capture_delivery(self.store, task, project, result)
+            if delivery.get("capture_error") and status == "review":
+                status = "failed"
+                result["error"] = {
+                    "code": "DELIVERY_CAPTURE_FAILED",
+                    "message": "交付内容未能完整捕获，请查看工作区和交付详情。",
+                }
+            saved = self.store.finish_task(
                 task["id"], status, result.get("output_text", ""), result.get("error")
             )
+            status = saved["status"]
             self.store.update_employee(
                 employee["id"],
                 "available"
@@ -190,5 +200,10 @@ class WorkbenchEngine:
             )
         except Exception as exc:  # noqa: BLE001 - execution must leave a terminal state
             self.store.finish_task(
-                task["id"], "failed", error={"code": "EXECUTION_ERROR", "message": str(exc)}
+                task["id"],
+                "failed",
+                error={
+                    "code": exc.code if isinstance(exc, WorkbenchError) else "EXECUTION_ERROR",
+                    "message": str(exc),
+                },
             )
