@@ -1,6 +1,7 @@
 """Native filesystem access restrictions, not Windows chmod's read-only bit."""
 
 import os
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -135,3 +136,37 @@ def test_numeric_sid_acl_verification_has_no_builtin_admin_alias_ambiguity():
     assert not _allowed_acl(0x1004, entries[1:], owner)
     assert not _allowed_acl(0x1004, [(0, 0, 0x1F01FF, owner)], owner, directory=True)
     assert not _allowed_acl(0x1004, [(0, 0, 0x10000000, owner)], owner)
+
+
+@pytest.mark.parametrize("reject", [False, True])
+def test_sidecar_acl_verification_keeps_connection_alive_and_closes_on_failure(
+    tmp_path, monkeypatch, reject
+):
+    from agent_mailbox import workbench_store
+
+    store = workbench_store.WorkbenchStore(tmp_path / "home")
+    connections = []
+    inspected = []
+
+    def inspect(path, mode):
+        # A closed last SQLite connection may remove and recreate this filename.
+        assert connections[0].execute("SELECT 1").fetchone()[0] == 1
+        inspected.append(path)
+        if reject:
+            raise OSError("ACL verification failed")
+
+    monkeypatch.setattr(workbench_store, "private_mode", inspect)
+
+    def use_connection():
+        with store._connection() as db:
+            connections.append(db)
+            db.execute("SELECT 1")
+
+    if reject:
+        with pytest.raises(OSError, match="ACL verification failed"):
+            use_connection()
+    else:
+        use_connection()
+    assert store.db_path in inspected
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        connections[0].execute("SELECT 1")

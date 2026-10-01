@@ -385,12 +385,17 @@ class WorkbenchStore:
         except sqlite3.Error as exc:
             raise WorkbenchError("storage_error", "无法保存工作数据，请检查磁盘后重试。") from exc
         finally:
-            db.close()
-            for suffix in ("", "-wal", "-shm"):
-                try:
-                    private_mode(Path(str(self.db_path) + suffix), 0o600)
-                except FileNotFoundError:
-                    pass
+            try:
+                # Keep SQLite's sidecar handles alive through ACL verification.
+                # Closing the final connection can delete them, allowing another
+                # connection to recreate the same paths between ACL write/read.
+                for suffix in ("", "-wal", "-shm"):
+                    try:
+                        private_mode(Path(str(self.db_path) + suffix), 0o600)
+                    except FileNotFoundError:
+                        pass
+            finally:
+                db.close()
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:

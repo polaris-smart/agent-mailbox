@@ -39,6 +39,7 @@ packages = ["src/agent_mailbox"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --timeout=30"
+filterwarnings = ["error::pytest.PytestUnhandledThreadExceptionWarning"]
 
 [tool.ruff]
 line-length = 100
