@@ -79,7 +79,6 @@ def _git(path, *args, input_text=None, allowed=(0,)):
                         }
                     },
                     "GIT_CONFIG_GLOBAL": os.devnull,
-                    "GIT_CONFIG_NOSYSTEM": "1",
                     "GIT_TERMINAL_PROMPT": "0",
                     "GIT_OPTIONAL_LOCKS": "0",
                 },

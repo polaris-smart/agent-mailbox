@@ -202,3 +202,50 @@ def test_path_traversal_and_git_metadata_are_refused(setup):
     assert capture_delivery(store, task, project, {})["capture_error"]["code"] == "delivery_unsafe"
     (prepared / ".git").unlink()
     (prepared / ".git").write_text(original_git)
+
+
+def test_system_line_ending_policy_is_preserved_for_clean_source_and_apply(setup, monkeypatch):
+    import os
+
+    store, project, create, source = setup
+    system_config = source.parent / "synthetic-system.gitconfig"
+    system_config.write_text("[core]\n\tautocrlf = true\n")
+    original_run = subprocess.run
+
+    def controlled_system_git(command, *args, **kwargs):
+        if command[0] == "git":
+            # Replace only the system/global config locations in this isolated
+            # test process; product never accepts these locations from a task.
+            environment = dict(kwargs.get("env", os.environ))
+            environment["GIT_CONFIG_SYSTEM"] = str(system_config)
+            environment["GIT_CONFIG_GLOBAL"] = os.devnull
+            environment["GIT_OPTIONAL_LOCKS"] = "0"
+            kwargs["env"] = environment
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", controlled_system_git)
+    (source / "main.txt").write_bytes(b"original\r\n")
+    subprocess.run(["git", "-C", str(source), "add", "main.txt"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(source), "commit", "--allow-empty", "-m", "CRLF policy baseline"],
+        check=True,
+        capture_output=True,
+    )
+    (source / "main.txt").write_bytes(b"original\r\n")
+    actual = subprocess.run(
+        ["git", "-C", str(source), "status", "--porcelain=v1"],
+        check=True,
+        capture_output=True,
+    )
+    assert actual.stdout == b""  # Native Git considers this source clean.
+    task = create()
+    workspace = Path(prepare_workspace(store, task, project)["path"])
+    assert (workspace / "main.txt").read_bytes() == b"original\r\n"
+    (workspace / "main.txt").write_bytes(b"approved\r\n")
+    delivery = capture_delivery(store, task, project, {})
+    assert delivery["capture_error"] is None
+    assert "approved" in delivery["diff"]
+    accept(store, task)
+    assert task_delivery(store, task["id"])["can_apply"]
+    apply_delivery(store, task["id"])
+    assert (source / "main.txt").read_bytes() == b"approved\r\n"

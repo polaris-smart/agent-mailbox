@@ -69,7 +69,13 @@ def test_engine_context_delivery_followup_accept_apply(fixture):
     )
     engine.execute(store.claim_task(store.local_node()["id"]))
     delivery = task_delivery(store, first["id"])
-    assert store.get_task(first["id"])["status"] == "review"
+    first_record = store.get_task(first["id"])
+    assert first_record["status"] == "review", {
+        "error": first_record.get("error"),
+        "capture_error": delivery.get("capture_error"),
+        "execution_status": delivery.get("system", {}).get("execution_status"),
+        "executed_steps": len(seen),
+    }
     assert not delivery["system"]["tests_run"]
     child = store.follow_up_task(first["id"], "Use final wording")
     assert child["parent_task"]["status"] == "failed"

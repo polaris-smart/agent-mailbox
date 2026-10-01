@@ -51,6 +51,6 @@ include = [
   "/docs/HANDOVER-CODEX.md", "/docs/archive/v07/PRD.md", "/docs/reviews/2026-09-30-v080-independence.md",
   "/docs/designs/2026-09-30-v080-independent.md", "/docs/designs/2026-09-30-connection-guidance.md", "/docs/designs/2026-09-30-employee-cards-mailboxes.md", "/docs/evidence/v080/employee-cards-mailboxes.md", "/docs/evidence/v080/connection-guidance.md", "/docs/designs/v080-packaging.md",
   "/docs/evidence/v080-independent", "/scripts/build-workbench.py", "/scripts/release-workbench.py",
-  "/scripts/RELEASE-workbench.md", "/scripts/check-package.py", "/docs/RELEASE-CHANNELS.md", "/docs/designs/2026-10-01-unified-beta4-release.md", "/docs/evidence/v080/windows-private-permissions.md", "/docs/evidence/v080/beta4-release.md", "/scripts/check-node-beta.py", "/docs/BETA-ACCEPTANCE.md", "/docs/evidence/v080/beta1.md", "/docs/evidence/v080/beta2-updates.md", "/docs/designs/2026-10-01-update-beta2.md",
+  "/scripts/RELEASE-workbench.md", "/scripts/check-package.py", "/docs/RELEASE-CHANNELS.md", "/docs/designs/2026-10-01-unified-beta4-release.md", "/docs/evidence/v080/windows-private-permissions.md", "/docs/evidence/v080/windows-runtime-fixture.md", "/docs/evidence/v080/windows-git-policy.md", "/docs/evidence/v080/beta4-release.md", "/scripts/check-node-beta.py", "/docs/BETA-ACCEPTANCE.md", "/docs/evidence/v080/beta1.md", "/docs/evidence/v080/beta2-updates.md", "/docs/designs/2026-10-01-update-beta2.md",
   "/docs/designs/2026-10-01-beta3-onboarding-delivery.md", "/docs/evidence/v080/beta3-collaboration.md",
 ]
