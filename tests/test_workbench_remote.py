@@ -521,13 +521,17 @@ def test_acknowledged_output_survives_local_cleanup_write_failure(remote, monkey
     assert failed.wait(8)
     result = await_task(owner.store, task["id"], "review")
     assert "Mapped directory:" in result["result"]
-    assert worker.outbox[task["id"]]["status"] == "review"
-    assert worker.outbox[task["id"]]["result"] == result["result"]
-    assert json.loads(worker.outbox_path.read_text())[task["id"]]["status"] == "review"
+    # Receipt retry and cleanup replace this journal under the same lock.
+    # Windows may deny reads racing the replacement; inspect a coherent state.
+    with worker.lock:
+        assert worker.outbox[task["id"]]["status"] == "review"
+        assert worker.outbox[task["id"]]["result"] == result["result"]
+        assert json.loads(worker.outbox_path.read_text())[task["id"]]["status"] == "review"
     owner.store.review_task(task["id"], "accept")
     fail_cleanup.clear()
     worker._flush_receipts()
-    assert worker.outbox == {}
-    assert json.loads(worker.outbox_path.read_text()) == {}
+    with worker.lock:
+        assert worker.outbox == {}
+        assert json.loads(worker.outbox_path.read_text()) == {}
     assert owner.store.get_task(task["id"])["status"] == "done"
     assert executions == [task["id"]]

@@ -15,7 +15,7 @@ import sys
 import threading
 import urllib.error
 import urllib.request
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -229,8 +229,17 @@ def private_backup(store):
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
             os.close(fd)
             private_mode(path, 0o600)
-            with sqlite3.connect(store.db_path) as src, sqlite3.connect(path) as dst:
+            # sqlite3.Connection's context manager commits but does not close.
+            # Keep the offline snapshot self-contained: copying a WAL database
+            # also copies its journal setting, which can create unprotected
+            # transient sidecars until connections are garbage-collected.
+            with (
+                closing(sqlite3.connect(store.db_path)) as src,
+                closing(sqlite3.connect(path)) as dst,
+            ):
                 src.backup(dst)
+                if dst.execute("PRAGMA journal_mode=DELETE").fetchone()[0] != "delete":
+                    raise WorkbenchError("UPDATE_BACKUP_INVALID", "备份数据库无法转为独立文件。")
                 if (
                     dst.execute("PRAGMA quick_check").fetchone()[0] != "ok"
                     or dst.execute("PRAGMA foreign_key_check").fetchone()

@@ -166,6 +166,7 @@ def test_backup_restores_private_identity_and_excludes_runtime(setup, tmp_path):
     assert not (backup / "workbench/runtime").exists()
     assert not (backup / "workbench/instance.json").exists()
     assert private_access(backup / "manifest.json", 0o600)
+    assert not list((backup / "workbench").glob("state.db-*"))
     restored_root = tmp_path / "restored"
     shutil.copytree(backup / "workbench", restored_root / "workbench")
     restored = WorkbenchStore(restored_root)
@@ -174,7 +175,12 @@ def test_backup_restores_private_identity_and_excludes_runtime(setup, tmp_path):
     with sqlite3.connect(restored.db_path) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert private_access(backup, 0o700)
-    assert all(private_access(p, 0o600) for p in backup.rglob("*") if p.is_file())
+    unsafe = [
+        p.relative_to(backup).as_posix()
+        for p in backup.rglob("*")
+        if p.is_file() and not private_access(p, 0o600)
+    ]
+    assert unsafe == []
 
 
 def test_backup_failure_keeps_pause_no_false_ready(setup, monkeypatch):
