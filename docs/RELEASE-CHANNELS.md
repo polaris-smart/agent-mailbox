@@ -20,7 +20,7 @@ GitHub Beta、PyPI 与平台产物必须来自**同一提交**。正式稳定版
 - **GitHub**：[v0.8.0b4 Beta 已发布](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0b4)，default main 已切换独立 v0.8。三个原生包、wheel、sdist、SHA256SUMS 和来源记录共七个文件上传完成，公开 asset digest 与本地文件全匹配。所有发行物源于 `420d136651ff8209b5a3fdc43f4b4bb985fa3c39`；后续文档提交不替换这些不可变发行物。
 - **TestPyPI**：从未发布本项目包，当前包查询返回 404，不是丢失的旧入口。以后可先上传并验证，当前不列入发行渠道。
 - **Homebrew**：从未发布自建 tap，属于以后可选新增渠道，不宣称已有配方。
-- **npm**：从未发布本项目包。无 scope 的同名 `agent-mailbox` 属于 `NoizceEra/agent-mailbox`，与本项目无关，不能修改、替换或当作安装来源。以后若新增 scoped npm，须先确认账户与 scope；`0.8.0-beta.4` 仅为同一 Beta 4 的未来 SemVer 对照，不是已部署包。
+- **npm 配套插件**：[dsh-agent-mailbox](https://www.npmjs.com/package/dsh-agent-mailbox) 已有 `0.1.0`–`0.1.2`，维护者 `polaris-smart`，源码为 [polaris-smart/dsh-agent-mailbox](https://github.com/polaris-smart/dsh-agent-mailbox)。它是 DeepSeek Harness 插件，提供 v0.7 的八个 `mailbox_*` 工具，不是工作台安装包；尚未适配或发布 v0.8。继续使用原包名即可，无需新建 scope。无 scope 的 `agent-mailbox` 属于 `NoizceEra/agent-mailbox`，不能作为本项目安装来源。
 
 安装请使用[上手指南](GITHUB-QUICKSTART.md)中的专用 venv 与独立 `--home`，或下载对应原生包。不提供 `brew` 或 `npm` Beta 4 安装命令。
 
@@ -36,7 +36,7 @@ GitHub Beta、PyPI 与平台产物必须来自**同一提交**。正式稳定版
 6. **发行身份**：macOS App 尚无 Apple Developer ID 签名、公证。明确实际发行方式、系统提示与产物来源；校验和不能代替发行身份验证。
 7. **文档同步**：实际发布后默认分支和 PyPI 安装入口切换到同一版本。中英文步骤能复现，不残留旧命令、不要求删除数据升级。
 
-TestPyPI、Homebrew 与 npm 若未来启用，再加入相应安装、版本一致性与升级门禁；不能把渠道建议当作已部署。所有未来渠道也必须与产品版本和提交一致，不借用第三方同名包。
+TestPyPI、Homebrew 若未来启用，再加入对应门禁。已有 npm 插件升级必须先适配 v0.8 项目身份和工具接口，通过独立安装与协作测试；不能仅修改版本号。npm 的 Beta 4 对照为 `0.8.0-beta.4`，发布时使用 `--tag beta --registry=https://registry.npmjs.org`，不覆盖稳定 `latest`。本机默认 registry 为 npmmirror；2026-10-01 官方 registry 的 `npm whoami` 返回 401，现有发布凭据尚未验证可用，不改登录、不输出 token。
 
 历史失败和整改按原始提交保留；不删除失败证据，也不重建或覆盖同一版本已上传文件。
 

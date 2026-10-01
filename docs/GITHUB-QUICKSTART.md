@@ -2,7 +2,7 @@
 
 把已有 AI Agent 组成项目团队的本地工作台。默认从单机开始：发现 → 入组 → 协作 → 验收。
 
-Beta 4 `0.8.0b4` 已在 [GitHub](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0b4) 与 [PyPI](https://pypi.org/project/agent-mailbox/0.8.0b4/) 发布，发行物均来自提交 `420d136`。TestPyPI、Homebrew、npm 从未发布；同名无 scope npm 包属于其他项目。平台验证和安装边界见[发行渠道](RELEASE-CHANNELS.md)。
+Beta 4 `0.8.0b4` 已在 [GitHub](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0b4) 与 [PyPI](https://pypi.org/project/agent-mailbox/0.8.0b4/) 发布，发行物均来自提交 `420d136`。TestPyPI、Homebrew 尚无发行；已有 npm 配套插件 `dsh-agent-mailbox` 面向 v0.7，尚未适配 v0.8。无 scope 的 `agent-mailbox` 属于其他项目。平台验证和安装边界见[发行渠道](RELEASE-CHANNELS.md)。
 
 原生包和 PyPI 的安装、来源校验及保留数据升级见[安装与升级](BETA-INSTALL.md)。以下为源码入口。
 

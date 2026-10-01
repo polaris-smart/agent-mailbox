@@ -25,13 +25,13 @@ This is multi-agent collaboration with a clear human decision point. You choose 
 
 | Your computer | Native download |
 | --- | --- |
-| Apple Silicon Mac | `Agent-Mailbox-0.8.0b4-darwin-arm64.zip` |
-| Windows x64 | `Agent-Mailbox-0.8.0b4-win32-x64.zip` |
-| Linux x64 | `Agent-Mailbox-0.8.0b4-linux-x64.tar.gz` |
+| Apple Silicon Mac | [Agent-Mailbox-0.8.0b4-darwin-arm64.zip](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0b4/Agent-Mailbox-0.8.0b4-darwin-arm64.zip) |
+| Windows x64 | [Agent-Mailbox-0.8.0b4-win32-x64.zip](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0b4/Agent-Mailbox-0.8.0b4-win32-x64.zip) |
+| Linux x64 | [Agent-Mailbox-0.8.0b4-linux-x64.tar.gz](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0b4/Agent-Mailbox-0.8.0b4-linux-x64.tar.gz) |
 
 Extract the entire archive, then start **Agent Mailbox**. Native downloads include Python, Node and the locked task runtime. Keep their folders intact. macOS builds have no Developer ID signature or notarization; Windows downloads may show a reputation warning. See [installation and upgrade steps](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/BETA-INSTALL.md). Intel Mac and Windows ARM native packages are not provided by this beta.
 
-Prefer Python? Use Python 3.10+ and a dedicated virtual environment. Once the matching PyPI prerelease is available:
+Prefer Python? Use Python 3.10+ and a dedicated virtual environment. Install the published Beta 4:
 
 ```sh
 python3 -m venv .venv
@@ -40,7 +40,7 @@ python -m pip install 'agent-mailbox==0.8.0b4'
 agent-mailbox --home ~/.agent-mailbox-v08
 ```
 
-On Windows use `py -m venv .venv` and `.venv\Scripts\Activate.ps1`. PyPI beta installation needs an explicit version or `--pre`; an ordinary stable install does not select a beta. Python/source task execution needs Node.js 22.13+ and **Prepare runtime** in the UI. Our existing package is [PyPI agent-mailbox](https://pypi.org/project/agent-mailbox/). We have no TestPyPI, Homebrew or npm distribution; the unscoped npm name belongs to another project.
+On Windows use `py -m venv .venv` and `.venv\Scripts\Activate.ps1`. PyPI beta installation needs an explicit version or `--pre`; an ordinary stable install does not select a beta. Python/source task execution needs Node.js 22.13+ and **Prepare runtime** in the UI. Our existing package is [PyPI agent-mailbox](https://pypi.org/project/agent-mailbox/). There is no TestPyPI or Homebrew distribution. The existing [dsh-agent-mailbox](https://www.npmjs.com/package/dsh-agent-mailbox) npm package is a separate DeepSeek Harness plugin for v0.7, not a v0.8 workbench installer. Its v0.8 integration is pending; the unscoped npm name `agent-mailbox` belongs to another project.
 
 Sign into Codex or Claude Code using its native login. Viewing connection checks does not run a model; starting a connection test uses native model quota. If a default model is unavailable, explicitly select a model advertised by the execution service. See the [quick start](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/GITHUB-QUICKSTART.md) for source installation and your first collaboration.
 

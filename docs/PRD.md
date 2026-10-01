@@ -97,6 +97,6 @@ dsh-devices 的产品线负责人考核、成员入组审批、派单时指定 p
 
 ## Beta 4 统一替代发行决定
 
-Human 于 2026-10-01 决定产品、仓库、Python 包和 CLI 继续叫 agent-mailbox；v0.8 替代旧软件，各平台和已启用发行渠道保持同一产品版本。本轮已确认正式包渠道只有 PyPI（账号 coolmax、维护者 polaris-smart）及 GitHub 发行入口；TestPyPI、Homebrew、npm 从未发布本项目产物。作出该决定时，v0.8.0b4 是待验收目标，尚未公开。旧数据/后台服务/MCP 配置没有自动迁移，必须与兼容 v0.8 数据保留升级区分。发布必须完成六组 CI、对应原生安装包与升级验证。详见[渠道与发布门槛](RELEASE-CHANNELS.md)。
+Human 于 2026-10-01 决定产品、仓库、Python 包和 CLI 继续叫 agent-mailbox；v0.8 替代旧软件，各平台和已启用发行渠道保持同一产品版本。本轮工作台正式包渠道为 PyPI（账号 coolmax、维护者 polaris-smart）及 GitHub；TestPyPI、Homebrew 尚无发行。2026-10-01 核验补充：已有 npm 配套插件 `dsh-agent-mailbox@0.1.2`（维护者 polaris-smart、独立同名仓库），仍使用 v0.7 八个信箱工具，尚未适配 v0.8，不能当作工作台安装入口。作出该决定时，v0.8.0b4 是待验收目标，尚未公开。旧数据/后台服务/MCP 配置没有自动迁移，必须与兼容 v0.8 数据保留升级区分。发布必须完成六组 CI、对应原生安装包与升级验证。详见[渠道与发布门槛](RELEASE-CHANNELS.md)。
 
 上述决定已在 Beta 4 发行完成：GitHub `v0.8.0b4` 与 PyPI `0.8.0b4` 均公开，七个 GitHub 文件及两份 PyPI 发行文件核对哈希通过；源提交为 `420d136651ff8209b5a3fdc43f4b4bb985fa3c39`。六组回归和三平台安装包门禁通过，Mac/Linux 每组 365 passed、4 skipped，Windows 每组 321 passed、48 skipped。独立 PyPI 安装及 Mac 保留数据升级、真实浏览器检查通过；三平台无模型检查不能代替 Windows/Linux 原生账号实机验收。发行包未提供 Developer ID/Windows 发行者签名或 macOS 公证。详细证据见 [Beta 4 发行记录](evidence/v080/beta4-release.md)。

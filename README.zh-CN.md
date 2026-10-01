@@ -25,13 +25,13 @@
 
 | 你的电脑 | 原生下载 |
 | --- | --- |
-| Apple Silicon Mac | `Agent-Mailbox-0.8.0b4-darwin-arm64.zip` |
-| Windows x64 | `Agent-Mailbox-0.8.0b4-win32-x64.zip` |
-| Linux x64 | `Agent-Mailbox-0.8.0b4-linux-x64.tar.gz` |
+| Apple Silicon Mac | [Agent-Mailbox-0.8.0b4-darwin-arm64.zip](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0b4/Agent-Mailbox-0.8.0b4-darwin-arm64.zip) |
+| Windows x64 | [Agent-Mailbox-0.8.0b4-win32-x64.zip](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0b4/Agent-Mailbox-0.8.0b4-win32-x64.zip) |
+| Linux x64 | [Agent-Mailbox-0.8.0b4-linux-x64.tar.gz](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0b4/Agent-Mailbox-0.8.0b4-linux-x64.tar.gz) |
 
 完整解压后启动 **Agent Mailbox**，不要只移动其中的可执行文件。原生包自带 Python、Node 和锁定的任务运行组件。macOS 包没有 Developer ID 签名和公证，Windows 下载可能显示信誉提示，详见[安装与升级步骤](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/BETA-INSTALL.md)。本 Beta 不提供 Intel Mac 或 Windows ARM 原生包。
 
-喜欢 Python 安装？使用 Python 3.10+ 和独立虚拟环境。在 PyPI 对应预发布版本实际可用后：
+喜欢 Python 安装？使用 Python 3.10+ 和独立虚拟环境。安装已发布的 Beta 4：
 
 ```sh
 python3 -m venv .venv
@@ -40,7 +40,7 @@ python -m pip install 'agent-mailbox==0.8.0b4'
 agent-mailbox --home ~/.agent-mailbox-v08
 ```
 
-Windows 改用 `py -m venv .venv` 和 `.venv\Scripts\Activate.ps1`。PyPI Beta 需要指定版本或 `--pre`，普通稳定版安装不会选择 Beta。Python/源码执行任务需要 Node.js 22.13+，并在页面点“准备运行环境”。已有入口为 [PyPI agent-mailbox](https://pypi.org/project/agent-mailbox/)，没有 TestPyPI、Homebrew 或 npm 发行；同名无 scope npm 包属于其他项目。
+Windows 改用 `py -m venv .venv` 和 `.venv\Scripts\Activate.ps1`。PyPI Beta 需要指定版本或 `--pre`，普通稳定版安装不会选择 Beta。Python/源码执行任务需要 Node.js 22.13+，并在页面点“准备运行环境”。已有入口为 [PyPI agent-mailbox](https://pypi.org/project/agent-mailbox/)，没有 TestPyPI 或 Homebrew 发行。已有 npm 包 [dsh-agent-mailbox](https://www.npmjs.com/package/dsh-agent-mailbox) 是独立的 v0.7 DeepSeek Harness 插件，尚待适配 v0.8，不是工作台安装入口；无 scope 的 `agent-mailbox` 属于其他项目。
 
 Codex、Claude Code 使用各自原生登录。查看接入检查不会调用模型，点击接入测试会消耗原生模型额度。如果默认模型不可用，可以明确选择执行服务提供的模型。[上手指南](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/GITHUB-QUICKSTART.md)包含源码安装和第一次协作步骤。
 

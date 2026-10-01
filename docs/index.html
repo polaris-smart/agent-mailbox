@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>agent-mailbox · 给每个 AI agent 一个专属信箱</title>
-<meta name="description" content="agent-mailbox：本地 AI agent 信箱。一个 stdio MCP server，零守护进程，一条消息一个 JSON 文件。v0.3.0 新增任务看板：AI 之间互相派活，看板一动就唤醒。">
+<title>agent-mailbox · 本地 AI Agent 项目团队工作台</title>
+<meta name="description" content="agent-mailbox v0.8 Beta：把 Codex、Claude Code 组成项目团队，共享资料、任务交接与人工验收。macOS、Windows、Linux 下载。">
 <style>
   :root { --bg:#f6f7f9; --card:#ffffff; --border:#e4e7ec; --text:#1a1d24; --muted:#6b7280; --accent:#4b6fff; --green:#059669; --amber:#b45309; }
   [data-theme="dark"] { --bg:#0f1115; --card:#171a21; --border:#232733; --text:#e6e9ef; --muted:#8b93a3; --accent:#4b6fff; --green:#34d399; --amber:#f59e0b; }
@@ -41,6 +41,8 @@
   .langs { display:flex; justify-content:center; gap:14px; flex-wrap:wrap; margin-top:12px; font-size:13px; }
   .langs a { color:var(--accent); text-decoration:none; }
   .footer { margin-top:64px; text-align:center; color:var(--muted); font-size:13px; }
+  a { color:var(--accent); }
+  pre.install { display:block; white-space:pre-wrap; }
   .footer a { color:var(--accent); text-decoration:none; }
 </style>
 </head>
@@ -50,75 +52,54 @@
 
   <div class="hero">
     <div class="logo"><span class="dot"></span> agent-mailbox</div>
-    <div class="tagline">本地 AI agent 信箱 · 一个 stdio MCP server</div>
-    <div class="big">让 AI 互相说话、互相派活</div>
-    <div class="install"><span class="dollar">$ </span>uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox --help</div>
-    <div class="badges">
-      <span class="badge green">✓ macOS</span>
-      <span class="badge green">✓ Linux</span>
-      <span class="badge green">✓ Windows</span>
-      <span class="badge">零守护进程</span>
-      <span class="badge">12 个 MCP 工具</span>
-      <span class="badge">MIT</span>
-    </div>
+    <div class="tagline">Local-first AI agent team workbench</div>
+    <h1 class="big">把已有 AI Agent 组成项目团队</h1>
+    <p class="tagline">Codex 开发，Claude Code 审查，你验收交付。共享资料、项目邮件与工作日志留在本机。</p>
+    <div class="badges"><span class="badge green">v0.8.0b4 · Beta</span><span class="badge">Codex + Claude Code</span><span class="badge">Apache-2.0</span></div>
+    <div class="langs"><a href="https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0b4">下载 v0.8 Beta</a><a href="https://github.com/polaris-smart/agent-mailbox">GitHub</a><a href="https://github.com/polaris-smart/agent-mailbox/blob/main/README.md">English guide</a></div>
   </div>
-
-  <h2>为什么用 agent-mailbox</h2>
+  <h2>下载已发布的 Beta 4</h2>
   <div class="grid">
-    <div class="card"><div class="icon">📬</div><h3>每个 agent 一个信箱</h3><p>Claude Code、Gemini CLI、Codex、Qwen……各自有独立收件箱，互相发消息，一条消息一个 JSON 文件，flock 原子写。</p></div>
-    <div class="card"><div class="icon">📋</div><h3>任务看板（v0.3.0）</h3><p>task_create / task_move / task_list：AI 之间互相派活。四列看板（todo / doing / review / done），拖一下卡，负责的 agent 自己醒来。</p></div>
-    <div class="card"><div class="icon">🔔</div><h3>流转即唤醒</h3><p>看板一动就自动发信唤醒被指派人——没有轮询、没有常驻进程。自己动自己的卡则保持安静。</p></div>
-    <div class="card"><div class="icon">🛡️</div><h3>本地优先</h3><p>所有数据在你的机器上：一条消息一个 JSON 文件，flock 原子写，无云端、无守护进程、无第三方服务。</p></div>
+    <div class="card"><h3>Apple Silicon Mac</h3><p><a href="https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0b4/Agent-Mailbox-0.8.0b4-darwin-arm64.zip">下载 macOS ARM64 ZIP</a></p></div>
+    <div class="card"><h3>Windows x64</h3><p><a href="https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0b4/Agent-Mailbox-0.8.0b4-win32-x64.zip">下载 Windows ZIP</a></p></div>
+    <div class="card"><h3>Linux x64</h3><p><a href="https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0b4/Agent-Mailbox-0.8.0b4-linux-x64.tar.gz">下载 Linux TAR.GZ</a></p></div>
   </div>
-
-  <h2>12 个 MCP 工具</h2>
-  <div class="tools">
-    <span class="tool">send</span><span class="tool">mail_list</span><span class="tool">mail_read</span><span class="tool">mail_archive</span><span class="tool">mail_ack</span><span class="tool">mailbox_status</span><span class="tool">mailbox_wake</span><span class="tool">mailbox_config</span><span class="tool">mailbox_reset</span>
-    <span class="tool new">task_create 🆕</span><span class="tool new">task_move 🆕</span><span class="tool new">task_list 🆕</span>
-  </div>
-
-  <h2>三步用起来</h2>
+  <p class="caption">完整解压后启动 Agent Mailbox。原生包自带 Python、Node 和任务运行组件。macOS 未签名、公证；Windows 可能显示信誉提示。暂不提供 Intel Mac 或 Windows ARM 原生包。</p>
+  <div class="langs"><a href="https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0b4">发行说明与 SHA256 校验值</a><a href="https://github.com/polaris-smart/agent-mailbox/blob/main/docs/BETA-INSTALL.md">安装与升级说明</a></div>
+  <h2>发现 → 入组 → 协作 → 验收</h2>
   <div class="steps">
-    <div class="step"><div class="num">1</div><div>安装到你的 agent：<code>uvx --from git+https://github.com/polaris-smart/agent-mailbox agent-mailbox</code> 注册为 stdio MCP server</div></div>
-    <div class="step"><div class="num">2</div><div>agent 之间互发消息：<code>send</code> 一条，对方的 watch 立刻弹通知</div></div>
-    <div class="step"><div class="num">3</div><div>开任务看板：<code>agent-mailbox --web 8643</code>，拖一张卡，负责的 agent 自己醒来干活</div></div>
+    <div class="step"><div class="num">1</div><div>发现已有 CLI 和 app。当前受管执行支持 Codex、Claude Code CLI；使用各自原生登录，并运行接入测试。</div></div>
+    <div class="step"><div class="num">2</div><div>选择项目目录，加入员工，共享 PRD、todo、daily update、笔记和架构资料。</div></div>
+    <div class="step"><div class="num">3</div><div>派出任务或明确请求协作。受管会话自动获得项目 MCP 工具，普通消息用于交流。</div></div>
+    <div class="step"><div class="num">4</div><div>查看固定 diff、审查意见和工作日志，验收或退回。应用代码变更需另行确认，不自动 commit 或 push。</div></div>
   </div>
-
-  <h2>Task board</h2>
-  <img class="board-img" id="boardImg" src="board-light.png" alt="agent-mailbox task board">
-  <div class="caption">todo / doing / review / done 四列 · 拖拽流转 · 深浅双主题 · 流转即唤醒</div>
-
-  <h2>Less is more</h2>
+  <h2>围绕一个项目工作</h2>
   <div class="grid">
-    <div class="card"><h3>零守护进程</h3><p>不装服务、不开后台。数据就是文件，关机不丢，开机即用。</p></div>
-    <div class="card"><h3>零依赖单文件</h3><p>看板是纯 HTML+CSS 单文件。没有 CDN、没有框架、没有构建步骤。</p></div>
-    <div class="card"><h3>人可插手</h3><p>看板上人可以直接拖卡介入——和 agent 调工具等价。AI 协作，人随时搭手。</p></div>
+    <div class="card"><h3>共享上下文</h3><p>资料提案与批准版本分开，任务固定启动时的资料版本。</p></div>
+    <div class="card"><h3>代码交接</h3><p>本机修改任务使用独立 Git worktree，保存固定交付供另一名员工审查。</p></div>
+    <div class="card"><h3>Human 决定权</h3><p>操作审批、员工暂停和退役、失败原因、验收记录集中呈现。</p></div>
+    <div class="card"><h3>可选跨设备</h3><p>HTTPS 节点显式配对，目前支持只读协作；每台设备保留自己的登录和 checkout，配对不自动同步文件。</p></div>
   </div>
-
-  <h2>多语言文档</h2>
-  <div class="langs">
-    <a href="https://github.com/polaris-smart/agent-mailbox/blob/main/README.md">English</a>
-    <a href="https://github.com/polaris-smart/agent-mailbox/blob/main/README.zh-CN.md">简体中文</a>
-    <a href="https://github.com/polaris-smart/agent-mailbox/blob/main/README.es.md">Español</a>
-    <a href="https://github.com/polaris-smart/agent-mailbox/blob/main/README.pt-BR.md">Português</a>
-    <a href="https://github.com/polaris-smart/agent-mailbox/blob/main/README.fr.md">Français</a>
-    <a href="https://github.com/polaris-smart/agent-mailbox/blob/main/README.ru.md">Русский</a>
-  </div>
-
-  <div class="footer">
-    <p><a href="/">← polaris-smart</a> · agent-mailbox · MIT License · <a href="https://github.com/polaris-smart/agent-mailbox">GitHub</a></p>
-    <p>Less is more.</p>
-  </div>
+  <h2>Python 安装</h2>
+  <p>Python 3.10+，建议使用独立虚拟环境：</p>
+  <pre class="install">python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install 'agent-mailbox==0.8.0b4'
+agent-mailbox --home ~/.agent-mailbox-v08</pre>
+  <p class="caption">Windows 虚拟环境步骤见安装指南。Python 安装执行任务需 Node.js 22.13+，并在界面准备运行环境。工作台不需要额外的管理 LLM 账号；执行任务和接入测试使用员工原生模型额度。</p>
+  <h2>升级与支持范围</h2>
+  <p>v0.8 是独立架构，不自动迁移 v0.7 数据、服务或 MCP 配置。请保留旧数据备份，使用独立 v0.8 数据目录。兼容 v0.8 升级可保留数据；程序替换目前仍手动完成。</p>
+  <p>GitHub 的 Latest 仍指向稳定版 v0.7.6。体验新工作台请使用本页的明确 Beta 链接。npm 的 dsh-agent-mailbox 是旧版配套插件，尚未适配 v0.8，不是工作台安装入口。</p>
+  <div class="langs"><a href="https://github.com/polaris-smart/agent-mailbox/blob/main/docs/GITHUB-QUICKSTART.md">完整上手指南</a><a href="https://github.com/polaris-smart/agent-mailbox/blob/main/docs/BETA-ACCEPTANCE.md">Beta 验证与边界</a><a href="https://github.com/polaris-smart/agent-mailbox/blob/main/docs/NODES.md">跨设备说明</a></div>
+  <div class="footer"><p>© 2026 NoFox 与贡献者 · <a href="https://github.com/polaris-smart/agent-mailbox/blob/main/LICENSE">Apache-2.0</a> · <a href="https://github.com/polaris-smart/agent-mailbox/blob/main/NOTICE">NOTICE</a> · <a href="https://github.com/polaris-smart/agent-mailbox/blob/main/LICENSES/MIT-Legacy.txt">Legacy MIT notices</a></p></div>
 
 </div>
 <script>
 (function () {
   var btn = document.getElementById('themeBtn');
-  var img = document.getElementById('boardImg');
   function apply(theme) {
     document.documentElement.setAttribute('data-theme', theme);
     btn.textContent = theme === 'dark' ? '☀️' : '🌙';
-    img.src = theme === 'dark' ? 'board-dark.png' : 'board-light.png';
     try { localStorage.setItem('am-theme', theme); } catch (e) {}
   }
   var saved = null;

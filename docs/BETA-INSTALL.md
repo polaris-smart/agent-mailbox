@@ -1,6 +1,6 @@
 # Beta 4 安装与升级 / Install and upgrade
 
-目标版本 `0.8.0b4`。下载入口是 [polaris-smart/agent-mailbox 的 GitHub Release](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0b4)，Python 入口是 [PyPI agent-mailbox](https://pypi.org/project/agent-mailbox/)。文件实际上传后才能下载；发布前请使用[源码指南](GITHUB-QUICKSTART.md)。没有 Homebrew、TestPyPI 或 npm 安装入口。
+目标版本 `0.8.0b4`。下载入口是 [polaris-smart/agent-mailbox 的 GitHub Release](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0b4)，Python 入口是 [PyPI agent-mailbox](https://pypi.org/project/agent-mailbox/)。文件实际上传后才能下载；发布前请使用[源码指南](GITHUB-QUICKSTART.md)。没有 Homebrew、TestPyPI 或 npm 工作台安装入口；已有 `dsh-agent-mailbox` npm 包是 v0.7 的 DeepSeek Harness 插件，尚未适配 v0.8。
 
 ## 原生包 / Native package
 

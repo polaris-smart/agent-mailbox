@@ -1,6 +1,6 @@
 # agent-mailbox v0.8 维护入口
 
-当前公开 Beta 为 `0.8.0b4`，GitHub/PyPI 发行物源于 `420d136`，来源与完整验证见 [Beta 4 记录](evidence/v080/beta4-release.md)。后续文档提交不改写该 tag 或已上传文件；程序变更使用新版本并重新通过门禁。只有 GitHub 与 PyPI 两个发行渠道，没有既有 TestPyPI、Homebrew 或 npm 入口。
+当前公开 Beta 为 `0.8.0b4`，GitHub/PyPI 发行物源于 `420d136`，来源与完整验证见 [Beta 4 记录](evidence/v080/beta4-release.md)。后续文档提交不改写该 tag 或已上传文件；程序变更使用新版本并重新通过门禁。工作台 Beta 4 只有 GitHub 与 PyPI 两个发行渠道，没有既有 TestPyPI、Homebrew 入口。已有 npm 配套插件 `dsh-agent-mailbox@0.1.2`，源码在独立仓库，仍调用 v0.7 工具；不能仅改版本号当作 v0.8 安装包。见[发行渠道](RELEASE-CHANNELS.md)。
 
 先读 [PRD](PRD.md)、[独立实现决定](designs/2026-09-30-v080-independent.md) 和 [审查记录](reviews/2026-09-30-v080-independence.md)。员工卡片及信箱见 [设计](designs/2026-09-30-employee-cards-mailboxes.md) 和 [验证](evidence/v080/employee-cards-mailboxes.md)。当前接入与 NoFox / Apache-2.0 署名见 [设计](designs/2026-09-30-connection-guidance.md) 和 [验证](evidence/v080/connection-guidance.md)。本轮员工与项目组见 [设计](designs/2026-09-30-project-groups.md) 和 [验证](evidence/v080/project-groups.md)。v0.8 完全独立，不继续承载 v0.7 运行路径；旧 Git 历史和 docs/archive/v07 只供参考。
 
