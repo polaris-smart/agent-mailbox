@@ -32,6 +32,9 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - run: ruff check src tests
       - run: ruff format --check src tests
+      - name: Verify Windows TCP and pinned TLS claim cancellation
+        if: runner.os == 'Windows'
+        run: python -m pytest tests/test_workbench_fleet.py -k "test_stop_interrupts_claim_response_after_http_connection_releases_socket or test_stop_interrupts_real_tls_close_response_and_preserves_control" -v --tb=short
       - name: Run full regression and preserve diagnostics
         shell: bash
         run: |

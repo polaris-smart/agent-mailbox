@@ -971,6 +971,7 @@ def test_stop_interrupts_claim_response_after_http_connection_releases_socket():
     try:
         assert ready.wait(2)
         client.interrupt_claim()
+        assert reading.fileno() == -1
         assert finished.wait(2)
         worker.join(timeout=2)
         assert not worker.is_alive()
@@ -1039,7 +1040,9 @@ def test_stop_interrupts_real_tls_close_response_and_preserves_control(
     worker.start()
     try:
         assert reading.wait(2)
+        transport = client.claim_socket
         client.interrupt_claim()
+        assert transport.fileno() == -1
         assert finished.wait(2)
         worker.join(timeout=2)
         assert not worker.is_alive()

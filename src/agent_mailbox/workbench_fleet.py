@@ -8,6 +8,7 @@ trusted channel alongside the invitation.
 
 from __future__ import annotations
 
+import _socket
 import hashlib
 import hmac
 import http.client
@@ -1089,6 +1090,14 @@ class FleetClient:
                     transport.shutdown(socket.SHUT_RDWR)
                 except OSError:
                     pass
+                # socket.close() defers the OS close while HTTPResponse's
+                # makefile retains an I/O reference. Winsock shutdown alone
+                # need not interrupt an already waiting receive, and SSL's
+                # shutdown rejects a socket marked closed by HTTPConnection.
+                # Close through the same native operation as socket._real_close:
+                # it invalidates this object's fd, so later response/connection
+                # cleanup cannot close a subsequently reused descriptor.
+                _socket.socket.close(transport)
 
     def device(self):
         return self._request("GET", "/v1/device")
