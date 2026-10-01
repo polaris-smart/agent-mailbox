@@ -518,7 +518,9 @@ def test_acknowledged_output_survives_local_cleanup_write_failure(remote, monkey
     monkeypatch.setattr("agent_mailbox.workbench_remote._write_private", write)
     monkeypatch.setattr(worker.execution, "run", execution)
     task = dispatch(remote, "complete")
-    assert failed.wait(8)
+    # This event follows execution and an HTTPS acknowledgement (whose request
+    # budget is 10 seconds), rather than measuring a cancellation deadline.
+    assert failed.wait(15)
     result = await_task(owner.store, task["id"], "review")
     assert "Mapped directory:" in result["result"]
     # Receipt retry and cleanup replace this journal under the same lock.
