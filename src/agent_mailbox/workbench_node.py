@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 
 from .workbench_fleet import FleetClient, _write_private
 from .workbench_lock import WorkbenchLock
+from .workbench_private import private_access
 from .workbench_remote import RemoteWorker
 from .workbench_store import WorkbenchError
 
@@ -27,9 +28,12 @@ def _read_private_json(path):
             info = os.fstat(stream.fileno())
             if not stat.S_ISREG(info.st_mode) or info.st_size > 1024 * 1024:
                 raise WorkbenchError("invalid_file", "Choose a JSON file smaller than 1 MiB.")
-            if os.name != "nt" and (info.st_mode & 0o077 or info.st_uid != os.getuid()):
+            if (os.name == "nt" and not private_access(path, 0o600)) or (
+                os.name != "nt" and (info.st_mode & 0o077 or info.st_uid != os.getuid())
+            ):
                 raise WorkbenchError(
-                    "private_file_required", "Use a JSON file owned by this account with mode 0600."
+                    "private_file_required",
+                    "Use a JSON file private to this account (0600 on POSIX, protected ACL on Windows).",
                 )
             value = json.loads(stream.read(1024 * 1024 + 1))
             if not isinstance(value, dict):
