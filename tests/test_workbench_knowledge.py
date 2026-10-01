@@ -176,12 +176,15 @@ def test_index_symlink_is_rejected(project, cli, tmp_path):
 )
 def test_failures_are_bounded_and_sanitized(project, cli, monkeypatch, body, code):
     cli(body)
-    monkeypatch.setattr(knowledge, "QUERY_TIMEOUT", 0.1)
+    # Only the deliberately sleeping child uses a short deadline. Error,
+    # output-limit and invalid-JSON cases must not race interpreter startup.
+    budget = 0.1 if code == "KNOWLEDGE_TIMEOUT" else knowledge.QUERY_TIMEOUT
+    monkeypatch.setattr(knowledge, "QUERY_TIMEOUT", budget)
     # Default _run's argument is bound at definition; patch only query runtime.
     original = knowledge._run
 
     def run(args, cwd, timeout=None):
-        return original(args, cwd, 0.1 if timeout is None else timeout)
+        return original(args, cwd, budget if timeout is None else timeout)
 
     monkeypatch.setattr(knowledge, "_run", run)
     with pytest.raises(WorkbenchError) as exc:
