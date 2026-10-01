@@ -32,7 +32,23 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - run: ruff check src tests
       - run: ruff format --check src tests
-      - run: pytest -o addopts="--timeout=30" -x -vv --tb=short
+      - name: Run full regression and preserve diagnostics
+        run: |
+          python - <<'PYTHON'
+          import os, pathlib, subprocess, sys
+          log = pathlib.Path(os.environ["RUNNER_TEMP"]) / "pytest.log"
+          with log.open("wb") as target:
+              result = subprocess.run([sys.executable, "-m", "pytest", "-o", "addopts=--timeout=30", "-x", "-vv", "--tb=short"], stdout=target, stderr=subprocess.STDOUT)
+          print(log.read_text(encoding="utf-8", errors="replace"))
+          sys.exit(result.returncode)
+          PYTHON
+      - name: Preserve regression diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-${{ matrix.os }}-${{ matrix.python }}
+          retention-days: 7
+          path: ${{ runner.temp }}/pytest.log
   native-package:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
