@@ -2,7 +2,7 @@
 
 把已有 AI Agent 组成项目团队的本地工作台。默认从单机开始：发现 → 入组 → 协作 → 验收。
 
-Beta 4 目标版本为 `0.8.0b4`，正在统一版本与发行整改，尚未发行；已有公开源码分支不能当作全平台验收已通过。我们的 PyPI 当前为 v0.7.6，TestPyPI、Homebrew、npm 从未发布；同名无 scope npm 包属于其他项目。本轮只发布同版 GitHub Beta 与 PyPI；请先看[发行渠道](RELEASE-CHANNELS.md)。
+Beta 4 `0.8.0b4` 已在 [GitHub](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0b4) 与 [PyPI](https://pypi.org/project/agent-mailbox/0.8.0b4/) 发布，发行物均来自提交 `420d136`。TestPyPI、Homebrew、npm 从未发布；同名无 scope npm 包属于其他项目。平台验证和安装边界见[发行渠道](RELEASE-CHANNELS.md)。
 
 原生包和 PyPI 的安装、来源校验及保留数据升级见[安装与升级](BETA-INSTALL.md)。以下为源码入口。
 
@@ -11,7 +11,7 @@ Beta 4 目标版本为 `0.8.0b4`，正在统一版本与发行整改，尚未发
 Python 3.10+，执行工作需要 Node.js 22.13+。在 v0.8 checkout 建独立 venv，安装本目录：
 
 ```sh
-git clone --branch feat/v080-workbench --single-branch https://github.com/polaris-smart/agent-mailbox.git agent-mailbox-v08
+git clone --branch v0.8.0b4 --single-branch https://github.com/polaris-smart/agent-mailbox.git agent-mailbox-v08
 cd agent-mailbox-v08
 python3 -m venv .venv
 . .venv/bin/activate

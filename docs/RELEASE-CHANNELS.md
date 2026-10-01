@@ -14,19 +14,19 @@
 
 GitHub Beta、PyPI 与平台产物必须来自**同一提交**。正式稳定版再统一为 Python `0.8.0`、GitHub `v0.8.0`，在通过稳定发行门槛后更新稳定渠道。
 
-## 发行准备时核验的渠道事实（2026-10-01）
+## 已发布的渠道事实（2026-10-01）
 
-- **PyPI**：正式包 `agent-mailbox` 属于本项目，当前最新为 `0.7.6`；账户 `coolmax`，维护者 `polaris-smart`。它在新版本实际上传前不能提供 Beta 4。
-- **GitHub**：默认分支仍是旧发行线。公开 `feat/v080-workbench` 源码分支的 Beta 3 记录不等于 Beta 4 已通过全平台验收；Beta 4 正在整改，尚未发行。
+- **PyPI**：[0.8.0b4 已发布](https://pypi.org/project/agent-mailbox/0.8.0b4/)，账户 `coolmax`，作者 `polaris-smart`。独立环境从正式索引安装、HTTP/MCP 检查通过；预发布必须指定版本或 `--pre`，普通稳定安装仍可能选择 0.7.6，不撤销旧稳定版。
+- **GitHub**：[v0.8.0b4 Beta 已发布](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0b4)，default main 已切换独立 v0.8。三个原生包、wheel、sdist、SHA256SUMS 和来源记录共七个文件上传完成，公开 asset digest 与本地文件全匹配。所有发行物源于 `420d136651ff8209b5a3fdc43f4b4bb985fa3c39`；后续文档提交不替换这些不可变发行物。
 - **TestPyPI**：从未发布本项目包，当前包查询返回 404，不是丢失的旧入口。以后可先上传并验证，当前不列入发行渠道。
 - **Homebrew**：从未发布自建 tap，属于以后可选新增渠道，不宣称已有配方。
 - **npm**：从未发布本项目包。无 scope 的同名 `agent-mailbox` 属于 `NoizceEra/agent-mailbox`，与本项目无关，不能修改、替换或当作安装来源。以后若新增 scoped npm，须先确认账户与 scope；`0.8.0-beta.4` 仅为同一 Beta 4 的未来 SemVer 对照，不是已部署包。
 
-源码测试请使用[上手指南](GITHUB-QUICKSTART.md)中的专用 venv 与独立 `--home`。当前不提供尚未发布的 `pip`、`brew` 或 `npm` Beta 4 安装承诺。
+安装请使用[上手指南](GITHUB-QUICKSTART.md)中的专用 venv 与独立 `--home`，或下载对应原生包。不提供 `brew` 或 `npm` Beta 4 安装命令。
 
 ## 发布门槛与准备记录
 
-本轮以**六组 CI 与 macOS/Windows/Linux 原生包检查**为发布门禁。截至运行 36842848189，macOS/Linux 的四组完整回归及三平台原生包检查通过；Windows 两组完整回归在备份清单权限断言失败。清单原生 ACL 修复已提交，等待新运行验证。不能据此写成全部门禁通过，也不能用历史本机结果或绿色徽章替代失败状态。
+本轮以**六组 CI 与 macOS/Windows/Linux 原生包检查**为发布门禁。发行提交 `420d136` 的[预发布 CI](https://github.com/polaris-smart/agent-mailbox/actions/runs/36849107349)、[main CI](https://github.com/polaris-smart/agent-mailbox/actions/runs/36849909110)及[PyPI 发布流程](https://github.com/polaris-smart/agent-mailbox/actions/runs/36849910427)均通过。Mac/Linux 每组 365 passed、4 skipped；Windows 每组 321 passed、48 skipped。原生包均实际解压运行；跳过项及真实模型边界单独列明，不能当作全部功能实机验收。
 
 1. **版本和来源一致**：代码元数据、包版本、App 显示、Git tag、Release 与 PyPI 对应同一提交和同一 Beta 4；发行产物 SHA-256 可核对。
 2. **平台 CI 无失败**：按实际发行架构执行回归与构建。跳过项必须有明确理由，不把跳过功能当作已验收；任何必要项失败先修复并重测。
@@ -38,6 +38,6 @@ GitHub Beta、PyPI 与平台产物必须来自**同一提交**。正式稳定版
 
 TestPyPI、Homebrew 与 npm 若未来启用，再加入相应安装、版本一致性与升级门禁；不能把渠道建议当作已部署。所有未来渠道也必须与产品版本和提交一致，不借用第三方同名包。
 
-本文的未发布状态为准备阶段记录；实际上传后，以 `v0.8.0b4` GitHub Release 和 PyPI 对应版本页面确认可用文件及来源。
+历史失败和整改按原始提交保留；不删除失败证据，也不重建或覆盖同一版本已上传文件。
 
 历史证据和功能边界见 [Beta 验收](BETA-ACCEPTANCE.md)、[Beta 3 证据](evidence/v080/beta3-collaboration.md)。Beta 4 的结果应单独记录，不能复制历史通过数字当作本轮验证。

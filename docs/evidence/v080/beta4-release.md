@@ -1,8 +1,8 @@
-# Beta 4 发行准备证据
+# Beta 4 发行证据
 
-目标 0.8.0b4，尚未发布。当前本机用户仍运行已验证的 Beta 3，不把 source target 当作 live upgrade。
+0.8.0b4 已在 GitHub Beta 与 PyPI 发布，发行提交为 `420d136651ff8209b5a3fdc43f4b4bb985fa3c39`。本机已运行该提交的实际 CI Mac 安装包；以下准备阶段记录保留历史，不冒充最终结果。
 
-## 已完成
+## 准备阶段记录（历史）
 
 - README 中英文、quickstart 与渠道说明已更新；品牌与包名保留 agent-mailbox。GitHub description/topics增加实际用途关键词，公开默认分支仍是旧版介绍。
 - 原始 CI 36827062285：Ubuntu 两组通过，macOS反向DNS启动超时及Windows权限/停止路径失败；卡住的旧运行已取消，保留失败证据，不宣称旧 CI 成功。
@@ -28,12 +28,15 @@
 
 - `3a2cfdb` 的 [36846081917](https://github.com/polaris-smart/agent-mailbox/actions/runs/36846081917) 首次完整 9 作业通过：Mac/Linux 每组 365 passed、4 skipped，Windows 每组 321 passed、48 skipped。随后测试等待预算整改提交仍出现 Windows 配对 setup 的外层 5 秒等待超时，不能把上轮全绿冒充后续提交已通过。配对先 pair 后 projects，两个顺序 HTTPS 调用各有 10 秒预算，fixture 外层已改 25 秒；普通请求/状态及回执事件等待 15 秒，2 秒取消断言不变。最终提交仍需完整重跑。
 
-## 待完成
+## 发行收口（2026-10-01）
 
-- 新commit GitHub六组回归全通过。
-- 三平台原生包实际构建/解压/HTTP/MCP验证全通过。
-- 本机保留数据升级；最终提交的产物来源和哈希收口。
-- GitHub Beta / PyPI同一commit同版实际上传与下载核验。
+- 提交 `420d136` 的预发布 CI 36849107349、main CI 36849909110、PyPI 发布流程 36849910427 均通过。Mac/Linux 每组 365 passed、4 skipped；Windows 每组 321 passed、48 skipped。实际跳过项目列表与原始日志保留，不计为通过。
+- 三平台原生包实际构建/解压/HTTP/MCP验证通过。Mac ARM64、Windows x64、Linux x64；没有用交叉构建代替目标系统启动。模型调用 0。
+- 本机使用发行提交的 CI Mac 安装包，升级前私有一致性备份，18 员工、1 项目、0 任务、0 邮件，业务表 hash 完全不变。实际浏览器 10 项通过、页面错误 0、provider 调用 0。
+- [GitHub Beta](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0b4) 七个文件完成上传且为公开 prerelease；API 的全部 asset digest 与本地文件一致，实际下载 SHA256SUMS/provenance 也与本地一致。
+- [PyPI 0.8.0b4](https://pypi.org/project/agent-mailbox/0.8.0b4/) wheel 与 sdist 非 yank、Homepage 正确，哈希与发布流程 dist 匹配。独立环境从正式 PyPI 安装，实际 HTTP 启动/退出、owner 认证、私有权限、11 工具和 context/note 探针回执通过。实际上传文件的 Twine 严格检查通过。
+- PyPI 初次核验曾在依赖安装结束前启动，报 ModuleNotFoundError；这是验证脚本时序错误，安装完成后的重跑成功，不归因为产品失败。
+- 完整 Git bundle（含新 tag）verify 通过；私有数据库备份保存在用户原 home，未上传公开发行物。AOCI maintain 仍返回原 index_invalid，单独保留诊断，未伪造维护成功。
 
 Windows fixture 的真实诊断及整改边界见 [Windows runtime fixture](windows-runtime-fixture.md) 及 [Git 行尾语义](windows-git-policy.md)，不通过放宽权限或跳过业务断言换取绿色。
 

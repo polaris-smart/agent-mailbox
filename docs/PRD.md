@@ -1,6 +1,6 @@
 # agent-mailbox v0.8 产品基线
 
-版本：1.2 · 2026-10-01。依据：human 明确决定“v0.8 开始完全独立”。当前实现阶段为 0.8.0b3 Beta 3，未公开发版。旧 v0.7 正典仅作为[历史归档](archive/v07/PRD.md)，不约束本版运行架构。
+版本：1.3 · 2026-10-01。依据：human 明确决定“v0.8 开始完全独立”。当前公开版本为 0.8.0b4 Beta 4，已发布 GitHub 与 PyPI；发行物统一源于 `420d136`。旧 v0.7 正典仅作为[历史归档](archive/v07/PRD.md)，不约束本版运行架构。
 
 ## 1. 定位
 
@@ -33,7 +33,7 @@
 | 项目、员工、任务、笔记、资源、生命周期 | workbench_store.py | 私有 SQLite，事务状态迁移 |
 | 任务执行与人工验收 | workbench_engine.py / workbench.py | Codex、Claude 受管 CLI；权限默认拒绝 |
 | 运行准备和模型发现 | workbench_runtime.py / runtime_bridge | 锁定依赖；发现与实际执行分开 |
-| 工作台 | workbench_assets | 本机浏览器；macOS app 可选包装 |
+| 工作台 | workbench_assets | 本机浏览器；Mac ARM64、Windows x64、Linux x64 原生入口 |
 | 项目共享工具 | workspace_mcp.py / workbench_execution_resources.py | 11 个工具，含固定同事交付；指派任务自动注入，不接管所有既有对话 |
 | 员工接入验证 | workbench_onboarding.py / workspace_mcp.py | 显式只读 probe，可选模型，context/note 实际回执 |
 | 独立工作区和固定交付 | workbench_workspaces.py | 本机 clean Git root；固定 patch，验收后显式 apply，不 commit/push |
@@ -97,4 +97,6 @@ dsh-devices 的产品线负责人考核、成员入组审批、派单时指定 p
 
 ## Beta 4 统一替代发行决定
 
-Human 于 2026-10-01 决定产品、仓库、Python 包和 CLI 继续叫 agent-mailbox；v0.8 替代旧软件，各平台和已启用发行渠道保持同一产品版本。本轮已确认正式包渠道只有 PyPI（账号 coolmax、维护者 polaris-smart）及 GitHub 发行入口；TestPyPI、Homebrew、npm 从未发布本项目产物。v0.8.0b4 是待验收目标，不是已公开版本。旧数据/后台服务/MCP 配置没有自动迁移，必须与兼容 v0.8 数据保留升级区分。发布必须完成六组 CI、对应原生安装包与升级验证。详见[渠道与发布门槛](RELEASE-CHANNELS.md)。
+Human 于 2026-10-01 决定产品、仓库、Python 包和 CLI 继续叫 agent-mailbox；v0.8 替代旧软件，各平台和已启用发行渠道保持同一产品版本。本轮已确认正式包渠道只有 PyPI（账号 coolmax、维护者 polaris-smart）及 GitHub 发行入口；TestPyPI、Homebrew、npm 从未发布本项目产物。作出该决定时，v0.8.0b4 是待验收目标，尚未公开。旧数据/后台服务/MCP 配置没有自动迁移，必须与兼容 v0.8 数据保留升级区分。发布必须完成六组 CI、对应原生安装包与升级验证。详见[渠道与发布门槛](RELEASE-CHANNELS.md)。
+
+上述决定已在 Beta 4 发行完成：GitHub `v0.8.0b4` 与 PyPI `0.8.0b4` 均公开，七个 GitHub 文件及两份 PyPI 发行文件核对哈希通过；源提交为 `420d136651ff8209b5a3fdc43f4b4bb985fa3c39`。六组回归和三平台安装包门禁通过，Mac/Linux 每组 365 passed、4 skipped，Windows 每组 321 passed、48 skipped。独立 PyPI 安装及 Mac 保留数据升级、真实浏览器检查通过；三平台无模型检查不能代替 Windows/Linux 原生账号实机验收。发行包未提供 Developer ID/Windows 发行者签名或 macOS 公证。详细证据见 [Beta 4 发行记录](evidence/v080/beta4-release.md)。
