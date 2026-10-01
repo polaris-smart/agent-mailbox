@@ -159,7 +159,9 @@ def test_backup_restores_private_identity_and_excludes_runtime(setup, tmp_path):
     (runtime / "rebuildable").write_text("do not copy")
     backup = Path(server.updates.prepare()["backup"]["path"])
     manifest = json.loads((backup / "manifest.json").read_text())
-    assert "workbench/state.db" in [row["path"] for row in manifest["files"]]
+    paths = [row["path"] for row in manifest["files"]]
+    assert "workbench/state.db" in paths
+    assert "workbench/fleet/device.key" in paths
     assert (backup / "workbench/fleet/device.key").read_bytes() == b"private device material"
     assert not (backup / "workbench/runtime").exists()
     assert not (backup / "workbench/instance.json").exists()

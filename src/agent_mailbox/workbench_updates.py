@@ -308,7 +308,11 @@ def private_backup(store):
                             "UPDATE_BACKUP_LIMIT", "备份文件数量过多，请检查数据目录。"
                         )
             entries = [
-                {"path": str(p.relative_to(target)), "bytes": p.stat().st_size, "sha256": _hash(p)}
+                {
+                    "path": p.relative_to(target).as_posix(),
+                    "bytes": p.stat().st_size,
+                    "sha256": _hash(p),
+                }
                 for p in candidates
             ]
             total = sum(e["bytes"] for e in entries)
