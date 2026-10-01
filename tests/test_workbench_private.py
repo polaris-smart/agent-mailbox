@@ -61,3 +61,16 @@ def test_windows_removes_everyone_ace_and_inherited_acl(tmp_path):
     private_mode(source, 0o600)
     assert private_access(source, 0o600)
     assert source.read_text() == "fixture"
+
+
+def test_numeric_sid_acl_verification_has_no_builtin_admin_alias_ambiguity():
+    from agent_mailbox.workbench_private import _allowed_acl
+
+    owner = "S-1-5-21-123-456-789-500"
+    entries = [(0, 3, 0x1F01FF, sid) for sid in (owner, "S-1-5-18", "S-1-5-32-544")]
+    assert _allowed_acl(0x1004, entries, owner, directory=True)
+    assert not _allowed_acl(4, entries, owner, directory=True)
+    assert not _allowed_acl(0x1004, entries + [(0, 3, 0x1F01FF, "S-1-1-0")], owner)
+    assert not _allowed_acl(0x1004, entries[1:], owner)
+    assert not _allowed_acl(0x1004, [(0, 0, 0x1F01FF, owner)], owner, directory=True)
+    assert not _allowed_acl(0x1004, [(0, 0, 0x10000000, owner)], owner)

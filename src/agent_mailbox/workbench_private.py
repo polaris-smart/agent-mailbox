@@ -7,7 +7,6 @@ user, SYSTEM and Administrators instead; fail closed if ACL operations fail.
 from __future__ import annotations
 
 import os
-import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -35,6 +34,12 @@ def _windows():
             [pointer, ctypes.POINTER(w.BOOL), ctypes.POINTER(pointer), ctypes.POINTER(w.BOOL)],
             w.BOOL,
         ),
+        "GetSecurityDescriptorControl": (
+            [pointer, ctypes.POINTER(w.WORD), ctypes.POINTER(w.DWORD)],
+            w.BOOL,
+        ),
+        "GetAclInformation": ([pointer, pointer, w.DWORD, ctypes.c_int], w.BOOL),
+        "GetAce": ([pointer, w.DWORD, ctypes.POINTER(pointer)], w.BOOL),
         "SetNamedSecurityInfoW": (
             [w.LPWSTR, ctypes.c_int, w.DWORD, pointer, pointer, pointer, pointer],
             w.DWORD,
@@ -112,41 +117,84 @@ def private_mode(path, mode):
             raise c.WinError(code)
     finally:
         kernel.LocalFree(descriptor)
-    if not private_access(path, mode):
-        raise OSError("Private Windows ACL verification failed")
+    control, entries = _native_acl(path)
+    if not _allowed_acl(control, entries, sid, path.is_dir()):
+        diagnostic = ""
+        if os.environ.get("CI"):
+            diagnostic = f" (SID={sid}, control={control:#x}, ACEs={entries!r})"
+        raise OSError("Private Windows ACL verification failed" + diagnostic)
 
 
-def private_access(path, mode):
-    """Inspect actual access, allowing only owner, SYSTEM and Administrators."""
-    path = Path(path)
-    if os.name != "nt":
-        return path.stat().st_mode & 0o777 == mode
-    c, w, advapi, kernel, sid = _windows()
-    descriptor, text = c.c_void_p(), w.LPWSTR()
+def _allowed_acl(control, entries, sid, directory=False):
+    # Numeric SID identity avoids canonical SDDL aliases such as LA for the
+    # built-in Administrator account (renamed runneradmin on some CI hosts).
+    if not control & 0x1000 or not entries:
+        return False  # SE_DACL_PROTECTED: never inherit wider parent grants.
+    allowed = {sid, "S-1-5-18", "S-1-5-32-544"}
+    for ace_type, flags, mask, identity in entries:
+        if ace_type != 0 or identity not in allowed or mask != 0x1F01FF:
+            return False  # ACCESS_ALLOWED_ACE, FILE_ALL_ACCESS, exact identities.
+        if directory and flags & 3 != 3:
+            return False  # Object/container inheritance protects newly created secrets.
+    return any(identity == sid for _, _, _, identity in entries)
+
+
+def _native_acl(path):
+    c, w, advapi, kernel, _sid = _windows()
+    descriptor = c.c_void_p()
     code = advapi.GetNamedSecurityInfoW(
         str(path), 1, 4, None, None, None, None, c.byref(descriptor)
     )
     if code:
         raise c.WinError(code)
     try:
-        if not advapi.ConvertSecurityDescriptorToStringSecurityDescriptorW(
-            descriptor, 1, 4, c.byref(text), None
+        control, revision = w.WORD(), w.DWORD()
+        if not advapi.GetSecurityDescriptorControl(descriptor, c.byref(control), c.byref(revision)):
+            raise c.WinError(c.get_last_error())
+        present, defaulted, acl = w.BOOL(), w.BOOL(), c.c_void_p()
+        if not advapi.GetSecurityDescriptorDacl(
+            descriptor, c.byref(present), c.byref(acl), c.byref(defaulted)
         ):
             raise c.WinError(c.get_last_error())
-        sddl = text.value
-        entries = re.findall(r"\(([^()]*)\)", sddl)
-        owner_present = False
-        if not entries or not sddl.startswith("D:P"):
-            return False
-        for entry in entries:
-            fields = entry.split(";")
-            if len(fields) != 6 or fields[0] != "A" or fields[5] not in {sid, "SY", "BA"}:
-                return False
-            if fields[2] not in {"FA", "0x1f01ff"}:
-                return False
-            owner_present |= fields[5] == sid
-        return owner_present
+        if not present.value or not acl:
+            return control.value, []
+
+        class AclSize(c.Structure):
+            _fields_ = (("count", w.DWORD), ("used", w.DWORD), ("free", w.DWORD))
+
+        info = AclSize()
+        if not advapi.GetAclInformation(acl, c.byref(info), c.sizeof(info), 2):
+            raise c.WinError(c.get_last_error())
+        if info.count > 64:
+            return control.value, []
+        entries = []
+        for index in range(info.count):
+            ace = c.c_void_p()
+            if not advapi.GetAce(acl, index, c.byref(ace)):
+                raise c.WinError(c.get_last_error())
+            ace_type = c.c_ubyte.from_address(ace.value).value
+            flags = c.c_ubyte.from_address(ace.value + 1).value
+            size = w.WORD.from_address(ace.value + 2).value
+            if ace_type != 0 or size < 20:
+                return control.value, []
+            mask = w.DWORD.from_address(ace.value + 4).value
+            identity = w.LPWSTR()
+            if not advapi.ConvertSidToStringSidW(ace.value + 8, c.byref(identity)):
+                raise c.WinError(c.get_last_error())
+            try:
+                entries.append((ace_type, flags, mask, identity.value))
+            finally:
+                kernel.LocalFree(c.cast(identity, c.c_void_p))
+        return control.value, entries
     finally:
-        if text:
-            kernel.LocalFree(c.cast(text, c.c_void_p))
         kernel.LocalFree(descriptor)
+
+
+def private_access(path, mode):
+    """Inspect native protected ACLs, allowing only owner, SYSTEM and Administrators."""
+    path = Path(path)
+    if os.name != "nt":
+        return path.stat().st_mode & 0o777 == mode
+    *_api, sid = _windows()
+    control, entries = _native_acl(path)
+    return _allowed_acl(control, entries, sid, path.is_dir())

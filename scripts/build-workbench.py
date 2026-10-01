@@ -95,6 +95,16 @@ def build(runtime_dir: Path, node: Path, output: Path, name: str) -> dict:
                 {"name": distribution_name, "version": distribution.version, "notices": copied}
             )
     (notices / "inventory.json").write_text(json.dumps(inventory, indent=2) + "\n")
+    # CI installs dependencies beside the bridge. Ship its source separately,
+    # keeping the locked node_modules tree in exactly one runtime location.
+    bridge_source = output / "bridge-source"
+    if bridge_source.exists():
+        shutil.rmtree(bridge_source)
+    shutil.copytree(
+        SOURCE / "runtime_bridge",
+        bridge_source,
+        ignore=shutil.ignore_patterns("node_modules", ".cache"),
+    )
     from PyInstaller.building.makespec import main as make_spec
 
     version = importlib.metadata.version("agent-mailbox")
@@ -125,7 +135,7 @@ def build(runtime_dir: Path, node: Path, output: Path, name: str) -> dict:
                 (str(REPOSITORY / "NOTICE"), "licenses"),
                 (str(REPOSITORY / "LICENSES"), "licenses/legacy"),
                 (str(notices), "licenses/python-dependencies"),
-                (str(SOURCE / "runtime_bridge"), "agent_mailbox/runtime_bridge"),
+                (str(bridge_source), "agent_mailbox/runtime_bridge"),
                 (str(SOURCE / "workbench_assets"), "agent_mailbox/workbench_assets"),
                 (str(runtime_dir / "node_modules"), "runtime/deps/node_modules"),
                 (str(runtime_dir / "package.json"), "runtime/deps"),
