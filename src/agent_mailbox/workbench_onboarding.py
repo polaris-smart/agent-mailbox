@@ -217,7 +217,21 @@ def create_probe(store, employee_id, project_id, model=None):
                 "reused": True,
             }
         marker = "MAILBOX-PROBE-" + secrets.token_hex(16)
-        prompt = f"This is an explicit read-only connectivity probe. Do not modify files, use shell, delegate, or contact colleagues. Use ONLY agent-mailbox-project tools: first call project_context(), then call project_note(title='Agent connectivity verification', body='{marker}') with exactly that body. Finally report completion. The note is a test receipt, not a product decision. Ask for permission through the normal tool flow if required."
+        prompt = (
+            "This is an explicit read-only connectivity probe. Do not modify files, use "
+            "shell, delegate, or contact colleagues. Only invoke agent-mailbox-project "
+            "MCP operations. Your client may expose them through tool discovery and an "
+            "exec/code-mode transport wrapper; that discovery and wrapper are allowed "
+            "solely to locate and call these project tools. If direct tools are absent, "
+            "inspect the provided tool catalog (for example ALL_TOOLS in an exec "
+            "wrapper); normalized names may contain agent_mailbox_project. Do not "
+            "invoke shell, filesystem, or unrelated tools inside the wrapper. "
+            "The first project operation must be project_context(), followed by "
+            f"project_note(title='Agent connectivity verification', body='{marker}') "
+            "with exactly that body. Finally report completion. The note is a test "
+            "receipt, not a product decision. Ask for permission through the normal "
+            "tool flow if required."
+        )
         task = store._create_task(
             db, project_id, "接入验证 / Connectivity probe", prompt, employee_id, model=model
         )

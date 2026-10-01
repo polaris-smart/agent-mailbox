@@ -948,9 +948,15 @@ def test_stop_interrupts_claim_response_after_http_connection_releases_socket():
     received = []
 
     def read_response():
-        with reading.makefile("rb") as stream:
-            received.append(stream.readline())
-        finished.set()
+        try:
+            with reading.makefile("rb") as stream:
+                received.append(stream.readline())
+        except OSError as error:
+            # Winsock may report a shutdown error instead of POSIX EOF. The
+            # client maps either interrupted read to an explicit network error.
+            received.append(error)
+        finally:
+            finished.set()
 
     worker = threading.Thread(target=read_response)
     worker.start()
@@ -959,7 +965,8 @@ def test_stop_interrupts_claim_response_after_http_connection_releases_socket():
         assert finished.wait(2)
         worker.join(timeout=2)
         assert not worker.is_alive()
-        assert received == [b""]
+        assert len(received) == 1
+        assert received[0] == b"" or isinstance(received[0], OSError)
     finally:
         reading.close()
         peer.close()

@@ -11,11 +11,14 @@
 - 独立 venv 重新安装 Beta 4 wheel，实际 CLI HTTP 启动/退出、错误 owner 拒绝、私有权限和11个 MCP 工具/探针回执通过。修正验证脚本的安装类型与模块名后通过；没有把脚本误写当作产品缺陷。
 - v0.8 tag只构建，registry上传需显式dispatch指定；现有CI和未来发布共用六组回归及三平台原生包门禁。安装包检查从实际压缩包解压后运行，验证owner认证、私有权限、版本、11工具和context/note回执，无provider调用。
 
+- GitHub run 36834003049 的 macOS、Windows、Linux 原生包均成功完成构建、实际压缩包解压、HTTP owner/private/version/quit 和 frozen MCP 11工具/探针回执检查；没有模型调用。该运行完整回归尚未全部通过，不等同可发行。
+- 真实 Codex/Claude 四项协作通过：两位员工的实际 context/note 探针、Codex 独立文件修改、Claude 固定补丁审查、Human 验收不自动应用、显式 apply 精确 marker。第一次 Codex 探针未调用工具，被正确判为 PROBE_INCOMPLETE，原始失败日志/结果另存；不是登录失败证据。对照 Beta 3 的真实 exec-wrapper 工具调用后，只澄清 probe 允许客户端发现与传输包装、包装内部仅能调用项目 MCP，再用同一 Luna 模型及 Claude 重测成功，未放宽真实回执判定。
+
 ## 待完成
 
 - 新commit GitHub六组回归全通过。
 - 三平台原生包实际构建/解压/HTTP/MCP验证全通过。
-- 真实模型协作与本机保留数据升级；最终提交的产物来源和哈希收口。
+- 本机保留数据升级；最终提交的产物来源和哈希收口。
 - GitHub Beta / PyPI同一commit同版实际上传与下载核验。
 
 Windows fixture 的真实诊断及整改边界见 [Windows runtime fixture](windows-runtime-fixture.md) 及 [Git 行尾语义](windows-git-policy.md)，不通过放宽权限或跳过业务断言换取绿色。

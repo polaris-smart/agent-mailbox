@@ -38,10 +38,15 @@ jobs:
           python - <<'PYTHON'
           import os, pathlib, subprocess, sys
           log = pathlib.Path(os.environ["RUNNER_TEMP"]) / "pytest.log"
-          with log.open("wb") as target:
-              result = subprocess.run([sys.executable, "-m", "pytest", "-o", "addopts=--timeout=30", "-x", "-vv", "--tb=short"], stdout=target, stderr=subprocess.STDOUT)
+          try:
+              with log.open("wb") as target:
+                  result = subprocess.run([sys.executable, "-m", "pytest", "-o", "addopts=--timeout=30", "-x", "-vv", "--tb=short"], stdout=target, stderr=subprocess.STDOUT, timeout=600)
+              code = result.returncode
+          except subprocess.TimeoutExpired:
+              code = 124
+              print("Regression process exceeded the 10-minute hard deadline.")
           print(log.read_text(encoding="utf-8", errors="replace"))
-          sys.exit(result.returncode)
+          sys.exit(code)
           PYTHON
       - name: Preserve regression diagnostics
         if: always()
