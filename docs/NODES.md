@@ -24,6 +24,8 @@ agent-mailbox node --home ~/.agent-mailbox-node employee --project PROJECT_ID --
 agent-mailbox node --home ~/.agent-mailbox-node run
 ```
 
+Windows 邀请文件不能只用 `chmod` 或文件“只读”属性保护。若在 Windows 导入，先在文件“属性 → 安全 → 高级”中禁用继承，移除其他用户/组的访问，仅保留当前用户、SYSTEM 和 Administrators 的完全控制权限，再执行 join。程序检查实际受保护 ACL，不符合要求会拒绝读取；勿为了绕过错误把邀请码写到公共文件夹。该节点的真实模型执行仍需单独验证。
+
 将 PROJECT_ID 换成 join 显示的授权项目编号，路径换成这个节点实际存在的目录。kind 可为 codex/claude。主控能给注册的员工派工。每个映射项目有本地路径；配对不传源码、不同步 Git、不复制 agent 登录。远端多个节点自己的账号和文件仍需各自管理。
 
 Ctrl-C 或 SIGTERM 停止节点。重新运行 run 使用原配对身份与映射，无需重新发邀请码。首次配对回包丢失会保留私有恢复 proof；用同邀请码与地址重试。不要删除身份文件来修复网络问题。

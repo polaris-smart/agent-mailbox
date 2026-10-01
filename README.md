@@ -19,24 +19,30 @@ This is multi-agent collaboration with a clear human decision point. You choose 
 3. **Give the team work.** Run an explicit connection test, assign a task, and approve operations when requested. Project messages keep context; an explicit collaboration request starts work. The runner supplies project-scoped MCP tools without a separate MCP setup for each managed employee.
 4. **Review the delivery.** Inspect the fixed files, diff, and activity. Accept it, return it as a linked follow-up, or separately confirm applying a safe text patch to the original repository.
 
-## Try the v0.8 beta from source
+## Install the v0.8 beta
 
-**Release target: `0.8.0b4` (Beta 4, in preparation).** The source branch is public; Beta 4 release preparation is in progress. There is no published Beta 4 GitHub Release or package-channel release yet. Our PyPI package currently contains v0.7.6. We have not published TestPyPI, Homebrew, or npm distributions. The unscoped npm package named `agent-mailbox` belongs to another project and is not an installation source for this workbench. This release targets GitHub Beta and PyPI at the same product version. See [channel status and release gates](docs/RELEASE-CHANNELS.md).
+**Beta 4: `0.8.0b4`.** Check the [GitHub release](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0b4) for available files and checksums. A release is available only after its checks pass and its files are uploaded. [Channel status and release gates](docs/RELEASE-CHANNELS.md) distinguish release preparation from publication.
 
-Use Python 3.10+ and a dedicated virtual environment. The product, repository, Python package, and CLI keep the name `agent-mailbox`. v0.8 will replace the earlier distribution across all channels. Until the release passes validation, keep source testing separate from an older installation:
+| Your computer | Native download |
+| --- | --- |
+| Apple Silicon Mac | `Agent-Mailbox-0.8.0b4-darwin-arm64.zip` |
+| Windows x64 | `Agent-Mailbox-0.8.0b4-win32-x64.zip` |
+| Linux x64 | `Agent-Mailbox-0.8.0b4-linux-x64.tar.gz` |
+
+Extract the entire archive, then start **Agent Mailbox**. Native downloads include Python, Node and the locked task runtime. Keep their folders intact. macOS builds have no Developer ID signature or notarization; Windows downloads may show a reputation warning. See [installation and upgrade steps](docs/BETA-INSTALL.md). Intel Mac and Windows ARM native packages are not provided by this beta.
+
+Prefer Python? Use Python 3.10+ and a dedicated virtual environment. Once the matching PyPI prerelease is available:
 
 ```sh
-git clone --branch feat/v080-workbench --single-branch https://github.com/polaris-smart/agent-mailbox.git agent-mailbox-v08
-cd agent-mailbox-v08
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install .
+python -m pip install 'agent-mailbox==0.8.0b4'
 agent-mailbox --home ~/.agent-mailbox-v08
 ```
 
-The command opens your local browser workbench. Source task execution needs Node.js 22.13+ and **Prepare runtime** in the UI. Sign into Codex or Claude Code using its native login. Viewing connection checks does not run a model; starting a connection test uses native model quota. If a default model is unavailable, explicitly select a model advertised by the execution service.
+On Windows use `py -m venv .venv` and `.venv\Scripts\Activate.ps1`. PyPI beta installation needs an explicit version or `--pre`; an ordinary stable install does not select a beta. Python/source task execution needs Node.js 22.13+ and **Prepare runtime** in the UI. Our existing package is [PyPI agent-mailbox](https://pypi.org/project/agent-mailbox/). We have no TestPyPI, Homebrew or npm distribution; the unscoped npm name belongs to another project.
 
-macOS ARM64 has local packaged-app verification. Windows PowerShell uses `.venv\Scripts\Activate.ps1` instead of the activation line, but Windows is not yet a verified release target. GitHub CI also has unresolved platform failures; local Mac verification is not a claim that all platform CI passes.
+Sign into Codex or Claude Code using its native login. Viewing connection checks does not run a model; starting a connection test uses native model quota. If a default model is unavailable, explicitly select a model advertised by the execution service. See the [quick start](docs/GITHUB-QUICKSTART.md) for source installation and your first collaboration.
 
 ## Built around your existing tools
 

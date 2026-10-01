@@ -19,24 +19,30 @@
 3. **交代工作。** 显式运行接入测试，再派任务、审批需要的操作。普通项目消息用于交流，明确的“请求协作”才启动工作。运行器提供项目范围内的 MCP 工具，不必给每个受管员工单独配置一次 MCP。
 4. **查看和验收。** 查看固定文件、diff 与工作日志，通过验收或退回补充；安全的文本 patch 由你另外确认应用到原仓库。
 
-## 从源码体验 v0.8 Beta
+## 安装 v0.8 Beta
 
-**发行目标：`0.8.0b4`（Beta 4，发行整改中）。** 源码分支已公开，Beta 4 正在发行整改，尚无 Beta 4 GitHub Release 或包渠道发行。我们的 PyPI 当前为 v0.7.6；没有发布过 TestPyPI、Homebrew 或 npm 包。同名无 scope npm 包属于其他项目，不是本工作台安装来源。本轮只向 GitHub Beta 和 PyPI 发布同一产品版本。详见[渠道状态与发行门槛](docs/RELEASE-CHANNELS.md)。
+**Beta 4：`0.8.0b4`。** 在 [GitHub 发行页](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0b4)核对文件和校验值。只有检查通过、文件实际上传后才有可下载的发行版；[渠道与门槛](docs/RELEASE-CHANNELS.md)区分发行准备和已发布。
 
-使用 Python 3.10+，并建立专用虚拟环境。产品、仓库、Python 包和 CLI 都保持 `agent-mailbox` 名称，v0.8 将统一替代各渠道旧发行。发行验证完成前，源码测试请与旧安装隔离：
+| 你的电脑 | 原生下载 |
+| --- | --- |
+| Apple Silicon Mac | `Agent-Mailbox-0.8.0b4-darwin-arm64.zip` |
+| Windows x64 | `Agent-Mailbox-0.8.0b4-win32-x64.zip` |
+| Linux x64 | `Agent-Mailbox-0.8.0b4-linux-x64.tar.gz` |
+
+完整解压后启动 **Agent Mailbox**，不要只移动其中的可执行文件。原生包自带 Python、Node 和锁定的任务运行组件。macOS 包没有 Developer ID 签名和公证，Windows 下载可能显示信誉提示，详见[安装与升级步骤](docs/BETA-INSTALL.md)。本 Beta 不提供 Intel Mac 或 Windows ARM 原生包。
+
+喜欢 Python 安装？使用 Python 3.10+ 和独立虚拟环境。在 PyPI 对应预发布版本实际可用后：
 
 ```sh
-git clone --branch feat/v080-workbench --single-branch https://github.com/polaris-smart/agent-mailbox.git agent-mailbox-v08
-cd agent-mailbox-v08
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install .
+python -m pip install 'agent-mailbox==0.8.0b4'
 agent-mailbox --home ~/.agent-mailbox-v08
 ```
 
-命令会打开本机浏览器工作台。源码执行任务需 Node.js 22.13+，并在页面点“准备运行环境”。Codex、Claude Code 使用各自原生登录。查看接入检查不会调用模型；点击接入测试会消耗原生模型额度。如果默认模型不可用，可以明确选择执行服务提供的模型。
+Windows 改用 `py -m venv .venv` 和 `.venv\Scripts\Activate.ps1`。PyPI Beta 需要指定版本或 `--pre`，普通稳定版安装不会选择 Beta。Python/源码执行任务需要 Node.js 22.13+，并在页面点“准备运行环境”。已有入口为 [PyPI agent-mailbox](https://pypi.org/project/agent-mailbox/)，没有 TestPyPI、Homebrew 或 npm 发行；同名无 scope npm 包属于其他项目。
 
-macOS ARM64 已有本机构建 App 验证。Windows PowerShell 的激活命令改为 `.venv\Scripts\Activate.ps1`，但 Windows 尚非验收通过的发行目标。GitHub CI 仍有平台失败待修复，本机 Mac 验证不代表全平台 CI 已通过。
+Codex、Claude Code 使用各自原生登录。查看接入检查不会调用模型，点击接入测试会消耗原生模型额度。如果默认模型不可用，可以明确选择执行服务提供的模型。[上手指南](docs/GITHUB-QUICKSTART.md)包含源码安装和第一次协作步骤。
 
 ## 与你已有的工具一起工作
 
