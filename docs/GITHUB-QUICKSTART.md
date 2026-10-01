@@ -2,7 +2,7 @@
 
 把已有 AI Agent 组成项目团队的本地工作台。默认从单机开始：发现 → 入组 → 协作 → 验收。
 
-Beta 4 `0.8.0b4` 已在 [GitHub](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0b4) 与 [PyPI](https://pypi.org/project/agent-mailbox/0.8.0b4/) 发布，发行物均来自提交 `420d136`。TestPyPI、Homebrew 尚无发行；已有 npm 配套插件 `dsh-agent-mailbox` 面向 v0.7，尚未适配 v0.8。无 scope 的 `agent-mailbox` 属于其他项目。平台验证和安装边界见[发行渠道](RELEASE-CHANNELS.md)。
+版本为 `0.8.0`，[GitHub 预期入口](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0) 与 [PyPI 预期入口](https://pypi.org/project/agent-mailbox/0.8.0/) 可用性以实际发行页和索引为准；以下 clone/install 命令要求对应 tag/包存在。配套 npm 插件目标为 `dsh-agent-mailbox@0.8.0`，不是工作台安装器。TestPyPI、Homebrew 不列入本轮发行。
 
 原生包和 PyPI 的安装、来源校验及保留数据升级见[安装与升级](BETA-INSTALL.md)。以下为源码入口。
 
@@ -11,7 +11,7 @@ Beta 4 `0.8.0b4` 已在 [GitHub](https://github.com/polaris-smart/agent-mailbox/
 Python 3.10+，执行工作需要 Node.js 22.13+。在 v0.8 checkout 建独立 venv，安装本目录：
 
 ```sh
-git clone --branch v0.8.0b4 --single-branch https://github.com/polaris-smart/agent-mailbox.git agent-mailbox-v08
+git clone --branch v0.8.0 --single-branch https://github.com/polaris-smart/agent-mailbox.git agent-mailbox-v08
 cd agent-mailbox-v08
 python3 -m venv .venv
 . .venv/bin/activate
@@ -19,11 +19,21 @@ python -m pip install .
 agent-mailbox --home ~/.agent-mailbox-v08
 ```
 
-Windows PowerShell 激活改用 `.venv\Scripts\Activate.ps1`。产品、仓库、Python 包与 CLI 都保持 `agent-mailbox` 名称，v0.8 将替代旧发行线。当前源码验证使用专用 venv 和独立 v0.8 数据目录；v0.7 数据库、后台服务与配置没有自动迁移，旧 MCP 配置不兼容新的项目工具入口，不要把旧数据目录直接交给新程序。使用自带运行组件的 macOS app 则双击启动；未公证 Beta 可能受 Gatekeeper 阻挡，GitHub 下载不消除系统校验。
+Windows PowerShell 激活改用 `.venv\Scripts\Activate.ps1`。产品、仓库、Python 包与 CLI 都保持 `agent-mailbox` 名称，v0.8 将替代旧发行线。当前源码验证使用专用 venv 和独立 v0.8 数据目录；v0.7 数据库、后台服务与配置没有自动迁移，旧 MCP 配置不兼容新的项目工具入口，不要把旧数据目录直接交给新程序。使用自带运行组件的 macOS app 则双击启动；未公证 App 可能受 Gatekeeper 阻挡，GitHub 下载不消除系统校验。
 
 在“员工”页发现并登记本机 app/CLI，再创建项目、从名册添加项目成员。普通消息用于同步；选择接收者并点“请求协作”才触发只读任务。必要时点“准备运行环境”。Codex/Claude 在这台电脑完成原生登录后，在员工详情选择项目，显式运行接入验证，可按实际模型列表选择模型；此任务会消耗原生模型额度。查看检查不调用模型，验证成功依赖实际上下文和随机标记笔记回执，不是员工口头报告。远端 probe 暂不支持。管理工作台不要求额外模型账号。准备组件会下载 package-lock 固定依赖，不修改全局 CLI 或登录。
 
 ### 先完成一次协作
+
+默认在员工详情导出项目邮箱 MCP，导入已有 App/CLI。入组和导出不代表真实接入成功；让员工通过工具读取上下文、邮件和批准资料。MCP 不自动唤醒。邮件任务明确 accept→submit→Human review；接受返回并保存 resource_manifest，使用清单 version_id 读取固定资料。受管 CLI 开发/审查是下列独立可选流程。
+
+1. 登记已有 App/CLI，创建项目并加入成员、填写职责。
+2. 导出该员工的项目邮箱 MCP 配置，导入宿主；先实际调用上下文和收信工具确认接入。
+3. 登记并批准 PRD、todo 等共享资料，发送一封普通邮件并要求回复；普通读信不接单。
+4. 创建默认邮件任务，让指定员工明确接受、读取清单的固定资料版本，再提交结果。
+5. 查看结果与工作日志，由 Human 验收或退回。员工仍在原环境工作，工作台不替它启动 CLI。
+
+### 可选：受管 CLI 开发与审查
 
 1. 在员工页发现工具，创建项目并加入 Codex、Claude Code CLI 员工。
 2. 在“资料与记忆”登记 PRD、todo 等背景，确认团队要使用的版本。

@@ -8,7 +8,7 @@
 
 ## 发现 → 入组 → 接入 → 协作 → 验收
 
-**以下既有会话邮箱已在当前源码候选实现，尚未包含在已发布的 Beta 4 下载包内；v0.8.0 正式版尚未发布。**
+**v0.8.0 通过项目邮箱 MCP 接入既有员工会话。下载可用性、文件和校验值以实际发行页为准。**
 
 1. **发现已有员工。** 登记桌面 App、CLI，再创建项目、加入成员并填写职责。职责是分工说明，不额外授予权限。
 2. **接入正在使用的会话。** 在工作台为员工生成项目邮箱 MCP 配置，导入该 Agent 的 MCP 设置。每份接入绑定员工、项目和会话，不要求另外配置 provider/key，也不用工作台另开 CLI。宿主需要支持导出的 stdio MCP 配置。
@@ -21,28 +21,28 @@
 
 既有会话邮箱目前只支持登记在本机的员工。可选远端执行节点继续使用现有协议，不代表已打通远端 App 的新邮箱接入。
 
-## 安装 v0.8 Beta
+## 安装 v0.8.0
 
-**Beta 4：`0.8.0b4`。** 在 [GitHub 发行页](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0b4)核对文件和校验值。只有检查通过、文件实际上传后才有可下载的发行版；[渠道与门槛](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/RELEASE-CHANNELS.md)区分发行准备和已发布。
+**版本：`0.8.0`。** 在 [GitHub 发行页](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0)核对文件和校验值。只有检查通过、文件实际上传后才有可下载的发行版；[渠道与门槛](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/RELEASE-CHANNELS.md)区分发行准备和已发布。
 
 | 你的电脑 | 原生下载 |
 | --- | --- |
-| Apple Silicon Mac | [Agent-Mailbox-0.8.0b4-darwin-arm64.zip](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0b4/Agent-Mailbox-0.8.0b4-darwin-arm64.zip) |
-| Windows x64 | [Agent-Mailbox-0.8.0b4-win32-x64.zip](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0b4/Agent-Mailbox-0.8.0b4-win32-x64.zip) |
-| Linux x64 | [Agent-Mailbox-0.8.0b4-linux-x64.tar.gz](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0b4/Agent-Mailbox-0.8.0b4-linux-x64.tar.gz) |
+| Apple Silicon Mac | [Agent-Mailbox-0.8.0-darwin-arm64.zip](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0/Agent-Mailbox-0.8.0-darwin-arm64.zip) |
+| Windows x64 | [Agent-Mailbox-0.8.0-win32-x64.zip](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0/Agent-Mailbox-0.8.0-win32-x64.zip) |
+| Linux x64 | [Agent-Mailbox-0.8.0-linux-x64.tar.gz](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0/Agent-Mailbox-0.8.0-linux-x64.tar.gz) |
 
-完整解压后启动 **Agent Mailbox**，不要只移动其中的可执行文件。原生包自带 Python、Node 和锁定的任务运行组件。macOS 包没有 Developer ID 签名和公证，Windows 下载可能显示信誉提示，详见[安装与升级步骤](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/BETA-INSTALL.md)。本 Beta 不提供 Intel Mac 或 Windows ARM 原生包。
+完整解压后启动 **Agent Mailbox**，不要只移动其中的可执行文件。原生包自带 Python、Node 和锁定的任务运行组件。macOS 包没有 Developer ID 签名和公证，Windows 下载可能显示信誉提示，详见[安装与升级步骤](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/BETA-INSTALL.md)。本版不提供 Intel Mac 或 Windows ARM 原生包。
 
-喜欢 Python 安装？使用 Python 3.10+ 和独立虚拟环境。安装已发布的 Beta 4：
+喜欢 Python 安装？使用 Python 3.10+ 和独立虚拟环境。使用下方精确版本安装，包是否可用以索引为准：
 
 ```sh
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install 'agent-mailbox==0.8.0b4'
+python -m pip install 'agent-mailbox==0.8.0'
 agent-mailbox --home ~/.agent-mailbox-v08
 ```
 
-Windows 改用 `py -m venv .venv` 和 `.venv\Scripts\Activate.ps1`。PyPI Beta 需要指定版本或 `--pre`，普通稳定版安装不会选择 Beta。Python/源码执行任务需要 Node.js 22.13+，并在页面点“准备运行环境”。已有入口为 [PyPI agent-mailbox](https://pypi.org/project/agent-mailbox/)，没有 TestPyPI 或 Homebrew 发行。已有 npm 包 [dsh-agent-mailbox](https://www.npmjs.com/package/dsh-agent-mailbox) 是独立的 v0.7 DeepSeek Harness 插件，尚待适配 v0.8，不是工作台安装入口；无 scope 的 `agent-mailbox` 属于其他项目。
+Windows 改用 `py -m venv .venv` 和 `.venv\Scripts\Activate.ps1`。下方精确版本命令须待公开后使用，不能以旧稳定版安装替代。Python/源码执行任务需要 Node.js 22.13+，并在页面点“准备运行环境”。已有入口为 [PyPI agent-mailbox](https://pypi.org/project/agent-mailbox/)，没有 TestPyPI 或 Homebrew 发行。已有 npm 包 [dsh-agent-mailbox](https://www.npmjs.com/package/dsh-agent-mailbox) 是独立的 DeepSeek Harness 插件，配套发布目标为 `0.8.0`，公开状态另行核验，不是工作台安装入口；无 scope 的 `agent-mailbox` 属于其他项目。
 
 Codex、Claude Code 使用各自原生登录。查看接入检查不会调用模型，点击接入测试会消耗原生模型额度。如果默认模型不可用，可以明确选择执行服务提供的模型。[上手指南](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/GITHUB-QUICKSTART.md)包含源码安装和第一次协作步骤。
 

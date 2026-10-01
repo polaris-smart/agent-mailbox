@@ -1,6 +1,6 @@
 # agent-mailbox
 
-**Local-first AI agent team workbench for Codex and Claude Code.**
+**Local-first team workbench for your existing AI agent apps and CLIs.**
 
 Turn the AI agents you already use into a project team. Give them shared context, let them hand off work through a project mailbox, and review their delivery before applying changes. Your project records stay on your computer; the workbench needs no additional management LLM account.
 
@@ -8,7 +8,7 @@ Turn the AI agents you already use into a project team. Give them shared context
 
 ## Discover → join → connect → collaborate → review
 
-**The existing-session mailbox below is implemented in the current source candidate, not the published Beta 4 downloads. A stable v0.8.0 release has not been published.**
+**v0.8.0 connects existing agent sessions through project mailbox MCP. Download availability and checksums are determined by the actual release page.**
 
 1. **Discover your employees.** Register existing desktop apps and CLI agents, then create a project and add its members. Record each member's responsibility; a role description does not grant extra permissions.
 2. **Connect an existing conversation.** Generate its project mailbox MCP configuration in the workbench and import it into that agent's MCP settings. Each connection is bound to one employee, project and session. This does not require a new provider key or a workbench-started CLI; support depends on the host accepting the exported stdio MCP configuration.
@@ -21,28 +21,28 @@ Keep each employee's project connection with its main session. Subagents report 
 
 Existing-session mailbox connections currently require employees registered on the local device. Optional remote execution nodes use their existing protocol; they do not provide the new remote App mailbox connection.
 
-## Install the v0.8 beta
+## Install v0.8.0
 
-**Beta 4: `0.8.0b4`.** Check the [GitHub release](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0b4) for available files and checksums. A release is available only after its checks pass and its files are uploaded. [Channel status and release gates](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/RELEASE-CHANNELS.md) distinguish release preparation from publication.
+**Version: `0.8.0`.** Check the [GitHub release](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0) for available files and checksums. A release is available only after its checks pass and its files are uploaded. [Channel status and release gates](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/RELEASE-CHANNELS.md) distinguish release preparation from publication.
 
 | Your computer | Native download |
 | --- | --- |
-| Apple Silicon Mac | [Agent-Mailbox-0.8.0b4-darwin-arm64.zip](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0b4/Agent-Mailbox-0.8.0b4-darwin-arm64.zip) |
-| Windows x64 | [Agent-Mailbox-0.8.0b4-win32-x64.zip](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0b4/Agent-Mailbox-0.8.0b4-win32-x64.zip) |
-| Linux x64 | [Agent-Mailbox-0.8.0b4-linux-x64.tar.gz](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0b4/Agent-Mailbox-0.8.0b4-linux-x64.tar.gz) |
+| Apple Silicon Mac | [Agent-Mailbox-0.8.0-darwin-arm64.zip](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0/Agent-Mailbox-0.8.0-darwin-arm64.zip) |
+| Windows x64 | [Agent-Mailbox-0.8.0-win32-x64.zip](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0/Agent-Mailbox-0.8.0-win32-x64.zip) |
+| Linux x64 | [Agent-Mailbox-0.8.0-linux-x64.tar.gz](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0/Agent-Mailbox-0.8.0-linux-x64.tar.gz) |
 
-Extract the entire archive, then start **Agent Mailbox**. Native downloads include Python, Node and the locked task runtime. Keep their folders intact. macOS builds have no Developer ID signature or notarization; Windows downloads may show a reputation warning. See [installation and upgrade steps](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/BETA-INSTALL.md). Intel Mac and Windows ARM native packages are not provided by this beta.
+Extract the entire archive, then start **Agent Mailbox**. Native downloads include Python, Node and the locked task runtime. Keep their folders intact. macOS builds have no Developer ID signature or notarization; Windows downloads may show a reputation warning. See [installation and upgrade steps](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/BETA-INSTALL.md). Intel Mac and Windows ARM native packages are not provided by this release.
 
-Prefer Python? Use Python 3.10+ and a dedicated virtual environment. Install the published Beta 4:
+Prefer Python? Use Python 3.10+ and a dedicated virtual environment. Use the exact version below; availability is determined by the registry:
 
 ```sh
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install 'agent-mailbox==0.8.0b4'
+python -m pip install 'agent-mailbox==0.8.0'
 agent-mailbox --home ~/.agent-mailbox-v08
 ```
 
-On Windows use `py -m venv .venv` and `.venv\Scripts\Activate.ps1`. PyPI beta installation needs an explicit version or `--pre`; an ordinary stable install does not select a beta. Python/source task execution needs Node.js 22.13+ and **Prepare runtime** in the UI. Our existing package is [PyPI agent-mailbox](https://pypi.org/project/agent-mailbox/). There is no TestPyPI or Homebrew distribution. The existing [dsh-agent-mailbox](https://www.npmjs.com/package/dsh-agent-mailbox) npm package is a separate DeepSeek Harness plugin for v0.7, not a v0.8 workbench installer. Its v0.8 integration is pending; the unscoped npm name `agent-mailbox` belongs to another project.
+On Windows use `py -m venv .venv` and `.venv\Scripts\Activate.ps1`. Package availability is determined by the registry; use the exact version pin to verify installation. Python/source task execution needs Node.js 22.13+ and **Prepare runtime** in the UI. Our existing package is [PyPI agent-mailbox](https://pypi.org/project/agent-mailbox/). There is no TestPyPI or Homebrew distribution. The existing [dsh-agent-mailbox](https://www.npmjs.com/package/dsh-agent-mailbox) npm package is a separate DeepSeek Harness plugin, not a workbench installer. The matching plugin release target is `dsh-agent-mailbox@0.8.0`; its registry publication must be checked separately; the unscoped npm name `agent-mailbox` belongs to another project.
 
 Sign into Codex or Claude Code using its native login. Viewing connection checks does not run a model; starting a connection test uses native model quota. If a default model is unavailable, explicitly select a model advertised by the execution service. See the [quick start](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/GITHUB-QUICKSTART.md) for source installation and your first collaboration.
 
@@ -60,6 +60,6 @@ Several employee names of the same tool share that device's native login by defa
 
 [Detailed quick start](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/GITHUB-QUICKSTART.md) · [Beta acceptance and platform boundaries](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/BETA-ACCEPTANCE.md) · [Beta 3 verification evidence](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/evidence/v080/beta3-collaboration.md) · [Optional device setup](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/NODES.md) · [Security](https://github.com/polaris-smart/agent-mailbox/blob/main/SECURITY.md)
 
-Updates currently offer explicit checks, maintenance pause, and private backups; program replacement and recovery remain manual. Keep project repositories and retained task worktrees backed up separately from the database backup. Cross-device editing isolation, automatic updates, universal app control, a drag-and-drop workflow editor, and AI ERP are outside this beta's implemented scope.
+Updates currently offer explicit checks, maintenance pause, and private backups; program replacement and recovery remain manual. Keep project repositories and retained task worktrees backed up separately from the database backup. Cross-device editing isolation, automatic updates, universal app control, a drag-and-drop workflow editor, and AI ERP are outside this version's implemented scope.
 
 © 2026 NoFox and contributors · [Apache-2.0](https://github.com/polaris-smart/agent-mailbox/blob/main/LICENSE) · [NOTICE](https://github.com/polaris-smart/agent-mailbox/blob/main/NOTICE) · [Legacy MIT notices](https://github.com/polaris-smart/agent-mailbox/blob/main/LICENSES/MIT-Legacy.txt)

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.0 — 2026-10-01
+
+- Make existing App/CLI project mailbox MCP the primary connection path: employee/project/session binding, revocable private configuration, ordinary mail and approved shared resources. MCP does not automatically notify or wake an idle agent.
+- Default to mailbox tasks with project responsibilities, explicit employee acceptance, saved approved-resource manifests and result submission for separate Human review. Read pinned document revisions with explicit version_id; ordinary unversioned reads remain different.
+- Keep managed Codex/Claude CLI execution as a separate option. Mailbox tasks never grant managed execution credentials or automatically apply code.
+- Cancel active mailbox tasks on cancellation, leave, pause or retirement; retain existing-session progress across workbench restarts.
+- Correct SQLite private-permission handling races and make background-thread failures fail the test gate. The 4201b34 release gate passed six regression jobs and three extracted native-package checks; fixture protocols and native model execution remain separate evidence.
+- Provide the matching npm companion plugin target dsh-agent-mailbox@0.8.0 in its separate repository; it is not a workbench installer. Registry publication remains a separate verified action.
+- Preserve Beta 4 evidence, incompatible v0.7 data/configuration boundaries and manual compatible-v0.8 upgrades.
+
 ## 0.8.0b4 — Beta 4 release target
 
 - Keep the agent-mailbox brand, Python distribution and CLI as the replacement for v0.7; document the breaking configuration/data boundary and verified registry ownership.

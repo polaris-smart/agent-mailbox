@@ -19,9 +19,9 @@
 员工 `project_messages(folder="inbox"|"sent"|"group", limit=1..100)` 默认收件；本人广播在 sent。本地/远端工具和受管启动上下文使用绑定身份，不读取他人定向消息作为最近消息。管理员与设备级授权上下文仍为共享范围，不能声称端到端保密；任务/产物本身为项目共享。查看无 ACK/任务副作用。路线图建议见 docs/designs/2026-09-30-v08-user-journey-roadmap.md，未经确认不得把其余提案写成 PRD 事实。
 
 
-### 当前源码候选：优先连接既有员工会话
+### v0.8.0 实现：优先连接既有员工会话
 
-当前开发主线是“员工→项目组/职责→共享资料→邮箱→邮件任务→Human 验收”；新路径尚未作为正式版发布，不能以公开 Beta 4 包证明它可用。既有 App/CLI 在工作台导出员工/项目/session 绑定的私有配置，再导入宿主 stdio MCP。`mailbox-mcp --session-file <private-file>` 读取本 home 实例信息，通过受限 HTTP 员工工具连接工作台；端口变化不要求重新发凭据。禁止把 owner 凭据当员工凭据、把令牌写进项目资料或共享主会话配置给子代理。
+当前开发主线是“员工→项目组/职责→共享资料→邮箱→邮件任务→Human 验收”；新路径的能力由本轮验证证明，不能以公开 Beta 4 包证明它可用。既有 App/CLI 在工作台导出员工/项目/session 绑定的私有配置，再导入宿主 stdio MCP。`mailbox-mcp --session-file <private-file>` 读取本 home 实例信息，通过受限 HTTP 员工工具连接工作台；端口变化不要求重新发凭据。禁止把 owner 凭据当员工凭据、把令牌写进项目资料或共享主会话配置给子代理。
 
 `mailbox_mcp.py` 提供 12 个员工工具，包含 `project_tasks`、`project_task_accept`、`project_task_submit`。读取不接单、不触发模型；当前通知方式是主动查信，MCP 接入不等于自动唤醒。角色字段 `employees[].project_role` 仅说明职责，不改变权限。邮箱会话只能操作本项目本人邮件任务，不能进行 Human 验收或受管执行；离组、生命周期变化、过期或撤销必须即时影响授权。
 
@@ -30,3 +30,10 @@
 受管 Codex/Claude CLI 是独立选项，保留 11 个运行器自动注入的项目工具及原来的权限、工作区、交付/apply 边界。新邮箱当前只接本机员工；远端 App 会话接入仍需另行实现和验证。共享文档、任务结果是项目范围；不要声称所有内部子代理作者已独立核验。
 
 改动时验证 `tests/test_workbench_mail_sessions.py`、`tests/test_workbench_mail_tasks.py`、`tests/test_mailbox_mcp.py` 和 `scripts/check-package.py`，并保留受管测试。Fixture 仅证明协议与隔离；真实宿主、三平台安装包和正式发行分别记录，不以代码存在或导出配置替代成功接入。
+
+
+### v0.8.0 发行准备实证（不代称公开发行）
+
+源码提交 `4201b34dad503529d113b904ae67a23be7cc5644` 的 [CI](https://github.com/polaris-smart/agent-mailbox/actions/runs/36865817096) 完成 9/9 门禁：六组回归和三平台原生包检查。Mac/Linux 各组 404 passed、4 skipped；Windows 各组 360 passed、48 skipped。后台线程异常提升为测试失败；本次无后台警告。原生包实际解压、启动，并分别验证 12 个既有会话邮箱 MCP 工具和 11 个受管项目 MCP 工具；协议 fixture 不调用供应商模型。Mac 新原生包在真实数据副本上验证 schema 9→11，20 名员工、2 个项目及历史记录保留。
+
+这些是发行准备和安装/协议证据，不是 GitHub/PyPI/npm 已公开证明。ZCode 隔离 CLI、DeepSeek Harness 无模型接口验证也不能代表所有正在运行的真实 App 会话已热加载 MCP 或自动唤醒。真实宿主、物理设备和跨设备验收按实际范围单列。Beta 4 历史证据不覆盖本轮结果。
