@@ -34,7 +34,6 @@ jobs:
       - run: ruff format --check src tests
       - run: pytest -o addopts="--timeout=30" -x -vv --tb=short
   native-package:
-    needs: test
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     strategy:
