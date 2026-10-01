@@ -942,14 +942,22 @@ def test_stop_interrupts_claim_response_after_http_connection_releases_socket():
     client = object.__new__(FleetClient)
     client.connection_lock = threading.Lock()
     client.claim_connection = None  # HTTP/1.0 response owns the socket now.
-    reading, peer = socket.socketpair()
+    # Fleet uses IP TCP/TLS, not socketpair's platform-specific local family.
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    reading = socket.create_connection(listener.getsockname())
+    peer, _ = listener.accept()
+    listener.close()
     client.claim_socket = reading
+    ready = threading.Event()
     finished = threading.Event()
     received = []
 
     def read_response():
         try:
             with reading.makefile("rb") as stream:
+                ready.set()
                 received.append(stream.readline())
         except OSError as error:
             # Winsock may report a shutdown error instead of POSIX EOF. The
@@ -961,6 +969,7 @@ def test_stop_interrupts_claim_response_after_http_connection_releases_socket():
     worker = threading.Thread(target=read_response)
     worker.start()
     try:
+        assert ready.wait(2)
         client.interrupt_claim()
         assert finished.wait(2)
         worker.join(timeout=2)
@@ -970,3 +979,75 @@ def test_stop_interrupts_claim_response_after_http_connection_releases_socket():
     finally:
         reading.close()
         peer.close()
+
+
+def test_stop_interrupts_real_tls_close_response_and_preserves_control(
+    fleet, tmp_path, monkeypatch
+):
+    import http.client
+
+    _, project, _, coordinator = fleet
+    client = FleetClient(tmp_path / "tls-stop", coordinator.issue_invite([project["id"]]))
+    release = threading.Event()
+    reading = threading.Event()
+    finished = threading.Event()
+    errors = []
+    handler = coordinator.server.RequestHandlerClass
+    original_post = handler.do_POST
+    original_response = http.client.HTTPSConnection.getresponse
+
+    def stall_claim(self):
+        if self.path != "/v1/tasks/claim":
+            return original_post(self)
+        self.rfile.read(int(self.headers["Content-Length"]))
+        self.send_response(200)
+        self.send_header("Content-Length", "100")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.flush()
+        release.wait(5)
+        self.close_connection = True
+
+    def observe_response(self):
+        response = original_response(self)
+        if self is client.claim_connection:
+            assert self.sock is None  # HTTPConnection transferred socket ownership.
+            original_read = response.read
+
+            def read(*args, **kwargs):
+                reading.set()
+                return original_read(*args, **kwargs)
+
+            response.read = read
+        return response
+
+    monkeypatch.setattr(handler, "do_POST", stall_claim)
+    monkeypatch.setattr(http.client.HTTPSConnection, "getresponse", observe_response)
+
+    def claim():
+        try:
+            with client.claim_lock:
+                client._request(
+                    "POST", "/v1/tasks/claim", {"project_id": project["id"], "wait": 30}, timeout=40
+                )
+        except WorkbenchError as error:
+            errors.append(error.code)
+        finally:
+            finished.set()
+
+    worker = threading.Thread(target=claim)
+    worker.start()
+    try:
+        assert reading.wait(2)
+        client.interrupt_claim()
+        assert finished.wait(2)
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+        assert errors == ["network_error"]
+        assert client.claim_lock.acquire(blocking=False)
+        client.claim_lock.release()
+        assert client.claim_socket is None
+        assert client.projects() == [{"id": project["id"], "name": "Shared"}]
+    finally:
+        release.set()
+        worker.join(timeout=2)
