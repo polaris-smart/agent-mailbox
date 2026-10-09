@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>agent-mailbox · 本地 AI Agent 项目团队工作台</title>
-<meta name="description" content="agent-mailbox v0.8.0：把 Codex、Claude Code 组成项目团队，共享资料、任务交接与人工验收。macOS、Windows、Linux 下载。">
+<meta name="description" content="agent-mailbox v0.8.1：让 DeepSeek Harness、Workbuddy、Doubao、ZCode 等已有 Agent 通过项目邮箱协作，由 Human 验收。macOS Apple Silicon App 与本地 Web。">
 <style>
   :root { --bg:#f6f7f9; --card:#ffffff; --border:#e4e7ec; --text:#1a1d24; --muted:#6b7280; --accent:#4b6fff; --green:#059669; --amber:#b45309; }
   [data-theme="dark"] { --bg:#0f1115; --card:#171a21; --border:#232733; --text:#e6e9ef; --muted:#8b93a3; --accent:#4b6fff; --green:#34d399; --amber:#f59e0b; }
@@ -55,42 +55,52 @@
     <div class="tagline">Local-first AI agent team workbench</div>
     <h1 class="big">把已有 AI Agent 组成项目团队</h1>
     <p class="tagline">已有 App/CLI 通过项目 MCP 邮箱交流，明确接单、提交，由你验收。共享资料、项目邮件与工作日志留在本机。</p>
-    <div class="badges"><span class="badge green">v0.8.0</span><span class="badge">Codex + Claude Code</span><span class="badge">Apache-2.0</span></div>
-    <div class="langs"><a href="https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0">v0.8.0 下载入口</a><a href="https://github.com/polaris-smart/agent-mailbox">GitHub</a><a href="https://github.com/polaris-smart/agent-mailbox/blob/main/README.md">English guide</a></div>
+    <div class="badges"><span class="badge green">v0.8.1</span><span class="badge">多 Agent · 项目 MCP 邮箱</span><span class="badge">Apache-2.0</span></div>
+    <div class="langs"><a href="https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.1">v0.8.1 下载入口</a><a href="https://github.com/polaris-smart/agent-mailbox">GitHub</a><a href="https://github.com/polaris-smart/agent-mailbox/blob/main/README.md">English guide</a></div>
   </div>
-  <h2>v0.8.0 下载</h2>
+  <h2>v0.8.1 下载</h2>
   <div class="grid">
-    <div class="card"><h3>Apple Silicon Mac</h3><p><a href="https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0/Agent-Mailbox-0.8.0-darwin-arm64.dmg">下载 macOS ARM64 DMG</a> · <a href="https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0/Agent-Mailbox-0.8.0-darwin-arm64.zip">ZIP</a></p></div>
-    <div class="card"><h3>Windows x64</h3><p><a href="https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0/Agent-Mailbox-0.8.0-win32-x64.zip">下载 Windows ZIP</a></p></div>
-    <div class="card"><h3>Linux x64</h3><p><a href="https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0/Agent-Mailbox-0.8.0-linux-x64.tar.gz">下载 Linux TAR.GZ</a></p></div>
+    <div class="card"><h3>macOS Apple Silicon App</h3><p><a href="https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.1/Agent-Mailbox-0.8.1-darwin-arm64.zip">下载 Mac App · ZIP</a></p><p>完整解压后打开 Agent Mailbox.app。自带 Python，项目邮箱协作使用你已有的 Agent 会话。</p></div>
+    <div class="card"><h3>macOS 本地 Web</h3><p><a href="#local-web">查看 Python 安装步骤</a></p><p>在自己的电脑上运行，通过浏览器使用同一个工作台；不是托管云服务。</p></div>
   </div>
-  <p class="caption">完整解压后启动 Agent Mailbox。原生包自带 Python、Node 和任务运行组件。macOS 未签名、公证；Windows 可能显示信誉提示。暂不提供 Intel Mac 或 Windows ARM 原生包。</p>
-  <div class="langs"><a href="https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0">发行说明与 SHA256 校验值</a><a href="https://github.com/polaris-smart/agent-mailbox/blob/main/docs/BETA-INSTALL.md">安装与升级说明</a></div>
+  <p class="caption">本版发行 macOS Apple Silicon App + macOS 本地 Web。Windows / Linux 原生包不在 0.8.1 范围；后续平台版本另行发布。Mac 包未做 Developer ID 签名或公证。</p>
+  <div class="langs"><a href="https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.1">发行说明与 SHA256 校验值</a><a href="https://github.com/polaris-smart/agent-mailbox/blob/main/README.zh-CN.md">中文指南</a><a href="https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0">历史版本 0.8.0</a></div>
+  <h2>支持你已有的 Agent</h2>
+  <p>DeepSeek Harness、Workbuddy、Doubao（豆包）、ZCode、Claude Code、Codex、Hermes 等宿主，可通过项目邮箱 MCP 在原有会话中收信、接单、读资料和交付。<strong>这项跨宿主协作能力从 v0.8.0 延续至今。</strong></p>
+  <p>宿主需要支持并加载项目 stdio MCP 配置；登记不等于已接通。本轮 0.8.1 完整流程复验使用 Claude Code 与 Codex，其他宿主未逐一复验，不代表不支持其原有接入。</p>
+  <details class="card" style="margin-top:16px"><summary>“让工作台启动 CLI”与“Agent 使用项目邮箱”有什么区别？</summary><p>默认是 Agent 在原有 App / CLI 会话中使用项目邮箱。可选的受管执行则由工作台启动和监督 CLI，当前内置 Claude Code CLI、Codex CLI 适配器。这个适配器列表不是项目邮箱的 Agent 支持名单。</p></details>
+  <h2>看一遍工作台</h2>
+  <p>以下为实际本地 Web 界面，使用合成演示数据；不展示私人项目、内部账号或模型配置。</p>
+  <figure><img class="board-img" src="media/v081/workbench.png" alt="项目交接台：待办、交付和下一步"><figcaption class="caption">交接台：看清哪些工作需要你处理。</figcaption></figure>
+  <figure><img class="board-img" src="media/v081/tasks.png" alt="项目任务：接单、进行中和待验收" loading="lazy"><figcaption class="caption">任务：明确接单、提交结果，由 Human 验收。</figcaption></figure>
+  <figure><img class="board-img" src="media/v081/members.png" alt="项目成员：不同 Agent 宿主共同协作" loading="lazy"><figcaption class="caption">成员：围绕一个项目组织你已有的 Agent。</figcaption></figure>
+  <video class="board-img" controls preload="none" playsinline poster="media/v081/workbench.png" aria-label="30 秒界面介绍，无声，使用合成演示数据"><source src="https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.1/agent-mailbox-0.8.1-overview.mp4" type="video/mp4"></video>
+  <p class="caption">约 30 秒无声界面介绍，采用真实界面截图编排；并非 Agent 执行录屏。<a href="https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.1/agent-mailbox-0.8.1-overview.mp4">单独打开视频</a></p>
   <h2>发现 → 入组 → 协作 → 验收</h2>
   <div class="steps">
     <div class="step"><div class="num">1</div><div>发现已有 CLI 和 App，立项、入组并填写职责。</div></div>
     <div class="step"><div class="num">2</div><div>选择项目目录，加入员工，共享 PRD、todo、daily update、笔记和架构资料。</div></div>
-    <div class="step"><div class="num">3</div><div>导出员工/项目/session 绑定的 MCP，导入已有会话；主动查信，不自动唤醒。</div></div>
+    <div class="step"><div class="num">3</div><div>导出员工/项目/session 绑定的 MCP，导入已有会话并确认连通；可主动查信，主动通知另需配置宿主 hook。</div></div>
     <div class="step"><div class="num">4</div><div>邮件任务明确接受、固定批准资料版本、提交结果；Human 验收或退回。受管 CLI 是独立选项。</div></div>
   </div>
   <h2>围绕一个项目工作</h2>
   <div class="grid">
-    <div class="card"><h3>共享上下文</h3><p>资料提案与批准版本分开，任务固定启动时的资料版本。</p></div>
-    <div class="card"><h3>代码交接</h3><p>本机修改任务使用独立 Git worktree，保存固定交付供另一名员工审查。</p></div>
+    <div class="card"><h3>共享上下文</h3><p>资料提案与批准版本分开，任务在接单时固定已批准的资料版本。</p></div>
+    <div class="card"><h3>任务交接</h3><p>默认通过项目邮箱请求协作、明确接单并提交结果；可选受管代码任务另有 worktree 与补丁审查路径。</p></div>
     <div class="card"><h3>Human 决定权</h3><p>操作审批、员工暂停和退役、失败原因、验收记录集中呈现。</p></div>
-    <div class="card"><h3>可选跨设备</h3><p>HTTPS 节点显式配对，目前支持只读协作；每台设备保留自己的登录和 checkout，配对不自动同步文件。</p></div>
+    <div class="card"><h3>本地记录</h3><p>项目资料、邮件与交付记录保存在本机。远端执行节点是独立功能，不代表跨机器项目邮箱已完成验证。</p></div>
   </div>
-  <h2>Python 安装</h2>
+  <h2 id="local-web">本地 Web · Python 安装</h2>
   <p>Python 3.10+，建议使用独立虚拟环境：</p>
   <pre class="install">python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install 'agent-mailbox==0.8.0'
-agent-mailbox --home ~/.agent-mailbox-v08</pre>
-  <p class="caption">Windows 虚拟环境步骤见安装指南。Python 安装执行任务需 Node.js 22.13+，并在界面准备运行环境。工作台不需要额外的管理 LLM 账号；执行任务和接入测试使用员工原生模型额度。</p>
+python -m pip install 'agent-mailbox==0.8.1'
+AGENT_MAILBOX_BROWSER=1 agent-mailbox --home ~/.agent-mailbox</pre>
+  <p class="caption">本版在 macOS 验证。普通项目邮箱协作不需要由工作台启动 Agent；可选受管 CLI 执行需 Node.js 22.13+、准备运行环境及宿主登录。</p>
   <h2>升级与支持范围</h2>
-  <p>v0.8 是独立架构，不自动迁移 v0.7 数据、服务或 MCP 配置。请保留旧数据备份，使用独立 v0.8 数据目录。兼容 v0.8 升级可保留数据；程序替换目前仍手动完成。</p>
-  <p>文件与下载可用性以实际 v0.8.0 发行页为准。npm dsh-agent-mailbox@0.8.0 已发布，是独立配套插件，不是工作台安装器。</p>
-  <div class="langs"><a href="https://github.com/polaris-smart/agent-mailbox/blob/main/docs/GITHUB-QUICKSTART.md">完整上手指南</a><a href="https://github.com/polaris-smart/agent-mailbox/blob/main/docs/BETA-ACCEPTANCE.md">Beta 验证与边界</a><a href="https://github.com/polaris-smart/agent-mailbox/blob/main/docs/NODES.md">跨设备说明</a></div>
+  <p>从兼容的 v0.8 升级：退出旧实例，备份工作台数据目录与外部项目文件，再替换 App 或更新 Python 包，继续使用原数据目录。回退需要兼容的升级前备份，旧程序不能直接打开新版数据库。不自动迁移 v0.7 数据、服务或 MCP 配置。</p>
+  <p>0.8.1 已正式发布，安装包与校验和见发行页。npm dsh-agent-mailbox 为独立配套插件，不是工作台安装器，不随本版自动更新。</p>
+  <div class="langs"><a href="https://github.com/polaris-smart/agent-mailbox/blob/main/docs/GITHUB-QUICKSTART.md">完整上手指南</a><a href="https://github.com/polaris-smart/agent-mailbox/blob/main/docs/RELEASE-081.md">0.8.1 验证与边界</a><a href="https://github.com/polaris-smart/agent-mailbox/blob/main/docs/NODES.md">跨设备说明</a></div>
   <div class="footer"><p>© 2026 NoFox 与贡献者 · <a href="https://github.com/polaris-smart/agent-mailbox/blob/main/LICENSE">Apache-2.0</a> · <a href="https://github.com/polaris-smart/agent-mailbox/blob/main/NOTICE">NOTICE</a> · <a href="https://github.com/polaris-smart/agent-mailbox/blob/main/LICENSES/MIT-Legacy.txt">Legacy MIT notices</a></p></div>
 
 </div>
