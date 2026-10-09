@@ -117,7 +117,7 @@ def test_identity_tool_and_cross_project_rejections(team, tmp_path):
             store,
             a["token"],
             "message",
-            {"title": "Snoop", "body": "No", "reply_to": private["id"]},
+            {"title": "Snoop", "body": "No", "recipient_id": bob["id"], "reply_to": private["id"]},
         )
     assert private["id"] not in {
         m["id"] for m in invoke(store, a["token"], "messages", {})["messages"]
@@ -159,7 +159,7 @@ def test_inactive_employee_cannot_use_or_issue_session(team, lifecycle):
 
 
 def test_only_approved_snapshots_and_explicit_proposals(team, tmp_path):
-    store, project, alice, _, (a, _) = team
+    store, project, alice, bob, (a, _) = team
     path = tmp_path / "PRD.md"
     path.write_text("Approved")
     resource = store.add_resource(project["id"], "PRD", "prd", path)
@@ -193,7 +193,12 @@ def test_only_approved_snapshots_and_explicit_proposals(team, tmp_path):
     )
     note = invoke(store, a["token"], "note", {"title": "Log", "body": "Note " + a["token"]})
     assert "[redacted]" in note["body"]
-    mail = invoke(store, a["token"], "message", {"title": "Mail", "body": "Token " + a["token"]})
+    mail = invoke(
+        store,
+        a["token"],
+        "message",
+        {"title": "Mail", "body": "Token " + a["token"], "recipient_id": bob["id"]},
+    )
     assert "[redacted]" in mail["body"]
     assert a["token"] not in json.dumps(
         [list_sessions(store, alice["id"], project["id"]), store.snapshot()]
@@ -249,7 +254,7 @@ def test_schema9_migration_preserves_existing_messages_and_membership(team):
 def test_session_authorization_and_writes_share_transaction(team, monkeypatch):
     import agent_mailbox.workbench_mail_sessions as domain
 
-    store, project, _, _, (a, _) = team
+    store, project, _, bob, (a, _) = team
     original = domain.validate_session
     transactions = []
 
@@ -259,12 +264,22 @@ def test_session_authorization_and_writes_share_transaction(team, monkeypatch):
         return original(bound, db, token)
 
     monkeypatch.setattr(domain, "validate_session", validate)
-    invoke(store, a["token"], "message", {"title": "Atomic", "body": "One transaction"})
+    invoke(
+        store,
+        a["token"],
+        "message",
+        {"title": "Atomic", "body": "One transaction", "recipient_id": bob["id"]},
+    )
     assert len(transactions) == 2 and transactions[0] is transactions[1]
     assert len(store.list_messages(project["id"])) == 1
     revoke_session(store, a["id"])
     with pytest.raises(WorkbenchError):
-        invoke(store, a["token"], "message", {"title": "After revoke", "body": "Forbidden"})
+        invoke(
+            store,
+            a["token"],
+            "message",
+            {"title": "After revoke", "body": "Forbidden", "recipient_id": bob["id"]},
+        )
     assert len(store.list_messages(project["id"])) == 1
 
 

@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import argparse
 import hmac
+import importlib
 import ipaddress
 import json
+import os
+import pathlib
 import secrets
 import signal
 import subprocess
@@ -36,6 +39,71 @@ PREFIX = "/api/workbench"
 VERSION = __version__
 
 
+def build_info(store) -> dict:
+    """构建溯源 ✓（Codex AM-06：修复**到不了用户**的根因是"安装的东西 ≠ 源码"✗）。
+
+    绑定四件事 ✓，让"关于页/证据"能说清**你打开的到底是哪份代码** ✗：
+      · `version` + `revision`（仓库里取 git 短 sha ✓ 打包后若有 `build-info.json` 则以它为准 ✓）
+      · `assets`：界面资源的 SHA256（前 16 位 ✓）—— 与源码/安装包**逐字节**可比 ✓
+      · `home` + `schema`：数据目录与库结构版本 ✓（升级验收要靠这两个 ✓）
+    """
+    import hashlib
+
+    assets_dir = pathlib.Path(__file__).with_name("workbench_assets")
+    info: dict = {"version": VERSION, "revision": None, "built_at": None, "assets": {}}
+    # 闸门②（规范 §三）✓：我跑的是**成品**还是**工作树**✗ —— 今晚就是这一点坑了一整晚 ✓
+    shipped = assets_dir / "build-info.json"
+    if shipped.is_file():
+        try:
+            info.update(json.loads(shipped.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            pass
+    if not info.get("revision"):
+        try:
+            done = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=pathlib.Path(__file__).parents[2],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+            info["revision"] = done.stdout.strip() or None
+        except (OSError, subprocess.SubprocessError):
+            info["revision"] = None
+    hashes = {}
+    for name in ("workbench.js", "index.html", "workbench.css"):
+        candidate = assets_dir / name
+        if candidate.is_file():
+            hashes[name] = hashlib.sha256(candidate.read_bytes()).hexdigest()[:16]
+    info["assets"] = {**info.get("assets", {}), **hashes}
+    try:
+        from .workbench_store import SCHEMA_VERSION
+
+        info["schema"] = SCHEMA_VERSION
+    except ImportError:
+        info["schema"] = None
+    info["home"] = str(store.root)
+    # **AM-06 运行来源（三事实 ✓ Codex 口径）** ✗：`build-info.json` **只说明构建来源** ✓
+    # 绝不单独拿它决定"运行形态" ✗（它进了源码树后，"文件存在"就没有区分力了 ✓）
+    code_path = str(pathlib.Path(__file__).resolve())
+    info["runtime"] = {
+        "executable": sys.executable,
+        "argv": list(sys.argv),
+        "code_path": code_path,
+        "frozen": bool(getattr(sys, "frozen", False)),
+    }
+    # 形态**只在代码路径能判定时**给出 ✓ 否则「未确认」✗（证据不足不做二分 ✗）
+    if getattr(sys, "frozen", False) or ".app/Contents/" in code_path:
+        info["mode"] = "packaged"
+    elif "/src/agent_mailbox/" in code_path:
+        info["mode"] = "source"
+    else:
+        info["mode"] = "unknown"  # 未确认 ✓
+    info.setdefault("dirty", None)  # 成品包由构建写入 ✓ 开发态为 None ✓
+    return info
+
+
 def pick_project():
     if sys.platform != "darwin":
         raise WorkbenchError(
@@ -58,6 +126,55 @@ def pick_project():
     if result.returncode:
         raise WorkbenchError("PICKER_CANCELLED", "No project folder was selected.")
     return {"path": result.stdout.strip()}
+
+
+def t_manual_detail(entrypoint: str) -> str:
+    """手工登记时的说明文案（**如实** ✓：未被自动发现 ⇒ 执行未验证 ✗ 不假装已验证 ✓）。"""
+    return f"手工登记（未被自动发现）· 入口：{entrypoint} · 是否可自动执行未验证"
+
+
+def wake_redeem_loop(store, home, *, interval: float = 5.0, stop: object | None = None) -> None:
+    """应用侧**兑现**：任何来源的新信 ⇒ 发现 ⇒ 叫醒 ✓（这就是"开着应用就自动"✓ 零配置 ✓）。
+
+    · 低频（默认 5s ✓）· 只读判定 ✓ · 闸门全在 `run_once` 里（认领/水位线/冷却/上限 ✓）
+    · 安静失败 ✓：任何异常都不许把工作台带崩 ✗（下一轮再来 ✓）
+    """
+    import time as _time
+
+    from .workbench_wake import (
+        active_employee_ids,
+        hook_deliver,
+        run_once,
+        state_lock,
+        unread_ids_for_employee,
+    )
+
+    while stop is None or not getattr(stop, "is_set", lambda: False)():
+        try:
+            state_home = home
+            with state_lock(state_home):
+                pass
+            result = run_once(
+                store,
+                state_home,
+                unread_provider=unread_ids_for_employee,
+                deliver=hook_deliver(state_home),
+                employee_ids=active_employee_ids(store),
+                # **AM-03 修复** ✗：**不替持久状态做决定** ✓
+                # （原来这里固定 `cold_started=True` ⇒ 空状态首启会**跳过冷启动归零** ✗
+                #   把历史未读当新信投递 ✓ Codex 实测 `cold_done=null` 且投递一次 ✓
+                #   ⇒ 现在交给 `_run_once_locked`：state 里没有 `cold_done` ⇒ 这一轮就是冷启动 ✓
+                #     先记「已见」不叫人 ✓ 并把 `cold_done=True` 持久化 ✓ 之后各轮才真正兑现 ✓）
+                cold_started=False,
+            )
+            if result.get("woke"):
+                print(f"[wake] 已叫醒 {result['woke']}")
+        except Exception as exc:  # noqa: BLE001 —— 后台线程必须**绝不**带崩工作台 ✓
+            print(f"[wake] 本轮跳过（{type(exc).__name__}: {str(exc)[:80]}）")
+        if stop is not None and getattr(stop, "wait", None):
+            stop.wait(interval)
+        else:
+            _time.sleep(interval)
 
 
 class WorkbenchHTTP(ThreadingHTTPServer):
@@ -498,9 +615,20 @@ class Handler(BaseHTTPRequestHandler):
                 snapshot["devices"] = [
                     {**d, "revoked": revoked.get(d["id"], False)} for d in snapshot["devices"]
                 ]
+            _project_query = parse_qs(url.query).get("project_id", [None])[0]
+            _proofs = store.proof_index(_project_query)
+            for _task in snapshot["tasks"]:
+                if _task["id"] in _proofs:
+                    _task["proof"] = _proofs[_task["id"]]  # 列表行证据标记的数据源
             result = {
                 **snapshot,
+                # 未决权限请求：一屏三问要回答"等在谁身上、在等什么"（FL-a）
+                "pending_permissions": store.pending_permissions(
+                    parse_qs(url.query).get("project_id", [None])[0]
+                ),
                 "version": VERSION,
+                # AM-06 ✓：把"你打开的是哪份代码"暴露给界面与证据 ✓
+                "build": build_info(store),
                 "node": store.local_node(),
                 "runtime": runtime,
                 "fleet": self.server.fleet_status(),
@@ -511,7 +639,9 @@ class Handler(BaseHTTPRequestHandler):
             result = store.create_project(data["name"], data["path"])
         elif len(route) >= 3 and route[0] == "projects" and route[2] == "members":
             if method == "POST" and len(route) == 3:
-                result = store.add_project_member(route[1], data["employee_id"])
+                from .workbench_mail_sessions import ensure_member_session
+
+                result = ensure_member_session(store, route[1], data["employee_id"])
             elif method == "DELETE" and len(route) == 4:
                 result = store.remove_project_member(route[1], route[3])
             else:
@@ -543,7 +673,9 @@ class Handler(BaseHTTPRequestHandler):
             query = parse_qs(url.query)
             result = {"models": available_models(query.get("kind", [""])[0], store.root)}
         elif method == "GET" and route == ["discover"]:
-            result = {"employees": discover_employees()}
+            from .workbench_runtime import discover_suspects
+
+            result = {"employees": discover_employees(), "suspects": discover_suspects()}
         elif method == "POST" and route == ["employees"]:
             kind = data["kind"]
             connection_type = data.get("connection_type", "cli")
@@ -558,11 +690,27 @@ class Handler(BaseHTTPRequestHandler):
                 ),
                 None,
             )
-            if discovered is None:
+            # 手工登记通道（HS 第 10b 条 ✓ 老板点名的用户自救路径 ✓）：扫描只是**加速器** ✗
+            # 手工登记：**入口必须真实存在且可执行** ✓（否则与"垃圾登记"无异 ✗
+            #  —— 旧测试正是防这个：`{"name":"Fake","entrypoint":"/unknown"}` 必须仍被拒 ✓）
+            manual = (
+                bool(str(data.get("name") or "").strip())
+                and bool(entrypoint)
+                and os.path.isfile(str(entrypoint))
+                and os.access(str(entrypoint), os.X_OK)
+            )
+            if discovered is None and not manual:
                 raise WorkbenchError(
                     "AGENT_NOT_DISCOVERED",
                     "Discover this agent entry point again before registering it.",
                 )
+            if discovered is None:
+                discovered = {
+                    "status": "unknown",
+                    "detail": t_manual_detail(entrypoint),
+                    "entrypoint": entrypoint,
+                    "auth_status": "unknown",
+                }
             if data.get("node_id") not in {None, store.local_node()["id"]}:
                 raise WorkbenchError(
                     "REMOTE_REGISTRATION", "Connect the remote node before adding its employees."
@@ -850,6 +998,31 @@ class Handler(BaseHTTPRequestHandler):
     do_DELETE = dispatch
 
 
+DESKTOP_BUNDLE_ID = "com.polaris-smart.agent-mailbox"
+
+
+def _desktop_wanted(args) -> bool:
+    """Native macOS app builds show the workbench in an app-owned window.
+
+    Frozen macOS launches default to the desktop shell; other platforms and
+    plain CLI launches keep the browser behaviour. Both directions can be
+    overridden explicitly (AGENT_MAILBOX_DESKTOP=1 / AGENT_MAILBOX_NO_DESKTOP=1).
+    """
+    if sys.platform != "darwin" or args.no_browser:
+        return False
+    if os.environ.get("AGENT_MAILBOX_NO_DESKTOP"):
+        return False
+    if os.environ.get("AGENT_MAILBOX_DESKTOP") == "1":
+        return True
+    if not getattr(sys, "frozen", False):
+        return False
+    try:
+        importlib.import_module(".workbench_desktop", __package__)
+    except ImportError:
+        return False
+    return True
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Open the independent agent-mailbox project workbench.",
@@ -859,9 +1032,22 @@ def main(argv=None):
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args(argv)
+    # 2026-10-03 事故修复：默认不开浏览器标签（有人在反复调用 agent-mailbox ⇒ 每次都弹新标签）。
+    # 2026-10-04 修正：**不得据此掐掉桌面壳路径**。显式 AGENT_MAILBOX_DESKTOP=1、
+    #   或冻结版 macOS app（sys.frozen）都依赖"起窗口 / 聚焦已开窗口"这条路；
+    #   一并禁用会让桌面版第二实例退回弹浏览器标签，且打断
+    #   tests/test_workbench_desktop.py 两个用例锁定的契约。
+    _explicit_desktop = os.environ.get("AGENT_MAILBOX_DESKTOP") == "1"
+    _frozen_desktop = sys.platform == "darwin" and getattr(sys, "frozen", False)
+    if os.environ.get("AGENT_MAILBOX_BROWSER") != "1" and not (
+        _explicit_desktop or _frozen_desktop
+    ):
+        args.no_browser = True
     store = WorkbenchStore(args.home)
     try:
         server = WorkbenchHTTP(store, args.port)
+        # ⑤ 应用侧**兑现**（老板判据：开着应用就该自动叫 ✓ 零配置 ✓ 默认开 ✓）
+        threading.Thread(target=wake_redeem_loop, args=(store, store.root), daemon=True).start()
     except WorkbenchError as exc:
         if exc.code != "ALREADY_RUNNING":
             raise
@@ -877,6 +1063,13 @@ def main(argv=None):
         if sys.stdout is not None:
             print(url, flush=True)
         if not args.no_browser:
+            # A second launch of the native app focuses the existing in-app
+            # window instead of stacking another browser window.
+            if (
+                _desktop_wanted(args)
+                and subprocess.run(["open", "-b", DESKTOP_BUNDLE_ID], check=False).returncode == 0
+            ):
+                return
             webbrowser.open(url)
         return
 
@@ -889,14 +1082,40 @@ def main(argv=None):
     url = server.endpoint + "/#token=" + server.token
     if sys.stdout is not None:
         print(url, flush=True)
-    if not args.no_browser:
-        webbrowser.open(url)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.close()
+    if _desktop_wanted(args):
+        # The AppKit event loop owns the main thread; the HTTP service keeps
+        # serving from its own background threads until the desktop UI quits.
+        from .workbench_desktop import run_desktop
+
+        service_stopped = threading.Event()
+
+        def serve_desktop():
+            try:
+                server.serve_forever()
+            finally:
+                service_stopped.set()
+
+        server_thread = threading.Thread(target=serve_desktop, daemon=True)
+        server_thread.start()
+        try:
+            run_desktop(url, service_stopped=service_stopped)
+        except KeyboardInterrupt:
+            # SIGTERM uses the KeyboardInterrupt shim in non-desktop mode too.
+            pass
+        finally:
+            # Ignore further SIGTERM while shutting down: the KeyboardInterrupt
+            # shim must not fire inside server.shutdown() and corrupt teardown.
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            server.shutdown()
+            server_thread.join(timeout=5)
+    else:
+        if not args.no_browser:
+            webbrowser.open(url)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+    server.close()
 
 
 if __name__ == "__main__":

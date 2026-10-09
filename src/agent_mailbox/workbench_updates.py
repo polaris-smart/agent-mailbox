@@ -22,7 +22,7 @@ from uuid import uuid4
 
 from . import __version__
 from .workbench_private import private_mode
-from .workbench_store import WorkbenchError
+from .workbench_store import WorkbenchError, raw_connect
 
 REPOSITORY = "polaris-smart/agent-mailbox"
 RELEASES_URL = f"https://github.com/{REPOSITORY}/releases"
@@ -234,7 +234,7 @@ def private_backup(store):
             # also copies its journal setting, which can create unprotected
             # transient sidecars until connections are garbage-collected.
             with (
-                closing(sqlite3.connect(store.db_path)) as src,
+                closing(raw_connect(store.db_path)) as src,  # 活库：统一 busy_timeout
                 closing(sqlite3.connect(path)) as dst,
             ):
                 src.backup(dst)

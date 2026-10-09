@@ -13,9 +13,23 @@ import secrets
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
+from . import workbench_policy
 from .workbench_store import WorkbenchError, _id, _now, _text
 
+_READ_ONLY_KNOWLEDGE = {
+    "graft_ask": {"task"},
+    "graft_callers": {"symbol"},
+    "aoci_doctor": set(),
+    "aoci_status": set(),
+    "aoci_check": set(),
+}
+
 TOOLS = {
+    "aoci_check": set(),
+    "aoci_status": set(),
+    "aoci_doctor": set(),
+    "graft_callers": {"symbol"},
+    "graft_ask": {"task"},
     "context": set(),
     "messages": {"folder", "limit"},
     "message": {"title", "body", "recipient_id", "reply_to", "request_id"},
@@ -126,7 +140,7 @@ def create_session(store, employee_id, project_id, label):
 
 
 def list_sessions(store, employee_id, project_id):
-    with store._connection() as db:
+    with store._transaction(readonly=True) as db:
         store._required(db, "employees", employee_id)
         store._required(db, "projects", project_id)
         return [
@@ -159,7 +173,9 @@ def _bound_store(store, db):
     bound = copy.copy(store)
 
     @contextmanager
-    def connection():
+    def connection(readonly: bool = False):
+        # 绑定态复用调用方已开的事务；readonly 在此无意义（事务已由外层决定），
+        # 但必须接受该参数——否则读辅助统一改用 readonly=True 后会 TypeError
         yield db
 
     bound._connection = connection
@@ -188,20 +204,36 @@ def invoke(store, token, tool, args):
         project, employee = session["project_id"], session["employee_id"]
         args = _redact(args, token)
         try:
-            if tool == "context":
+            if tool in _READ_ONLY_KNOWLEDGE:  # 只读诊断：不触发受管执行、不写状态
+                from . import workbench_aoci as _aoci
+                from . import workbench_graft as _graft
+
+                path = bound.project_path_for(project)  # 服务端解析 ✓ agent 不传路径 ✓
+                dispatch = {
+                    "graft_ask": lambda: _graft.graft_ask(path, args["task"]),
+                    "graft_callers": lambda: _graft.graft_callers(path, args["symbol"]),
+                    "aoci_doctor": lambda: _aoci.aoci_doctor(path),
+                    "aoci_status": lambda: _aoci.aoci_status(path),
+                    "aoci_check": lambda: _aoci.aoci_check(path),
+                }
+                result = dispatch[tool]()
+
+            elif tool == "context":
                 result = bound.project_context(project, employee_id=employee)
                 result["mailbox_session"] = _public(store, db, session)
-                result["mailbox_policy"] = {
-                    "ordinary_mail_starts_work": False,
-                    "reading_acknowledges": False,
-                    "notification_mode": "manual_check",
-                    "managed_execution": False,
-                }
+                result["mailbox_policy"] = workbench_policy.effective_policy_in(db, project)
             elif tool == "messages":
                 result = bound.employee_messages(
                     project, employee, args.get("folder", "inbox"), args.get("limit", 100)
                 )
             elif tool == "message":
+                # schema 只保证"参数存在"；空串/缺参必须在**真派发层**被拒，
+                # 否则 HTTP/fleet/invoke 三条真路径仍会把缺参翻译成"全项目群发"
+                if not str(args.get("recipient_id") or "").strip():
+                    raise WorkbenchError(
+                        "MAILBOX_ARGUMENT_DENIED",
+                        "发消息必须指定收件人（recipient_id 非空）；员工不能群发全项目。",
+                    )
                 result = bound.send_message(
                     project,
                     args["title"],
@@ -273,4 +305,43 @@ def invoke(store, token, tool, args):
                 result = project_task_delivery(bound, project, args["target_task_id"])
         except KeyError:
             raise WorkbenchError("invalid_field", "邮箱操作缺少必要参数。") from None
+        except (
+            Exception
+        ) as exc:  # 只读诊断的路径约束等：统一结构化（评审 #10：两面错误形状曾不一致 ✗）
+            if type(exc).__name__ == "ProjectPathError":
+                raise WorkbenchError("BAD_PROJECT_PATH", str(exc)) from None
+            raise
         return _redact(store._scrub(db, result), token)
+
+
+def ensure_member_session(
+    store, project_id: str, employee_id: str, label: str | None = None
+) -> dict:
+    """**入组即自动签发** ✓（老板 2026-10-08 拍：项目建好、agent 拉进来，自然就有钥匙 ✓）。
+
+    设计要点 ✗：
+    · **先建成员关系** ✓ 再尝试签发 ✓ —— 签发失败**绝不影响**成员关系 ✓
+    · 已有有效钥匙 ⇒ 幂等跳过 ✓（不重复签 ✗）
+    · 签发失败 ⇒ **显式给原因** ✓（不在岗 / 非本机节点 / 权限 ✗）—— 不许静默 ✗
+    · **不返回 token** ✗（只回 issued / expires_at / reason ✓ 凭据不进浏览器 ✓）
+    """
+    store.add_project_member(project_id, employee_id)
+    # **AM-04 修复** ✗：按**有效**判（`active` = 未撤销 **且未过期** ✓），不是只看 `revoked_at` ✗
+    # （Codex 实测：过期会话仍被当"已有钥匙"⇒ `issued=false` ✓ 而有效数为 0 ✗ ⇒ 用户表面入组成功、实际用不了 ✓）
+    existing = [s for s in list_sessions(store, employee_id, project_id) if s.get("active")]
+    if existing:
+        return {
+            "issued": False,
+            "reason": "already_has_key",
+            "expires_at": existing[0].get("expires_at"),
+        }
+    try:
+        created = create_session(store, employee_id, project_id, label or f"auto-{project_id[-6:]}")
+    except (WorkbenchError, OSError) as exc:  # 只捕可预期失败 ✓ 不盲捕 ✗
+        return {
+            "issued": False,
+            "reason": type(exc).__name__,
+            "detail": str(exc)[:200],
+            "expires_at": None,
+        }
+    return {"issued": True, "reason": None, "expires_at": created.get("expires_at")}

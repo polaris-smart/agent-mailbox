@@ -116,7 +116,7 @@ def metadata(store, db, row):
 
 
 def versions(store, project_id, resource_id):
-    with store._connection() as db:
+    with store._transaction(readonly=True) as db:
         resource(store, db, project_id, resource_id)
         rows = db.execute(
             "SELECT * FROM resource_versions WHERE resource_id=? ORDER BY ordinal DESC",
@@ -206,7 +206,7 @@ def capture(store, project_id, resource_id, summary="", employee_id=None, conten
 
 
 def read(store, project_id, resource_id, version_id):
-    with store._connection() as db:
+    with store._transaction(readonly=True) as db:
         row = revision(store, db, project_id, resource_id, version_id)
         result = store._scrub(
             db,
@@ -297,7 +297,7 @@ def freeze(store, db, task):
 
 
 def execution_manifest(store, task_id, run_id):
-    with store._connection() as db:
+    with store._transaction(readonly=True) as db:
         task = store._required(db, "tasks", task_id)
         if task["run_id"] != run_id:
             raise WorkbenchError("permission_denied", "这次执行已过期。")
@@ -333,7 +333,7 @@ def execution_manifest(store, task_id, run_id):
 def execution_read(store, project_id, resource_id, task_id, run_id, version_id="", live=False):
     if not isinstance(live, bool):
         raise WorkbenchError("invalid_field", "实时读取选项需要是布尔值。")
-    with store._connection() as db:
+    with store._transaction(readonly=True) as db:
         task = store._required(db, "tasks", task_id)
         if task["project_id"] != project_id or task["run_id"] != run_id:
             raise WorkbenchError("permission_denied", "该任务不属于当前项目或执行已过期。")

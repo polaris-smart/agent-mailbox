@@ -19,4 +19,4 @@
 5. Ruff、git diff --check、冻结 app codesign --verify --deep --strict 通过。签名仍为本地 ad-hoc，非 Developer ID、公证或公开分发验收。
 6. 本机 59969 预览升级至 a7；18 入口、1 项目、0 任务、0 消息，员工/项目/成员/任务/消息行 hash 均保持一致。SQLite 一致性备份保存在私有 home。没有真实员工协作任务，不能声称本轮验证了双员工模型协作。
 
-构建与完整证据：`/Users/interia/tools/agent-mailbox-builds/v080-agent-inbox-alpha7/`。路线图为独立设计提案，不将其余未确认功能写成 PRD 已实现事实。
+构建与完整证据：`/Users/example/tools/agent-mailbox-builds/v080-agent-inbox-alpha7/`。路线图为独立设计提案，不将其余未确认功能写成 PRD 已实现事实。

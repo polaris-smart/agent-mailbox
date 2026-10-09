@@ -2,7 +2,7 @@
 
 版本0.8.0b2，2026-10-01；本地发行产物，未公开 push/发版，未访问 HK/US。
 
-产物和证据：本机 `/Users/interia/tools/agent-mailbox-builds/v080-beta2/`。最终各项结果以该目录 JSON、JUnit、SHA256SUMS 为准，不含凭据。
+产物和证据：本机 `/Users/example/tools/agent-mailbox-builds/v080-beta2/`。最终各项结果以该目录 JSON、JUnit、SHA256SUMS 为准，不含凭据。
 
 - `tests.xml`：最终 Mac 全量回归；涵盖 schema7→8私有迁移备份、身份保留、领取暂停事务竞态、准备失败不退出、不确定领取、已结束回执清理、协议兼容和现有资料/邮件能力。
 - `update-ui-real.json`：8项真实HTTP/SQLite流程，无API路由拦截；只有公开发行信息provider使用测试替身。运行任务进入等待、不取消；结束后实际私有备份；模拟符号链接备份失败后仍可恢复接单；渠道与暂停重载保留；手机中文/英文深色无溢出，零页面异常。

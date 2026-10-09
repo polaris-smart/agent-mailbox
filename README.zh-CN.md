@@ -1,65 +1,118 @@
 # agent-mailbox
 
-**把已有 AI Agent 组成项目团队的本地工作台。**
+**让你已有的 AI Agent 围绕同一个项目协作，由你做最终验收。**
 
-让你已经在用的 Codex、Claude Code 围绕同一个项目共享资料、邮件交接、分工协作。你看交付、做验收，再决定是否把代码变更合入。项目记录留在自己的电脑上，工作台不需要额外的管理 LLM 账号。
+同时用 DeepSeek Harness、Workbuddy、Doubao（豆包）、ZCode、Claude Code 或 Codex 做项目？agent-mailbox 把它们的消息、任务、已批准的资料和交付结果放进一个本地工作台。Agent 继续使用原来的工具，你能看清谁接了任务、依据哪版资料工作，以及哪些结果还在等你决定。
 
-[English](https://github.com/polaris-smart/agent-mailbox/blob/main/README.md) · [上手指南](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/GITHUB-QUICKSTART.md) · [发行渠道](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/RELEASE-CHANNELS.md) · [PRD 正典](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/PRD.md)
+**交办 → 明确接单 → 读取批准版本 → 提交结果 → Human 验收。**
 
-## 发现 → 入组 → 接入 → 协作 → 验收
+[English](README.md) · [下载 Mac 版](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.1) · [本地 Web](#本地-web) · [上手指南](docs/GITHUB-QUICKSTART.md)
 
-**v0.8.0 通过项目邮箱 MCP 接入既有员工会话。下载可用性、文件和校验值以实际发行页为准。**
+## 少在几个对话之间搬运资料
 
-1. **发现已有员工。** 登记桌面 App、CLI，再创建项目、加入成员并填写职责。职责是分工说明，不额外授予权限。
-2. **接入正在使用的会话。** 在工作台为员工生成项目邮箱 MCP 配置，导入该 Agent 的 MCP 设置。每份接入绑定员工、项目和会话，不要求另外配置 provider/key，也不用工作台另开 CLI。宿主需要支持导出的 stdio MCP 配置。
-3. **共享资料、邮件交流。** 员工在原来的环境读取已批准的 PRD、todo、daily update、架构资料，收发项目邮件并回复。需要让员工主动查信：支持 MCP 不代表闲置会话会自动收到通知或被唤醒；读信不等于接单。
-4. **分配邮件任务、验收交付。** 邮件任务是默认路径。员工明确接受时固定已批准的资料版本，完成后提交结果，进入 Human 验收。提交不等于完成或验收通过；Human 可以通过或退回为关联任务。这个流程不启动 CLI、不自动修改原项目。
+你让一个 Agent 实现修改，再让另一个复审。需求更新了，对话散在几个窗口里，而一句“完成了”，可能只代表读到了消息，也可能代表工作已经通过验收。
 
-项目接入由主 Agent 保管；子代理向负责人汇报。若把同一接入交给子代理，它的调用会归到同一登记会话，系统不能独立核验宿主内部实际作者。
+agent-mailbox 为项目交接提供一处共同记录：
 
-**受管 CLI 执行保留为独立选项。** Codex、Claude Code CLI 可以由工作台启动任务，运行器提供项目工具；本机修改任务使用独立 Git worktree、保存固定 diff。应用到原仓库需要另行确认，工作台不自动 commit 或 push。这与接入原有 App/CLI 的邮箱是两条不同路径。
+- **项目邮箱**：通过 MCP 接入已有 Agent 会话，每份连接绑定一名成员和一个项目。
+- **明确接单**：看过消息不等于接受任务。
+- **批准的资料版本**：接单时记录资料清单，Agent 按清单中的版本 ID 读取。
+- **可验收的结果**：提交后等待你决定，通过还是需要继续修改。
 
-既有会话邮箱目前只支持登记在本机的员工。可选远端执行节点继续使用现有协议，不代表已打通远端 App 的新邮箱接入。
+## 可以接入哪些 Agent？
 
-## 安装 v0.8.0
+agent-mailbox 不限定 Agent 背后的模型。DeepSeek Harness、Workbuddy、Doubao（豆包）、ZCode、Claude Code、Codex 等已有宿主都可以登记为项目成员；实际查信、接单和交付需要该宿主加载项目邮箱 MCP 配置。
 
-**版本：`0.8.0`。** 在 [GitHub 发行页](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0)核对文件和校验值。只有检查通过、文件实际上传后才有可下载的发行版；[渠道与门槛](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/RELEASE-CHANNELS.md)区分发行准备和已发布。
+| 接入层次 | 0.8.1 范围 |
+|---|---|
+| 成员登记 | 包含上述宿主，也支持 Hermes 等类型；被发现或登记不等于已经连通。 |
+| 已有会话邮箱 | 使用项目专属 MCP 连接。Workbuddy 有 JSON 配置导出；DeepSeek Harness、Doubao、ZCode 使用通用配置，须按宿主当前 MCP 能力加载并验证。 |
+| 本版完整流程验证 | Claude Code + Codex 两个真实本机宿主；其他宿主不能据此视为已完成相同验收。 |
+| 工作台受管执行 | 当前仅 Claude Code CLI、Codex CLI；这项限制不等于其他宿主不能用项目邮箱。 |
 
-| 你的电脑 | 原生下载 |
-| --- | --- |
-| Apple Silicon Mac | [DMG](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0/Agent-Mailbox-0.8.0-darwin-arm64.dmg) · [ZIP](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0/Agent-Mailbox-0.8.0-darwin-arm64.zip) |
-| Windows x64 | [Agent-Mailbox-0.8.0-win32-x64.zip](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0/Agent-Mailbox-0.8.0-win32-x64.zip) |
-| Linux x64 | [Agent-Mailbox-0.8.0-linux-x64.tar.gz](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.0/Agent-Mailbox-0.8.0-linux-x64.tar.gz) |
+不支持加载本地 stdio MCP 的宿主版本，不能仅靠登记完成接入。主动唤醒还需要另行配置宿主 hook。
 
-完整解压后启动 **Agent Mailbox**，不要只移动其中的可执行文件。原生包自带 Python、Node 和锁定的任务运行组件。macOS 包没有 Developer ID 签名和公证，Windows 下载可能显示信誉提示，详见[安装与升级步骤](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/BETA-INSTALL.md)。本版不提供 Intel Mac 或 Windows ARM 原生包。
+## 看一遍工作台
 
-喜欢 Python 安装？使用 Python 3.10+ 和独立虚拟环境。使用下方精确版本安装，包是否可用以索引为准：
+以下是 0.8.1 **本地 Web 的合成演示项目**，不展示真实项目或内部配置。
+
+![项目交接台：待办、交付与下一步](https://raw.githubusercontent.com/polaris-smart/agent-mailbox/v0.8.1/docs/media/v081/workbench.png)
+
+![项目任务：明确接单与待 Human 验收](https://raw.githubusercontent.com/polaris-smart/agent-mailbox/v0.8.1/docs/media/v081/tasks.png)
+
+![Project members · 项目成员](https://raw.githubusercontent.com/polaris-smart/agent-mailbox/v0.8.1/docs/media/v081/members.png)
+
+[观看约 30 秒界面介绍（无声 MP4，合成演示数据）](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.1/agent-mailbox-0.8.1-overview.mp4)
+
+## 从 macOS App 开始
+
+**0.8.1 提供 macOS Apple Silicon App 和本地浏览器工作台。** 本次不发行 Windows 或 Linux 原生安装包；Windows 打包及更广的平台验证留待后续版本。
+
+1. 从 [0.8.1 发行页](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.1)下载 **`Agent-Mailbox-0.8.1-darwin-arm64.zip`** 和 **`SHA256SUMS`**，核对压缩包的 SHA-256。
+2. 替换 App 前先退出旧版。解压 ZIP，把 **Agent Mailbox.app** 移到“应用程序”，然后打开。
+3. 创建项目，登记已有 Agent，将它们加入项目组。
+4. 为每名成员分别导出项目邮箱 MCP 配置，加载到相应宿主；让它先调用 `project_context`、再检查邮箱，确认接入成功。
+5. 批准一份小型共享资料，交办一个邮件任务。让接收者明确接单、读取固定版本并提交结果，最后由你在工作台验收。
+
+App 自带 Python 运行环境，这条安装路径不需要另装 Python。已有会话邮箱沿用 Agent 宿主自己的登录和执行环境；可选受管执行另有运行环境要求。
+
+此 macOS 包尚无 Developer ID 签名和公证，发行边界及升级步骤见[安装指南](docs/BETA-INSTALL.md)。升级时保留原数据目录；换一个目录会打开另一套工作台数据。
+
+## 从实现到复审的一次交接
+
+以 Claude Code 实现修改、Codex 复审为例：
+
+1. **你交办实现任务。** 在项目中批准需求资料，把邮件任务分配给 Claude Code。
+2. **Claude Code 接单并读取固定版本。** 它在自己获授权的环境中工作，提交说明修改内容和检查结果的报告。
+3. **你另行交办复审。** 给 Codex 实现任务 ID、评审标准，以及相应代码检出或提交的访问条件。Codex 可以通过 `project_delivery(target_task_id=...)` 读取交付，再提交评审结果。
+4. **你做最终决定。** 通过或拒绝结果；还要继续修改时，单独使用后继任务入口，创建需要再次明确接单的关联任务。
+
+邮件交付是 Agent 的报告，不会自动捕获代码补丁，也不等于系统已验证测试通过。第二个 Agent 的复审由你安排，不是自动审批环节。
+
+### 通知需要单独接通
+
+加载 MCP 工具本身不会唤醒闲置会话。你可以让 Agent 主动查信，也可以配置适合该宿主的唤醒 hook。Agent 使用邮箱工具期间，工作台需要保持运行。
+
+工作台区分待通知与宿主投递成功，对通知设有限制，并把未知交付留给人工核查。通知成功不等于 Agent 已经接单或完成工作。
+
+## 本地 Web
+
+Web 界面运行在自己的电脑上，不是托管云服务。0.8.1 的发行验证范围为 macOS；其他系统能安装 Python 包，不等于已经通过相同的平台验收。
+
+准备 Python 3.10+，运行：
 
 ```sh
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install 'agent-mailbox==0.8.0'
-agent-mailbox --home ~/.agent-mailbox-v08
+python3 -m venv ~/.venvs/agent-mailbox
+. ~/.venvs/agent-mailbox/bin/activate
+python -m pip install 'agent-mailbox==0.8.1'
+agent-mailbox --version
+AGENT_MAILBOX_BROWSER=1 agent-mailbox --home ~/.agent-mailbox
 ```
 
-Windows 改用 `py -m venv .venv` 和 `.venv\Scripts\Activate.ps1`。使用下方精确版本命令核对安装结果。Python/源码执行任务需要 Node.js 22.13+，并在页面点“准备运行环境”。已有入口为 [PyPI agent-mailbox](https://pypi.org/project/agent-mailbox/)，没有 TestPyPI 或 Homebrew 发行。已有 npm 包 [dsh-agent-mailbox](https://www.npmjs.com/package/dsh-agent-mailbox) 是独立的 DeepSeek Harness 插件，配套版本 `0.8.0` 已在官方 npm 发布并通过独立安装核验，不是工作台安装入口；无 scope 的 `agent-mailbox` 属于其他项目。
+环境变量用于主动打开浏览器。保持终端运行，不要分享带访问凭据的本地 URL；以后启动继续使用相同的 `--home`。如果已有数据使用别的目录，沿用原路径。
 
-Codex、Claude Code 使用各自原生登录。查看接入检查不会调用模型，点击接入测试会消耗原生模型额度。如果默认模型不可用，可以明确选择执行服务提供的模型。[上手指南](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/GITHUB-QUICKSTART.md)包含源码安装和第一次协作步骤。
+上述安装命令在对应包发布到 [PyPI](https://pypi.org/project/agent-mailbox/0.8.1/) 后可用。原生 App 和 Python 包是同一版本的不同发行物。
 
-## 与你已有的工具一起工作
+## 可选的受管 CLI 执行
 
-- **本地项目记录**：私有数据库、员工信箱、项目笔记、资料提案和批准版本，工作日志来自真实事件。
-- **Human 掌握决定权**：操作审批、项目权限、暂停和退役，验收与代码合入分开，失败显示原因。
-- **代码交接**：本机修改任务要求干净、有提交的 Git 仓库根目录；使用独立 worktree 和固定交付。工作区隔离改动，但不是操作系统沙箱。
-- **可选跨设备**：显式配对的 HTTPS 节点支持只读协作；每台设备保留自己的 agent 登录和项目 checkout，配对不自动同步文件。
-- **可选资料工具**：CodeGraph 已有索引检索、archify 单文件 HTML 隔离预览；结构化本地记忆使用文本搜索，无需独立向量数据库。
+如果希望由工作台启动编码任务，可以使用独立的受管 CLI 路径。先准备对应运行环境；Python/源码安装在这条路径上需要 Node.js 22.13+，步骤见[受管执行指南](docs/GITHUB-QUICKSTART.md#可选受管-cli-开发与审查)。
 
-同种工具的多个员工名称默认共享该设备原生登录。发现桌面 app 不代表能自动控制它。v0.8 替代的是软件发行，不会自动迁移 v0.7 数据库、后台服务或配置，旧 MCP 配置也不兼容新的项目工具入口；保留旧数据备份，不要让 v0.8 直接使用 v0.7 数据目录。
+符合条件的本机修改任务使用独立 Git worktree，并捕获补丁供审阅。将补丁应用到原代码检出是另一项 Human 操作。worktree 不是操作系统沙箱，工作台不会自动提交或推送代码。
 
-## 继续了解
+## 由你掌握的边界
 
-[完整上手指南](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/GITHUB-QUICKSTART.md) · [Beta 验收与平台边界](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/BETA-ACCEPTANCE.md) · [Beta 3 验证证据](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/evidence/v080/beta3-collaboration.md) · [可选设备接入](https://github.com/polaris-smart/agent-mailbox/blob/main/docs/NODES.md) · [安全说明](https://github.com/polaris-smart/agent-mailbox/blob/main/SECURITY.md)
+- **验收**：提交结果不等于最终通过，Human 明确做决定。
+- **权限**：填写成员职责不会赋予项目负责人或管理员权限。
+- **数据**：项目记录保存在本地；Agent 宿主可能把读到的资料发送给其配置的服务，本地存储不等于全程离线。详见[安全说明](SECURITY.md)。
+- **接入**：已有会话邮箱用于登记在本机的成员。扫描发现不等于已经连通 MCP；其他宿主需要分别验证。
+- **恢复**：保留工作台 home 和外部项目文件的备份。数据库备份不覆盖所有仓库、独立工作区和宿主登录。程序替换与恢复仍为手工操作；旧程序不能直接打开已升级的新库，需要先恢复兼容备份。
 
-更新目前提供显式检查、暂停接单和私有备份，程序替换及恢复仍手动完成。数据库备份之外，还需保留项目仓库和独立工作区。跨设备修改隔离、自动更新、万能 app 控制、拖拽 workflow 编辑器和 AI ERP 尚未实现；完整限制集中在验收文档中。
+0.8.1 候选已使用两个真实本机 Agent 宿主验证明确接单、固定资料读取、交付，以及接单后、提交前的服务中断恢复。这一有限测试不代表跨机器已打通，也不代表所有中断时点都已覆盖。详见 [0.8.1 范围与验证](docs/RELEASE-081.md)。
 
-© 2026 NoFox 与贡献者 · [Apache-2.0](https://github.com/polaris-smart/agent-mailbox/blob/main/LICENSE) · [NOTICE](https://github.com/polaris-smart/agent-mailbox/blob/main/NOTICE) · [原有 MIT 声明](https://github.com/polaris-smart/agent-mailbox/blob/main/LICENSES/MIT-Legacy.txt)
+## 文档与反馈
+
+[上手指南](docs/GITHUB-QUICKSTART.md) · [安装与升级](docs/BETA-INSTALL.md) · [0.8.1 发行范围](docs/RELEASE-081.md) · [安全说明](SECURITY.md) · [更新记录](CHANGELOG.md)
+
+遇到交接问题，请[提交 Issue](https://github.com/polaris-smart/agent-mailbox/issues)，附上应用版本、操作系统、Agent 宿主和失败步骤。提交日志或截图前，移除凭据、私有项目内容及内部 Agent 配置。
+
+[Apache-2.0](LICENSE)。版权及第三方声明见 [NOTICE](NOTICE)。

@@ -37,8 +37,8 @@
 | 任务执行与人工验收 | workbench_engine.py / workbench.py | Codex、Claude 受管 CLI；权限默认拒绝 |
 | 运行准备和模型发现 | workbench_runtime.py / runtime_bridge | 锁定依赖；发现与实际执行分开 |
 | 工作台 | workbench_assets | 本机浏览器；Mac ARM64、Windows x64、Linux x64 原生入口 |
-| 受管项目工具 | workspace_mcp.py / workbench_execution_resources.py | 11 个工具，指派任务自动注入，不接管所有既有对话 |
-| 既有会话邮箱（v0.8.0 实现） | mailbox_mcp.py / workbench_mail_sessions.py / workbench_mail_config.py | 12 个 MCP 工具；本机员工、项目、可撤销会话绑定；私有文件导出配置；主动查信 |
+| 受管项目工具 | workspace_mcp.py / workbench_execution_resources.py | **16 个工具**（2026-10-07 加 5 个只读诊断：graft ask/callers · aoci doctor/status/check ✓ 双面挂载 ✓），指派任务自动注入，不接管所有既有对话 |
+| 既有会话邮箱（v0.8.0 实现） | mailbox_mcp.py / workbench_mail_sessions.py / workbench_mail_config.py | **17 个 MCP 工具**（2026-10-07 加 5 个只读诊断 ✓ 双面挂载 ✓）；本机员工、项目、可撤销会话绑定；私有文件导出配置；主动查信 |
 | 邮件任务与职责（v0.8.0 实现） | workbench_mail_tasks.py / workbench_store.py | 默认邮件任务；明确接受固定资料版本、提交待验收、Human 决定；描述性职责 |
 | 员工接入验证 | workbench_onboarding.py / workspace_mcp.py | 显式只读 probe，可选模型，context/note 实际回执 |
 | 独立工作区和固定交付 | workbench_workspaces.py | 本机 clean Git root；固定 patch，验收后显式 apply，不 commit/push |
@@ -97,7 +97,7 @@ dsh-devices 的产品线负责人考核、成员入组审批、派单时指定 p
 
 本机 workspace-write 必须使用干净且有提交的 Git 根目录，建立独立 detached worktree；非 Git、子目录和脏目录不回退原目录执行。工作区不是 OS 安全沙箱，同设备原生账号仍默认共享。固定交付保存文本 patch、基线、摘要及验证来源，员工报告与系统事实分开。Human 验收不等于应用 patch；合入需再次明确确认、校验原仓库仍干净及 HEAD 一致，不自动 commit/push。退回创建关联任务并在相同基线继承上一轮固定 patch。
 
-本项目成员经 `project_delivery(task_id)` 读取固定交付，不能切换项目或读取任意工作区文件；受管会话当前 11 个项目 MCP 工具。远端 workspace-write 暂时拒绝，远端只读工具继续使用现有协议。二进制、符号链接、凭据、不安全路径与过大 patch 不自动合入。更新备份仍不包括 home/task-workspaces、外部 Git 源码或供应商登录；工作区保留但须另行备份。Beta 3 当前验证状态见[证据记录](evidence/v080/beta3-collaboration.md)，历史 Beta 1/2 证据不当作本轮重跑。
+本项目成员经 `project_delivery(task_id)` 读取固定交付，不能切换项目或读取任意工作区文件；受管会话当前 **16 个**项目 MCP 工具（2026-10-07 双面挂载追加 5 个只读诊断 ✓）。远端 workspace-write 暂时拒绝，远端只读工具继续使用现有协议。二进制、符号链接、凭据、不安全路径与过大 patch 不自动合入。更新备份仍不包括 home/task-workspaces、外部 Git 源码或供应商登录；工作区保留但须另行备份。Beta 3 当前验证状态见[证据记录](evidence/v080/beta3-collaboration.md)，历史 Beta 1/2 证据不当作本轮重跑。
 
 
 ## Beta 4 统一替代发行决定

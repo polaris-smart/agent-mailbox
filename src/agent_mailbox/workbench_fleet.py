@@ -669,6 +669,11 @@ class FleetCoordinator:
                 project_id, args.get("title"), args.get("body"), source=f"employee:{employee_id}"
             )
         if tool in {"message", "team_message"}:
+            if not str(args.get("recipient_id") or "").strip():
+                raise WorkbenchError(
+                    "invalid_field",
+                    "发消息必须指定收件人（recipient_id 非空）；员工不能群发全项目。",
+                )
             saved = self.store.send_message(
                 project_id,
                 args.get("title"),

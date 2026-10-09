@@ -102,6 +102,11 @@ def test_real_stdio_port_change_duplicate_request_and_revocation(connection, mon
             await session.initialize()
             tools = (await session.list_tools()).tools
             assert {tool.name for tool in tools} == {
+                "project_graft_ask",
+                "project_graft_callers",
+                "project_aoci_doctor",
+                "project_aoci_status",
+                "project_aoci_check",
                 "project_context",
                 "project_messages",
                 "project_message",
@@ -242,3 +247,68 @@ def test_live_resource_denied_without_http(connection):
     with pytest.raises(ToolError, match="MAILBOX_ARGUMENT_DENIED"):
         asyncio.run(server.call_tool("project_resource_read", {"resource_id": "prd", "live": True}))
     assert not calls
+
+
+def test_cli_reports_missing_session_file_without_traceback(tmp_path, capsys):
+    """规则 U5：连不上要自解释（是什么 + 去哪修 + 命令），不许抛裸 traceback。"""
+    from agent_mailbox import mailbox_mcp
+
+    code = mailbox_mcp.main(["--session-file", str(tmp_path / "missing.json")])
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "MAILBOX_CONFIG_INVALID" in err
+    assert "会话文件" in err and "工作台" in err  # 去哪修
+    assert "agent-mailbox mailbox-mcp --session-file" in err  # 一条命令
+    assert "Traceback" not in err
+
+
+def test_read_only_knowledge_tools_are_actually_callable(tmp_path, monkeypatch):
+    """行为测试（缺它才让"双面挂载"假绿 ✗）：5 个只读诊断必须**真能调到**且返回 ok ✓。
+
+    历史 bug：只读分支与后面的 if/elif 链是**两条独立语句** ✗ ⇒ 算完 result 继续落到最后
+    的 else（读 args["target_task_id"]）⇒ KeyError ⇒ 被吞成 invalid_field ⇒
+    名录断言（只看 list_tools）永远绿 ✗。本测试直接调 `invoke` ✓。
+    用产品自己的 `enroll` 建场景（它才满足 lifecycle=active + node=本机 + membership ✓）。
+    """
+    import json
+    import pathlib
+    import stat
+    import subprocess
+    import sys
+
+    from agent_mailbox import workbench_enroll as enroll_mod
+    from agent_mailbox import workbench_mail_sessions as ms
+    from agent_mailbox.workbench_store import WorkbenchStore
+
+    store = WorkbenchStore(tmp_path / "home")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=False)
+    project = store.create_project("P", repo)
+
+    graft = tmp_path / "graft"
+    graft.write_text(
+        f'#!{sys.executable}\nprint(\'{{"references": ["a.py"]}}\')\n', encoding="utf-8"
+    )
+    graft.chmod(graft.stat().st_mode | stat.S_IEXEC)
+    aoci = tmp_path / "aoci"
+    aoci.write_text(f"#!{sys.executable}\nprint('AOCI Doctor')\n", encoding="utf-8")
+    aoci.chmod(aoci.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("AGENT_MAIL_GRAFT_BIN", str(graft))
+    monkeypatch.setenv("AGENT_MAIL_AOCI_BIN", str(aoci))
+
+    enrolled = enroll_mod.enroll(
+        store, project["id"], "deepseek", name="DSH", connection_type="app"
+    )
+    token = json.loads(pathlib.Path(enrolled["session_file"]).read_text())["token"]
+
+    cases = (
+        ("graft_ask", {"task": "x"}),
+        ("graft_callers", {"symbol": "y"}),
+        ("aoci_doctor", {}),
+        ("aoci_status", {}),
+        ("aoci_check", {}),
+    )
+    for tool, args in cases:
+        out = ms.invoke(store, token, tool, args)
+        assert out.get("ok") is True, f"{tool} 在邮箱面不可用：{out}"

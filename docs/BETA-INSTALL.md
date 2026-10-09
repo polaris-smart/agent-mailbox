@@ -1,87 +1,54 @@
-# v0.8.0 安装与升级 / Install and upgrade
+# 0.8.1 安装与升级 / Install and upgrade
 
-目标版本 `0.8.0`。下载入口是 [polaris-smart/agent-mailbox 的 GitHub Release](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.0)，Python 入口是 [PyPI agent-mailbox](https://pypi.org/project/agent-mailbox/)。文件实际上传后才能下载；发布前请使用[源码指南](GITHUB-QUICKSTART.md)。没有 Homebrew、TestPyPI 或 npm 工作台安装入口；`dsh-agent-mailbox@0.8.0` 是独立配套插件的发布目标，不是工作台安装包，公开状态须单独核验。
+**发行准备中，尚未发布 / Release preparation; not published.** 下载与固定版本安装命令在正式文件上传后可用。当前范围为 macOS Apple Silicon App + macOS 本地 Web。
 
-## 原生包 / Native package
+## macOS Apple Silicon App
 
-选择与系统、CPU 一致的文件；完整解压，保留程序旁的文件。运行组件已包含，无需再装 Python 或 Node。
-
-Choose the matching OS and CPU archive. Extract all files and keep the program's folder intact. Python, Node and the task runtime are included.
-
-| 系统 / OS | 文件 / File | 启动 / Launch |
-| --- | --- | --- |
-| Apple Silicon Mac | `Agent-Mailbox-0.8.0-darwin-arm64.zip` | 解压后将 `Agent Mailbox.app` 放到 Applications，启动 / Move the extracted app to Applications and launch |
-| Windows x64 | `Agent-Mailbox-0.8.0-win32-x64.zip` | 完整解压，运行 `Agent Mailbox/Agent Mailbox.exe` / Extract all files and run the executable |
-| Linux x64 | `Agent-Mailbox-0.8.0-linux-x64.tar.gz` | 解压后运行 `./Agent Mailbox/Agent Mailbox`（路径含空格，需引号）/ Extract and run the quoted path |
-
-Linux 示例 / Linux example:
+1. 从 [v0.8.1 Release](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.1) 下载 `Agent-Mailbox-0.8.1-darwin-arm64.zip` 与 `SHA256SUMS`。
+2. 核对文件名及 SHA-256，再解压。升级前先退出旧 App 和使用同一 home 的服务，保留旧程序以便回滚。
+3. 将完整 `Agent Mailbox.app` 移到 Applications 后打开。界面在 App 自身窗口中显示。
 
 ```sh
-tar -xzf Agent-Mailbox-0.8.0-linux-x64.tar.gz
-'./Agent Mailbox/Agent Mailbox' --home ~/.agent-mailbox-v08
+shasum -a 256 Agent-Mailbox-0.8.1-darwin-arm64.zip
 ```
 
-程序打开本机浏览器；服务器无桌面用途见[节点指南](NODES.md)。新用户从员工发现、创建项目并导出既有会话邮箱 MCP 配置开始，见[第一次协作](GITHUB-QUICKSTART.md#先完成一次协作)。原生 agent 登录仍由本人在该设备完成。
+Download the Mac ZIP and checksums from the release page. Quit the old instance before replacing it, verify the archive, and move the complete App to Applications. The interface opens in the App's own window; its Python runtime is included.
 
-The launcher opens your local browser. Start by discovering employees, creating a project and importing the exported mailbox MCP configuration into the existing agent. Agent sign-in stays native to each device; server-only use is covered by the node guide.
+本版没有 Developer ID 签名或 Apple 公证。校验值只能核对字节，不能替代发行者签名；核实来源后按系统安全提示处理，不要全局关闭系统保护。Intel Mac、Windows 和 Linux 原生包不在本次发行范围。
 
-### 来源与校验 / Source and verification
+The Mac package is not Developer ID signed or notarized. Follow your operating system's security prompts after verifying the source; do not disable system protection globally. Intel Mac, Windows and Linux native packages are not included in this release.
 
-发行页的 `SHA256SUMS` 必须与实际下载文件一致。校验值证明下载字节相同，不替代发行者签名。
+## 本地 Web / Local Web
 
-Compare your download with the release's `SHA256SUMS`. A checksum verifies bytes; it is not a publisher signature.
+使用 Python 3.10+ 和专用虚拟环境。以下命令用于 macOS；本版不宣称其他系统已经完成相同验收。
 
 ```sh
-# macOS
-shasum -a 256 Agent-Mailbox-0.8.0-darwin-arm64.zip
-# Linux
-sha256sum Agent-Mailbox-0.8.0-linux-x64.tar.gz
+python3 -m venv ~/.venvs/agent-mailbox
+. ~/.venvs/agent-mailbox/bin/activate
+python -m pip install 'agent-mailbox==0.8.1'
+agent-mailbox --version
+AGENT_MAILBOX_BROWSER=1 agent-mailbox --home ~/.agent-mailbox
 ```
 
-Windows PowerShell:
+`AGENT_MAILBOX_BROWSER=1` 明确请求打开浏览器；不设置时，CLI 通常只打印本地访问 URL。保持终端运行，不要分享 URL 中的访问凭据。该 Web 服务运行在本机，不是云托管服务。
 
-```powershell
-Get-FileHash .\Agent-Mailbox-0.8.0-win32-x64.zip -Algorithm SHA256
-```
+The environment flag explicitly requests a browser window. Keep the terminal running and the access URL private. Reuse the same `--home`; if your existing workbench uses a different path, keep it.
 
-本版无 Apple Developer ID 签名/公证，也没有 Windows 发行者签名。系统可能阻止启动；核对来源和校验后，按系统自身的安全提示处理。不要全局关闭系统保护。CI 的实际压缩包启动检查不等于已通过所有实体电脑的首次下载体验。Intel Mac、Windows ARM 未提供原生包。
+已有会话邮箱沿用宿主自身登录。可选受管执行需要另外准备运行组件；Python/源码方式在受管路径上要求 Node.js 22.13+，不应把这项要求混为普通邮箱接入要求。没有 Homebrew、TestPyPI 或 npm 工作台安装命令；独立的 `dsh-agent-mailbox` 插件不是工作台安装器。
 
-This version has no Apple Developer ID signature/notarization or Windows publisher signature. Verify the source and checksum before following your operating system's security prompts. Native CI launch checks do not prove every physical computer's first-download experience. Intel Mac and Windows ARM native builds are not provided.
+## 保留数据升级 / Upgrade without changing the home
 
-## Python / PyPI
+1. 记录当前 home，备份该目录及外部项目仓库/文件。任务 worktree、项目文件和宿主登录并不都在数据库备份内。
+2. 退出当前工作台；同一个 home 只启动一个实例。
+3. 替换 App，或在原虚拟环境中更新 Python 包：`python -m pip install --upgrade 'agent-mailbox==0.8.1'`。
+4. 沿用原 home 启动，核对界面版本、项目、成员、任务和资料；不要为了升级创建一个空 home 再误以为数据丢失。
 
-Python 3.10+；任务执行需 Node.js 22.13+。在专用虚拟环境中安装精确稳定版本（公开后）；它实际上传前，此命令不会成功。
+The candidate's official 0.8.0 → 0.8.1 upgrade and backup restoration were checked with a populated synthetic home. That validates a bounded migration path, not every possible user database. See [scope and evidence boundaries](RELEASE-081.md).
 
-Use Python 3.10+ and a dedicated environment; task execution needs Node.js 22.13+. Install the exact stable version once it is publicly verified:
+## 回滚 / Rollback
 
-```sh
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install 'agent-mailbox==0.8.0'
-agent-mailbox --home ~/.agent-mailbox-v08
-```
+停止新版后，再恢复与旧程序兼容的升级前数据库及配套 home 文件。外部项目文件独立恢复。旧程序会拒绝直接打开较新的数据库，不能通过手工降低 schema 版本号绕过。
 
-Windows 使用 `py -m venv .venv` 和 `.venv\Scripts\Activate.ps1`。页面“准备运行环境”下载锁定组件。使用精确版本进行安装验证；只有正式版公开后，普通升级才可能选择新版。
+Stop the new instance before restoring. Restore the compatible pre-upgrade database together with its supporting home files, and restore external project files separately as needed. Do not lower the schema number to force an older binary to open a newer database.
 
-On Windows use `py -m venv .venv` and `.venv\Scripts\Activate.ps1`. Choose **Prepare runtime** in the UI to download locked components. Use the exact version pin for verification after publication.
-
-## 从已有 v0.8 升级 / Upgrade an existing v0.8
-
-1. “关于与更新”中检查所选版本，点击“准备升级”，等待任务和未确认回执结束，确认私有备份已完成。
-2. 记录当前数据目录；项目仓库、独立任务 worktree 和供应商登录不在该备份里，请另外保留。
-3. 退出应用。原生包替换程序及其完整目录；Python 在原环境运行 `python -m pip install --upgrade 'agent-mailbox==0.8.0'`。
-4. 用原数据目录启动，核对版本、员工、项目和历史，再恢复接单。失败时停止使用，恢复匹配的旧程序和数据备份；没有自动回滚。
-
-Prepare the upgrade in **About & updates**, wait for tasks and receipts, and verify the private backup. Back up repositories and task worktrees separately. Quit, replace the entire native program folder or upgrade the original Python environment, then start with the same home. Verify version, employees, projects and history before resuming. Recovery is manual.
-
-## v0.7 用户 / v0.7 users
-
-v0.8 替代旧软件发行，但没有 v0.7 数据库、后台服务或 MCP 配置自动迁移。保留旧数据；停止旧服务，在新的 v0.8 home 创建团队，不要把旧目录直接传给新程序。旧项目 MCP 配置不适用于新项目工具入口。
-
-v0.8 replaces the software distribution, with no automatic migration of v0.7 databases, background services or MCP configuration. Keep old data, stop the old service, and use a separate v0.8 home. Old project MCP configuration is incompatible with the new project tools.
-
-## 既有会话邮箱 / Existing-session mailbox
-
-在工作台登记员工、加入项目、填写职责，导出绑定员工/项目/session 的 MCP 配置并导入宿主。支持 stdio MCP 不代表自动唤醒；让员工主动查信。邮件任务接受时固定批准资料清单，按 version_id 读取；提交进入待验收，Human 决定通过或退回。受管 Codex/Claude CLI 执行为独立选项；邮箱接入不需新 provider key。
-
-Import the exported project mailbox configuration into the existing App/CLI. Check mail explicitly; MCP does not wake idle conversations. Accept mailbox tasks, read approved pinned revisions using version_id, submit for Human review. Managed CLI execution remains optional.
+v0.7 数据库、服务和 MCP 配置没有自动迁移路径；保留它们的备份，为 v0.8 使用单独目录。更新检查与备份不等于自动安装更新，程序替换和恢复仍需显式操作。

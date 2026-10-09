@@ -5,6 +5,7 @@ from __future__ import annotations
 import secrets
 from datetime import datetime, timezone
 
+from . import workbench_contract
 from .workbench_runtime import discover_employees, runtime_status
 from .workbench_store import ACTIVE, WorkbenchError, _text
 
@@ -150,7 +151,7 @@ def onboarding_status(store, employee_id, project_id=None):
         "确认后恢复员工工作状态。",
         "Reactivate the employee when appropriate.",
     )
-    with store._connection() as db:
+    with store._transaction(readonly=True) as db:
         latest = (
             db.execute(
                 "SELECT * FROM employee_probes WHERE employee_id=? AND project_id=? ORDER BY created_at DESC LIMIT 1",
@@ -205,7 +206,9 @@ def create_probe(store, employee_id, project_id, model=None):
             raise WorkbenchError("employee_inactive", "这位员工已暂停或退役。")
         if not store._membership(db, employee_id, project_id):
             raise WorkbenchError("permission_denied", "这位员工未加入该项目。")
-        if employee["kind"] not in {"codex", "claude"} or employee["connection_type"] != "cli":
+        if not workbench_contract.execution_supported(
+            employee["kind"], employee["connection_type"]
+        ):
             raise WorkbenchError("ADAPTER_UNSUPPORTED", "此入口尚无执行适配器。")
         existing = db.execute(
             "SELECT p.task_id FROM employee_probes p JOIN tasks t ON t.id=p.task_id WHERE p.employee_id=? AND p.project_id=? AND t.status IN ('queued','starting','running','waiting_approval') ORDER BY p.created_at DESC LIMIT 1",

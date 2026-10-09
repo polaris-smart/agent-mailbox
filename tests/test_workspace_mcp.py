@@ -73,6 +73,11 @@ def test_project_mcp_context_message_wakes_colleague(tmp_path, monkeypatch):
             await session.initialize()
             tools = await session.list_tools()
             assert {t.name for t in tools.tools} == {
+                "project_graft_ask",
+                "project_graft_callers",
+                "project_aoci_doctor",
+                "project_aoci_status",
+                "project_aoci_check",
                 "project_context",
                 "project_memory_search",
                 "project_resource_read",
@@ -119,6 +124,7 @@ def test_project_mcp_context_message_wakes_colleague(tmp_path, monkeypatch):
             ordinary = await session.call_tool(
                 "project_message",
                 {
+                    "recipient_id": bob["id"],  # 必填：不给收件人 = 全项目群发，已禁止
                     "title": "Progress",
                     "body": "Reading shared material",
                     "request_id": "ordinary-1",

@@ -8,7 +8,7 @@ from .workbench_store import WorkbenchError
 def project_activity(store, project_id: str, limit: int = 100) -> dict:
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
         raise WorkbenchError("invalid_field", "日志条数需要在 1 到 100 之间。")
-    with store._connection() as db:
+    with store._transaction(readonly=True) as db:
         store._required(db, "projects", project_id)
         rows = db.execute(
             """

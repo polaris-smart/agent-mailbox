@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import socket
 import sqlite3
@@ -20,6 +21,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from . import backpressure, echo_guard, workbench_contacts, workbench_contract, workbench_views
 from .workbench_private import private_mode
 
 
@@ -33,7 +35,7 @@ class WorkbenchError(Exception):
 ACTIVE = frozenset({"starting", "running", "waiting_approval"})
 FINISH = frozenset({"review", "failed", "cancelled", "interrupted"})
 MAX_TEXT = 1024 * 1024
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 EMPLOYEE_KINDS = frozenset(
     {
         "codex",
@@ -60,6 +62,36 @@ EMPLOYEE_KINDS = frozenset(
 CONNECTION_TYPES = frozenset({"cli", "app", "endpoint"})
 AUTH_STATUSES = frozenset({"authenticated", "auth_required", "unknown", "not_checked"})
 MAX_REQUEST_CHAIN = 4
+# 迁移会补齐的关键列：_ready() 必须一并校验，否则"缺列"的库会被判成就绪，
+# 补列逻辑永远够不到，之后公开 API 抛误导性 internal_error、snapshot() 甚至裸 IndexError。
+# SCHEMA 声明的**全部**表名：升级路径上"缺任意一张表"都必须被判定为未就绪并幂等重建。
+# （第九轮自查发现：原先只校验 6 张表的列，缺 task_links/task_deliveries 之类的表会被判"就绪"。）
+
+REQUIRED_COLUMN_DDL: dict[tuple[str, str], str] = {
+    ("devices", "last_seen"): "TEXT",
+    ("memberships", "secret_token"): "TEXT",
+    ("memberships", "role"): "TEXT NOT NULL DEFAULT ''",
+    ("messages", "source_session_id"): "TEXT",
+    ("tasks", "model"): "TEXT",
+    ("tasks", "tool_token"): "TEXT",
+    ("employees", "lifecycle"): "TEXT NOT NULL DEFAULT 'active'",
+    ("employees", "lifecycle_reason"): "TEXT NOT NULL DEFAULT ''",
+    # 能力相关列保守给空串：宁可不声称可执行，也不误判成"可执行"
+    ("employees", "connection_type"): "TEXT NOT NULL DEFAULT ''",
+    ("employees", "entrypoint"): "TEXT NOT NULL DEFAULT ''",
+    ("permissions", "expires_at"): "TEXT",
+}
+
+REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
+    "devices": ("last_seen",),
+    "memberships": ("secret_token", "role"),
+    "messages": ("source_session_id",),
+    "tasks": ("model", "tool_token"),
+    "employees": ("lifecycle", "lifecycle_reason", "connection_type", "entrypoint"),
+    "permissions": ("expires_at",),
+}
+
+
 PERMISSION_TIMEOUT = 120
 LIFECYCLES = frozenset({"active", "paused", "retired"})
 EMPLOYEE_STATUSES = frozenset({"installed", "auth_required", "available", "unavailable", "unknown"})
@@ -78,8 +110,85 @@ SECRET_KEYS = frozenset(
 )
 
 
+def _ago_iso(hours: float) -> str:
+    """N 小时前的 ISO 时间戳（与库内格式一致）——派单去重/限流的窗口判据。"""
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="microseconds")
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+
+def raw_connect(path, *, timeout: float | None = None):
+    """Open a raw connection with the **same busy_timeout policy** as ``_connection()``.
+
+    仓库里还有几处直连 SQLite（迁移备份源、updates 的快照源）；它们原先用 Python 默认
+    ``timeout=5.0`` 且不设 PRAGMA，于是"写路径按配置等待"这条不变量在那些路径上不成立。
+    """
+    db = sqlite3.connect(
+        path, timeout=timeout if timeout is not None else 5.0, isolation_level=None
+    )
+    db.row_factory = sqlite3.Row
+    try:
+        db.execute(f"PRAGMA busy_timeout={WorkbenchStore._busy_timeout_ms()}")
+    except sqlite3.Error:  # pragma: no cover — 只读介质等
+        pass
+    return db
+
+
+def _classify_operational_error(exc: sqlite3.Error) -> WorkbenchError:
+    """Map SQLite failures to **actionable** codes.
+
+    ``storage_error`` 只留给真正的磁盘/文件故障；把"只读路径偷写""缺表缺列""语法错"
+    "约束违约"也说成"请检查磁盘"会让人永远查不出真因（2026-10-05 第三轮复查指出）。
+    """
+    text = str(exc).lower()
+    if "locked" in text or "busy" in text:
+        return WorkbenchError(
+            "busy",
+            "工作数据正被另一个操作占用，请稍后重试。"
+            "（若是把只读/留痕调用嵌套进了已有写事务，请改为外层事务提交后再调用。）",
+        )
+    if "readonly" in text:
+        return WorkbenchError(
+            "readonly_violation", "这条只读路径试图写库（只读连接被拒），请报告此缺陷。"
+        )
+    if any(
+        marker in text
+        for marker in (
+            "no such table",
+            "no such column",
+            "has no column named",
+            "has no column",
+            "syntax error",
+            "datatype mismatch",
+            "columns but",
+        )
+    ):
+        return WorkbenchError(
+            "internal_error", "工作数据访问出错（结构或语句不匹配），这不是磁盘问题。"
+        )
+    if "constraint" in text or "not null" in text or "unique" in text or "foreign key" in text:
+        return WorkbenchError("constraint_error", "数据约束不满足（重复、缺失必填或关联无效）。")
+    if "out of memory" in text or "no such module" in text:
+        # 能力/资源类：不是磁盘问题（报「检查磁盘」会让人查错方向）
+        return WorkbenchError(
+            "internal_error", "运行环境能力或资源不足（非磁盘问题），请检查 SQLite 构建或内存。"
+        )
+    if any(
+        marker in text
+        for marker in (
+            "disk i/o",
+            "disk is full",
+            "malformed",
+            "file is not a database",
+            "unable to open",
+            "io error",
+            "corrupt",
+        )
+    ):
+        return WorkbenchError("storage_error", "无法读写工作数据，请检查磁盘后重试。")
+    return WorkbenchError("storage_error", "工作数据操作失败，请稍后重试或反馈此消息。")
 
 
 def _id(kind: str) -> str:
@@ -186,6 +295,20 @@ CREATE TABLE IF NOT EXISTS governance_events (
     payload TEXT, created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS governance_project ON governance_events(project_id,created_at);
+CREATE TABLE IF NOT EXISTS notifications (
+    id TEXT PRIMARY KEY, kind TEXT NOT NULL, channel TEXT NOT NULL,
+    target_kind TEXT NOT NULL, target_id TEXT NOT NULL,
+    project_id TEXT REFERENCES projects(id), task_id TEXT REFERENCES tasks(id),
+    state_hash TEXT NOT NULL, external_message_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS notifications_dedupe
+    ON notifications(kind, target_kind, target_id, state_hash);
+CREATE TABLE IF NOT EXISTS identity_links (
+    channel TEXT NOT NULL, external_id TEXT NOT NULL, employee_id TEXT REFERENCES employees(id),
+    note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, PRIMARY KEY(channel, external_id)
+);
 CREATE TABLE IF NOT EXISTS remote_receipts (
     task_id TEXT NOT NULL REFERENCES tasks(id), run_id TEXT NOT NULL,
     digest TEXT NOT NULL, PRIMARY KEY(task_id, run_id)
@@ -211,19 +334,113 @@ CREATE TABLE IF NOT EXISTS mailbox_sessions (
 """
 
 
+def _auxiliary_schema() -> tuple[str, ...]:
+    """Idempotent DDL owned by other modules (probes/links/resources/workspaces/marks).
+
+    这些表由各自模块按需创建；把它们纳入"开库时的结构检查与修复"，避免某张辅助表缺失时
+    **在读路径才炸**（自查发现：缺 `task_links` 时 `task_detail` 报"结构或语句不匹配"）。
+    FTS 索引表**不在其中**：它是派生物（可重建、可关闭），缺了不算结构损坏。
+    """
+    from . import workbench_onboarding, workbench_resources, workbench_views, workbench_workspaces
+
+    statements: list[str] = []
+    for module, name in (
+        (workbench_onboarding, "ONBOARDING_SCHEMA"),
+        (workbench_resources, "RESOURCE_SCHEMA"),
+        (workbench_views, "_DDL"),
+        (workbench_workspaces, "WORKSPACE_SCHEMA"),
+    ):
+        statements.extend(getattr(module, name, ()))
+    return tuple(statements)
+
+
+def _auxiliary_tables() -> frozenset[str]:
+    return frozenset(
+        re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", "\n".join(_auxiliary_schema()))
+    )
+
+
+SCHEMA_TABLES: frozenset[str] = frozenset(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", SCHEMA))
+
+
+LEGACY_MIGRATION_MAX_VERSION = 10
+"""v<=10 属 legacy 迁移：保持既有保证「迁移失败 ⇒ 用迁移前备份恢复」✗ 不加前置闸（老板 2026-10-07 裁决 a）✓。"""
+
+
+def _foreign_key_violations(db: sqlite3.Connection) -> list[tuple]:
+    """列出孤立外键行（`PRAGMA foreign_key_check` 原始结果）。"""
+    return [tuple(row) for row in db.execute("PRAGMA foreign_key_check").fetchall()]
+
+
+def _assert_no_orphans(db: sqlite3.Connection) -> None:
+    """迁移前置闸：**在写任何 schema 之前**拒掉坏库（对抗评审 3 高危之一）。
+
+    评审实测：外键检查拖在迁移**末尾** ✗ ⇒ 库有孤立行时迁移永久失败，而文案让用户
+    "恢复迁移前备份" —— 那是**同一份坏库的副本** ⇒ 再失败 ⇒ **死循环** ✓。
+    位置：备份之后、写 schema 之前（保住"失败可恢复"的恢复承诺 ✓，又不写入任何 schema ✓）。
+    """
+    violations = _foreign_key_violations(db)
+    if not violations:
+        return
+    detail = "；".join(
+        f"{table} 第 {rowid} 行 → {parent} 缺 {col}" for table, rowid, parent, col in violations[:5]
+    )
+    more = f"（另有 {len(violations) - 5} 处）" if len(violations) > 5 else ""
+    raise WorkbenchError(
+        "migration_blocked",
+        f"迁移**尚未开始**：库中已有 {len(violations)} 处孤立外键 ⇒ {detail}{more}。"
+        "请先修复这些行再升级；**不要**恢复迁移前备份（它可能是同一份坏库 ✗）。",
+    )
+
+
+def _assert_no_orphans_for_version(db: sqlite3.Connection, version: int) -> None:
+    """按版本决定是否加闸 ✓（老板 2026-10-07 裁决 a）。
+
+    v<=10 是 legacy 迁移：既有测试明确保证「corrupt v5 ⇒ migration_failed + 恰好一份备份可恢复」✓
+    （tests/test_workbench_registry_messages.py:497-501 ✓），且该夹具**确实含 1 处孤立外键**
+    （实测 memberships#2 → employees#1 ✓）⇒ 全面加闸会当场破坏该承诺 ✗ ⇒ 故只对 v>=11 加闸 ✓。
+    """
+    if version and version < LEGACY_MIGRATION_MAX_VERSION + 1:
+        return
+    _assert_no_orphans(db)
+
+
 class WorkbenchStore:
     def __init__(self, root: Path):
         self.root = Path(root).expanduser().resolve()
         self.directory = self.root / "workbench"
-        self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        private_mode(self.directory, 0o700)
-        self.db_path = self.directory / "state.db"
-        # Create privately before SQLite opens the database (no permissive window).
-        fd = os.open(self.db_path, os.O_CREAT | os.O_RDWR, 0o600)
-        os.close(fd)
-        private_mode(self.db_path, 0o600)
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            private_mode(self.directory, 0o700)
+            self.db_path = self.directory / "state.db"
+            # Create privately before SQLite opens the database (no permissive window).
+            fd = os.open(self.db_path, os.O_CREAT | os.O_RDWR, 0o600)
+            os.close(fd)
+            private_mode(self.db_path, 0o600)
+        except OSError as exc:
+            # 只读文件/父目录不可写：给自解释错误，不抛裸 PermissionError。
+            # 并且要**指对对象**：数据文件本身可读但不可写时，问题在文件权限而非目录。
+            hint = ""
+            fd = -1
+            try:
+                fd = os.open(self.db_path, os.O_RDONLY)
+                hint = "（数据文件本身可读但不可写：请检查**文件**权限，而不是目录）"
+            except OSError:
+                pass
+            finally:
+                if fd >= 0:
+                    os.close(fd)
+            raise WorkbenchError(
+                "storage_error",
+                f"无法读写工作数据（{type(exc).__name__}: {exc.strerror or exc}）{hint}；"
+                "请检查该路径是否存在且可写。",
+            ) from exc
         self.migration_backup_path = None
-        with self._connection() as db:
+        if self._ready():
+            # 结构已是最新且本地节点已登记 ⇒ **不写库、不切 WAL**
+            # （否则任何一次只读 CLI 命令都会走迁移写路径，把库改成 WAL）
+            return
+        with self._connection(switch_journal=False) as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
             if version > SCHEMA_VERSION:
                 raise WorkbenchError("incompatible_version", "数据来自更新的版本，请升级程序。")
@@ -235,6 +452,10 @@ class WorkbenchStore:
                 try:
                     version = db.execute("PRAGMA user_version").fetchone()[0]
                     if version and version < SCHEMA_VERSION:
+                        # 前置闸（**仅 v>=11** ✓ 老板裁决 a）：放在**建备份之前** ⇒
+                        # 坏库被拒时既不写 schema ✓ 也不留**冗余备份**（评审中危：失败迁移的备份同名堆积 ✗）
+                        # v<=10 直接返回 ⇒ legacy「失败⇒用备份恢复」的成文保证不受影响 ✓
+                        _assert_no_orphans_for_version(db, version)
                         destination = (
                             self.directory
                             / f"state-v{version}-before-v{SCHEMA_VERSION}-{uuid4().hex}.sqlite"
@@ -242,7 +463,7 @@ class WorkbenchStore:
                         fd = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
                         os.close(fd)
                         private_mode(destination, 0o600)
-                        source = sqlite3.connect(self.db_path)
+                        source = raw_connect(self.db_path)  # 活库：走统一超时策略
                         target = sqlite3.connect(destination)
                         try:
                             source.backup(target)
@@ -250,6 +471,7 @@ class WorkbenchStore:
                             source.close()
                             target.close()
                         self.migration_backup_path = destination
+
                     for statement in SCHEMA.split(";"):
                         if statement.strip():
                             db.execute(statement)
@@ -353,7 +575,7 @@ class WorkbenchStore:
                     if db.execute("PRAGMA foreign_key_check").fetchone():
                         raise WorkbenchError(
                             "migration_failed",
-                            "数据关联检查失败，原数据库已保留，请恢复迁移前备份。",
+                            "迁移后关联检查失败，已回滚，原库未改：请修上面的孤立外键后重试（不要恢复迁移前备份 ✗）。",
                         )
                     db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                     db.commit()
@@ -362,15 +584,133 @@ class WorkbenchStore:
                     raise
                 finally:
                     db.execute("PRAGMA foreign_keys=ON")
+        # 版本号一致也可能缺表/缺列（某次迁移部分写入、被手工改动、schema 被替换）：
+        # 幂等补齐，且**全或无**（逐条 autocommit 的 ALTER 会在中途失败时留下半修状态）。
+        # 放在迁移之后、切 WAL 之前 —— 只有"确实做了修复写入"才切 WAL。
+        if not self._ready():
+            with self._connection(switch_journal=False) as db:
+                try:
+                    db.execute("BEGIN IMMEDIATE")
+                    self._ensure_schema(db)  # 缺表：逐条 CREATE TABLE IF NOT EXISTS
+                    self._ensure_required_columns(db)  # 缺列：ALTER TABLE ADD COLUMN
+                    db.commit()
+                except sqlite3.Error as exc:
+                    db.rollback()
+                    text = str(exc).lower()
+                    if "view" in text:
+                        raise WorkbenchError(
+                            "internal_error",
+                            "工作数据结构与预期不符（某张表被替换成了视图），已回滚本次修复；"
+                            "请从工作目录里的 state-v*-before-v*-*.sqlite 备份恢复。",
+                        ) from exc
+                    if "locked" in text or "busy" in text:
+                        raise WorkbenchError(
+                            "busy",
+                            "工作数据正被另一个操作占用，结构修复已回滚，请稍后重试。",
+                        ) from exc
+                    raise WorkbenchError(
+                        "storage_error",
+                        "工作数据结构修复失败（已回滚，数据保持原样）；"
+                        "请从工作目录里的 state-v*-before-v*-*.sqlite 备份恢复。",
+                    ) from exc
         with self._transaction() as db:
             if not db.execute("SELECT id FROM devices WHERE is_local=1").fetchone():
                 db.execute(
                     "INSERT INTO devices(id,name,is_local,created_at) VALUES(?,?,1,?)",
                     (_id("node"), socket.gethostname(), _now()),
                 )
+        # 迁移与必要补写都成功之后，才把库切到 WAL ——
+        # 否则"迁移失败"这条失败路径本身就把库永久改成 WAL（rollback 撤不回库头）
+        with self._connection(switch_journal=False) as db:
+            if db.execute("PRAGMA journal_mode").fetchone()[0] != "wal":
+                db.execute("PRAGMA journal_mode=WAL")
+
+    @staticmethod
+    def _ensure_schema(db: sqlite3.Connection) -> None:
+        """Idempotently re-create **missing tables/indexes** from ``SCHEMA``.
+
+        只在事务里逐条执行 ``CREATE … IF NOT EXISTS``（``executescript`` 会隐式提交，
+        破坏"全或无"）。缺表的库此前既不修复也不报错，只是被静默切成 WAL。
+
+        约束：按 ``;`` 拆分，因此 ``SCHEMA`` 里**不得**出现触发器或含分号的字符串字面量
+        （tests/test_review8_regressions.py::test_rv8_6_schema_is_splittable 会守住这条）。
+        """
+        for statement in SCHEMA.split(";"):
+            stripped = statement.strip()
+            if not stripped:
+                continue
+            upper = stripped.upper()
+            if upper.startswith(("CREATE TABLE IF NOT EXISTS", "CREATE INDEX IF NOT EXISTS")):
+                db.execute(stripped)
+        for statement in _auxiliary_schema():  # 辅助表一并幂等补齐
+            clean = statement.strip()
+            if clean and "IF NOT EXISTS" in clean.upper():
+                db.execute(clean)
+
+    @staticmethod
+    def _ensure_required_columns(db: sqlite3.Connection) -> None:
+        """Idempotent column repair — runs even when ``user_version`` is already current.
+
+        缺列的库（某次迁移部分写入、被手工改动）此前 forever 够不到迁移块里的补列逻辑，
+        之后公开 API 抛误导性 internal_error、``snapshot()`` 抛裸 IndexError。
+        """
+        for table, columns in REQUIRED_COLUMNS.items():
+            present = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+            if not present:
+                continue  # 整张表都不在：交给建表/迁移路径
+            for column in columns:
+                if column in present:
+                    continue
+                ddl = REQUIRED_COLUMN_DDL.get((table, column), "TEXT")
+                db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+    def _ready(self) -> bool:
+        """True when the schema is current **and** the local node exists (read-only probe)."""
+        try:
+            with self._transaction(readonly=True) as db:
+                if db.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+                    return False
+                present_tables = {
+                    row[0]
+                    for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                }
+                if not (SCHEMA_TABLES | _auxiliary_tables()) <= present_tables:
+                    return False  # 缺任意一张（核心或辅助）表 ⇒ 交给幂等建表
+                for table, columns in REQUIRED_COLUMNS.items():
+                    present = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+                    if not present or not set(columns) <= present:
+                        return False  # 缺表/缺列 ⇒ 交给幂等补列路径
+                return db.execute("SELECT id FROM devices WHERE is_local=1").fetchone() is not None
+        except sqlite3.Error as exc:
+            # 探测失败 ≠ 未就绪：库被锁/损坏时**不许**回退写路径（那会先把 delete 翻成 WAL）
+            raise _classify_operational_error(exc) from exc
+        except OSError as exc:
+            raise WorkbenchError(
+                "storage_error", f"无法读取工作数据（{type(exc).__name__}），请检查磁盘与目录权限。"
+            ) from exc
+
+    @staticmethod
+    def _busy_timeout_ms() -> int:
+        """Env override for tests; an invalid value falls back to the default.
+
+        环境变量写错不该让命令吐裸 ValueError（自解释规则）。
+        """
+        raw = os.environ.get("AGENT_MAIL_BUSY_TIMEOUT_MS")
+        if raw is None:
+            return 10000
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            return 10000
+        if value < 0:
+            return 10000
+        # 上限 10 分钟：极大值等于「锁住就永久挂起」（环境变量写错不该让命令挂死）
+        return min(value, 600_000)
 
     @contextmanager
-    def _connection(self) -> Iterator[sqlite3.Connection]:
+    def _connection(
+        self, readonly: bool = False, switch_journal: bool = True
+    ) -> Iterator[sqlite3.Connection]:
         try:
             db = sqlite3.connect(self.db_path, timeout=10, isolation_level=None)
         except sqlite3.Error as exc:
@@ -378,12 +718,34 @@ class WorkbenchStore:
         db.row_factory = sqlite3.Row
         try:
             db.execute("PRAGMA foreign_keys=ON")
-            db.execute("PRAGMA busy_timeout=10000")
-            db.execute("PRAGMA journal_mode=WAL")
+            # 只读路径最多等 2s：写者持锁时快速失败并给出可行动提示，而不是干等
+            timeout = min(self._busy_timeout_ms(), 2000) if readonly else self._busy_timeout_ms()
+            db.execute(f"PRAGMA busy_timeout={timeout}")
+            if not readonly and switch_journal:
+                # 只读连接绝不切换 journal_mode；迁移路径也不切（见 __init__），
+                # 否则"迁移失败"这条失败路径本身就把库永久改成 WAL（rollback 撤不回库头）
+                db.execute("PRAGMA journal_mode=WAL")
+            if readonly:
+                # 只读路径不许拿写锁：否则一次查询会被写者挡住，甚至误报"磁盘故障"
+                db.execute("PRAGMA query_only=ON")
             # SQLite inherits the 0600 database mode for sidecar files.
             yield db
+        except sqlite3.OperationalError as exc:
+            raise _classify_operational_error(exc) from exc
+        except sqlite3.IntegrityError as exc:
+            # NOT NULL / UNIQUE / FOREIGN KEY 违约走的是 IntegrityError（不是 OperationalError）
+            raise WorkbenchError(
+                "constraint_error", "数据约束不满足（重复、缺失必填或关联无效）。"
+            ) from exc
+        except sqlite3.ProgrammingError as exc:
+            raise WorkbenchError(
+                "internal_error",
+                "工作数据访问出错（参数或类型不匹配），这不是磁盘问题；请重试或反馈此消息。",
+            ) from exc
         except sqlite3.Error as exc:
-            raise WorkbenchError("storage_error", "无法保存工作数据，请检查磁盘后重试。") from exc
+            # DatabaseError（如 "file is not a database"）也走同一分区：原先它绕过分区，
+            # 使 "malformed"/"file is not a database" 两条分支永远不可达
+            raise _classify_operational_error(exc) from exc
         finally:
             try:
                 # Keep SQLite's sidecar handles alive through ACL verification.
@@ -398,15 +760,25 @@ class WorkbenchStore:
                 db.close()
 
     @contextmanager
-    def _transaction(self) -> Iterator[sqlite3.Connection]:
-        with self._connection() as db:
-            db.execute("BEGIN IMMEDIATE")
+    def _transaction(self, readonly: bool = False) -> Iterator[sqlite3.Connection]:
+        """``readonly=True`` ⇒ 只读连接 + 延迟 BEGIN（不拿写锁）。
+
+        只读视图（墙/账本/简报/检索/证明查看…）必须走这条：拿写锁会让纯查询被写者挡住，
+        并把锁竞争误报成"磁盘/保存"故障（2026-10-05 对抗性复查实测 10s 后失败）。
+        """
+        with self._connection(readonly=readonly) as db:
+            db.execute("BEGIN" if readonly else "BEGIN IMMEDIATE")
             try:
                 yield db
                 db.commit()
             except BaseException:
                 db.rollback()
                 raise
+
+    def ensure_project(self, project_id: str) -> None:
+        """读路径也要校验项目存在：打错的 --project 不许被静默当成"全局/空"。"""
+        with self._transaction(readonly=True) as db:
+            self._required(db, "projects", project_id)
 
     @staticmethod
     def _required(db: sqlite3.Connection, table: str, entity_id: str) -> sqlite3.Row:
@@ -459,7 +831,7 @@ class WorkbenchStore:
         return clean(value)
 
     def local_node(self) -> dict:
-        with self._connection() as db:
+        with self._transaction(readonly=True) as db:
             row = db.execute("SELECT id,name FROM devices WHERE is_local=1").fetchone()
             return dict(row)
 
@@ -482,11 +854,13 @@ class WorkbenchStore:
 
     def _employee(self, db: sqlite3.Connection, row: sqlite3.Row) -> dict:
         employee = self._entity(row)
-        employee["execution_supported"] = (
-            row["kind"] in {"codex", "claude"} and row["connection_type"] == "cli"
+        keys = set(row.keys())
+        get = lambda name: row[name] if name in keys else None
+        employee["execution_supported"] = workbench_contract.execution_supported(
+            get("kind"), get("connection_type")
         )
         employee["execution_verified"] = bool(
-            row["execution_verified"] and employee["execution_supported"]
+            get("execution_verified") and employee["execution_supported"]
         )
         employee["project_ids"] = [
             member[0]
@@ -504,8 +878,7 @@ class WorkbenchStore:
         return self._scrub(db, employee)
 
     def snapshot(self) -> dict:
-        with self._connection() as db:
-            db.execute("BEGIN")
+        with self._transaction(readonly=True) as db:  # 事务已由 _transaction 开启
             result = {}
             for table in (
                 "projects",
@@ -528,8 +901,7 @@ class WorkbenchStore:
             return self._scrub(db, result)
 
     def update_maintenance(self) -> dict:
-        with self._connection() as db:
-            db.execute("BEGIN")
+        with self._transaction(readonly=True) as db:
             paused = bool(db.execute("SELECT paused FROM update_settings WHERE id=1").fetchone()[0])
             active = [
                 dict(row)
@@ -577,7 +949,9 @@ class WorkbenchStore:
             _choice(channel, {"stable", "beta"}, "请选择稳定版或 Beta 更新渠道。")
             with self._transaction() as db:
                 db.execute("UPDATE update_settings SET channel=? WHERE id=1", (channel,))
-        with self._connection() as db:
+            return str(channel)
+        # 读路径（updates/status 的 GET 会走这里）必须只读，不能顺手翻库
+        with self._transaction(readonly=True) as db:
             return db.execute("SELECT channel FROM update_settings WHERE id=1").fetchone()[0]
 
     def create_project(self, name: str, path: str | Path) -> dict:
@@ -777,16 +1151,27 @@ class WorkbenchStore:
         )
         return self._entity(self._required(db, "governance_events", event_id))
 
-    def governance_events(self, project_id: str | None = None) -> list[dict]:
-        with self._connection() as db:
+    def governance_events(
+        self, project_id: str | None = None, limit: int | None = 200
+    ) -> list[dict]:
+        """Recent ledger events (``limit=None`` = the whole ledger).
+
+        The default stays capped for UI-style callers, but **derived views must pass
+        ``limit=None``**: a view that silently reads only the newest 200 events makes
+        wrong *decisions* once the ledger grows (a contacts check flips to "open",
+        an observation window forgets its start, the bridge re-projects a letter).
+        """
+        with self._transaction(readonly=True) as db:
             clause, params = "", []
             if project_id is not None:
                 self._required(db, "projects", project_id)
                 clause, params = " WHERE project_id=? OR project_id IS NULL", [project_id]
+            limit_clause = "" if limit is None else f" LIMIT {int(limit)}"
             rows = db.execute(
-                "SELECT * FROM governance_events"
+                "SELECT *, rowid AS _seq FROM governance_events"
                 + clause
-                + " ORDER BY created_at DESC,rowid DESC LIMIT 200",
+                + " ORDER BY created_at DESC,rowid DESC"
+                + limit_clause,
                 params,
             )
             return self._scrub(db, [self._entity(row) for row in rows])
@@ -889,6 +1274,66 @@ class WorkbenchStore:
                 db, project_id, title, prompt, assignee_id, permission_mode, model, actor
             )
 
+    def _dispatch_guard(self, db, project_id, assignee_id, title, prompt, actor) -> None:
+        """派单是特权，不是人手一份（老板 2026-10-06：乱建任务 ⇒ 风暴）。
+
+        三层，全部读项目策略 ``dispatch``：
+        ① **默认只有人能派** —— 发起方若**解析成员工**（id 或精确名）才需要白名单，
+           其它（人/CLI/系统）一律允许（用结构判据，不用字符串白名单，避免误拦内部路径）；
+        ② **每小时派单上限**（默认 60，可配）—— 防刷单风暴的**主力闸**；
+        ③ **同目标去重**（``dedupe_window_hours``，**默认 0 = 关**）——
+           因为"同一 title+prompt 重派"是**正常重试**，硬默认会误伤（2026-10-06 实测）。
+        """
+        try:
+            from .workbench_policy import effective_policy_in
+
+            policy = effective_policy_in(db, project_id) or {}
+        except Exception:  # noqa: BLE001 — 策略读不到时按"只有人能派 + 上限"最保守执行
+            policy = {}
+        dispatch = policy.get("dispatch") if isinstance(policy.get("dispatch"), dict) else {}
+        # **显式豁免**：员工发起的「请求协作」（request_work）不算"派单"，
+        # 它有自己的护栏 —— _check_request_chain 跳数上限（workbench_store.py:1448）
+        # + 发送侧限速/线索冻结。此前守卫拿 `employee:<id>` 去比 id/name ⇒ 查不到行
+        # ⇒ **静默绕过** ✗（第四轮评审 flow2 实测复现）。现在把这条路**写明并单测** ✓
+        # —— 从"漏"变成"设计"。要收紧成"必须白名单"是产品决策 ✗ 见简报 round4。
+        if isinstance(actor, str) and actor.startswith("employee:"):
+            actor_row = None
+        else:
+            actor_row = db.execute(
+                "SELECT name FROM employees WHERE id=? OR name=?", (actor, actor)
+            ).fetchone()
+        allowed = dispatch.get("employees_may_dispatch") or []
+        if actor_row is not None and actor_row["name"] not in allowed:
+            raise WorkbenchError(
+                "dispatch_not_allowed",
+                f"只有人可以在项目里派单（当前发起方是员工「{actor_row['name']}」）。"
+                "需要让员工派单时，请把它的员工名加入项目策略 dispatch.employees_may_dispatch。",
+            )
+        per_hour = int(dispatch.get("max_tasks_per_hour", 60) or 60)
+        hourly = db.execute(
+            "SELECT count(*) AS c FROM tasks WHERE project_id=? AND created_at >= ?",
+            (project_id, _ago_iso(1)),
+        ).fetchone()["c"]
+        if hourly >= per_hour:
+            raise WorkbenchError(
+                "dispatch_rate_limited",
+                f"这个项目最近 1 小时已派 {hourly} 单（上限 {per_hour}）。"
+                "请先处理在办任务，或调整项目策略 dispatch.max_tasks_per_hour。",
+            )
+        window = int(dispatch.get("dedupe_window_hours", 0) or 0)
+        if window > 0:
+            duplicate = db.execute(
+                "SELECT id FROM tasks WHERE project_id=? AND assignee_id=? AND title=? AND prompt=? "
+                "AND status NOT IN ('done', 'cancelled', 'failed') AND created_at >= ? LIMIT 1",
+                (project_id, assignee_id, title, prompt, _ago_iso(window)),
+            ).fetchone()
+            if duplicate is not None:
+                raise WorkbenchError(
+                    "duplicate_dispatch",
+                    f"同一个目标在 {window} 小时内已经派给这位员工（任务 {duplicate['id']}）。"
+                    "请沿用原任务，或把目标写得更具体后再派。",
+                )
+
     def _create_task(
         self,
         db,
@@ -903,6 +1348,7 @@ class WorkbenchStore:
         source_task_id=None,
     ):
         self._required(db, "projects", project_id)
+        self._dispatch_guard(db, project_id, assignee_id, title, prompt, actor)
         employee = self._required(db, "employees", assignee_id)
         if employee["lifecycle"] != "active":
             raise WorkbenchError(
@@ -910,7 +1356,9 @@ class WorkbenchStore:
             )
         if not self._membership(db, assignee_id, project_id):
             raise WorkbenchError("permission_denied", "这位员工未加入该项目。")
-        if employee["kind"] not in {"codex", "claude"} or employee["connection_type"] != "cli":
+        if not workbench_contract.execution_supported(
+            employee["kind"], employee["connection_type"]
+        ):
             raise WorkbenchError(
                 "ADAPTER_UNSUPPORTED", "已登记此员工连接，但当前还没有可执行任务的适配器。"
             )
@@ -990,7 +1438,7 @@ class WorkbenchStore:
         return self._scrub(db, message)
 
     def list_messages(self, project_id: str) -> list[dict]:
-        with self._connection() as db:
+        with self._transaction(readonly=True) as db:
             self._required(db, "projects", project_id)
             return [
                 self._message(db, row)
@@ -1000,6 +1448,7 @@ class WorkbenchStore:
                 )
             ]
 
+    # 注意：本方法按设计会写「已读标记」（record_views_in），因此**不是**只读路径
     def employee_messages(
         self, project_id: str, employee_id: str, folder: str = "inbox", limit: int = 100
     ) -> dict:
@@ -1008,7 +1457,7 @@ class WorkbenchStore:
             raise WorkbenchError("invalid_field", "信箱分类必须是 inbox、sent 或 group。")
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
             raise WorkbenchError("invalid_field", "信箱读取数量必须为 1–100。")
-        with self._connection() as db:
+        with self._transaction() as db:
             self._required(db, "projects", project_id)
             self._message_member(db, project_id, employee_id)
             condition = {
@@ -1022,7 +1471,7 @@ class WorkbenchStore:
                 + " ORDER BY created_at DESC,rowid DESC LIMIT ?",
                 (project_id, employee_id, limit + 1),
             ).fetchall()
-            return {
+            result = {
                 "project_id": project_id,
                 "employee_id": employee_id,
                 "folder": folder,
@@ -1030,11 +1479,37 @@ class WorkbenchStore:
                 "has_older": len(rows) > limit,
                 "viewing_acknowledges": False,
             }
+            # 水位线（见 workbench_views）：只记"看过了"，**不改任何消息/任务状态**，
+            # 也只在收件箱生效；kill-switch 关闭积压折叠时它不产生任何行为影响。
+            if folder == "inbox":
+                newest: dict[str, str] = {}
+                for message in result["messages"]:
+                    sender = message.get("sender_id")
+                    created = str(message.get("created_at") or "")
+                    if sender and created and created > newest.get(sender, ""):
+                        newest[sender] = created
+                if newest:
+                    workbench_views.record_views_in(db, employee_id, list(newest.items()))
+            return result
 
     def _message_member(self, db, project_id, employee_id):
-        employee = self._required(db, "employees", employee_id)
+        try:
+            employee = self._required(db, "employees", employee_id)
+        except WorkbenchError as exc:
+            if exc.code != "not_found":
+                raise
+            # 自解释（铁律 2）：写错/截断的 employee id 必须说清"是谁错了"，
+            # 否则调用方只看到"找不到这条记录"，无从下手（实测 agent 会天天踩）。
+            raise WorkbenchError(
+                "not_found",
+                f"收件人或发件人不存在：{employee_id!r}；"
+                "请核对 employee id 是否完整（可用 project_context 取同事的准确 id）。",
+            ) from exc
         if not self._membership(db, employee_id, project_id):
-            raise WorkbenchError("permission_denied", "消息中的员工必须属于当前项目。")
+            raise WorkbenchError(
+                "permission_denied",
+                f"消息中的员工必须属于当前项目：{employee_id!r}（成员见 project_context 的 employees）。",
+            )
         if employee["lifecycle"] != "active":
             raise WorkbenchError("employee_inactive", "暂停或退役员工不能发送或接收新的项目消息。")
         return employee
@@ -1062,6 +1537,110 @@ class WorkbenchStore:
             raise WorkbenchError(
                 "MESSAGE_REQUEST_CYCLE", "不能请求上游员工再次执行，以免形成循环唤醒。"
             )
+
+    def _fold_message(
+        self,
+        db: sqlite3.Connection,
+        project_id: str,
+        sender_id: str,
+        recipient_id: str,
+        title: str,
+        now: str,
+    ) -> dict | None:
+        """Fold a flooding sender's message into one digest row (rules S2/S4).
+
+        Returns the digest message (marked ``folded``), or None when the sender is
+        still under the limit and the message should be delivered normally.
+        Only titles survive; bodies are dropped — the honest trade for a flood.
+        """
+        # 第三档（水位线第一步）：按"未看过的积压"折叠 —— 治慢滴；
+        # 有 kill-switch（AGENT_MAILBOX_BACKLOG_FOLD=0），且与速率档并列、任一命中即折叠。
+        backlog_trip = (
+            workbench_views.backlog_folding_enabled()
+            and workbench_views.backlog_count_in(db, recipient_id, sender_id)
+            >= workbench_views.backlog_limit()
+        )
+        spec = backpressure.tiers()
+        counts = []
+        for window, _cap in spec:
+            cutoff = backpressure.since(now, window)
+            counts.append(
+                db.execute(
+                    "SELECT COUNT(*) AS c FROM messages WHERE project_id=? AND sender_id=? "
+                    "AND recipient_id=? AND created_at>=? "
+                    "AND (thread_id IS NULL OR thread_id NOT LIKE ?)",
+                    (project_id, sender_id, recipient_id, cutoff, backpressure.DIGEST_MARK + "%"),
+                ).fetchone()["c"]
+            )
+        recent = counts[0]
+        if not backlog_trip and not backpressure.should_fold_tiered(counts):
+            return None
+        window = spec[0][0]  # 摘要窗口用**短窗**：长窗会让摘要挂 6 小时，误伤后续正常对话
+        key = backpressure.digest_thread_id(sender_id, recipient_id)
+        row = db.execute(
+            "SELECT * FROM messages WHERE project_id=? AND sender_id=? AND recipient_id=? "
+            "AND thread_id=? AND created_at>=? ORDER BY created_at DESC LIMIT 1",
+            (project_id, sender_id, recipient_id, key, cutoff),
+        ).fetchone()
+        if row is not None:
+            body = backpressure.append_folded(row["body"], title, sender_id, recipient_id)
+            count = backpressure.count_folded(body)
+            message_id = row["id"]
+            db.execute(
+                "UPDATE messages SET body=?,title=? WHERE id=?",
+                (
+                    self._scrub(db, body),
+                    self._scrub(db, backpressure.digest_title(sender_id, recipient_id, count)),
+                    message_id,
+                ),
+            )
+        else:
+            body = backpressure.new_digest_body(title, sender_id, recipient_id)
+            count = backpressure.count_folded(body)
+            message_id = _id("message")
+            db.execute(
+                "INSERT INTO messages(id,project_id,title,body,sender_id,recipient_id,reply_to,thread_id,"
+                "request_work,source_task_id,request_id,request_digest,created_at,source_session_id) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    message_id,
+                    project_id,
+                    self._scrub(db, backpressure.digest_title(sender_id, recipient_id, count)),
+                    self._scrub(db, body),
+                    sender_id,
+                    recipient_id,
+                    None,
+                    key,
+                    0,
+                    None,
+                    None,
+                    hashlib.sha256(_json([key, count]).encode()).hexdigest(),
+                    now,
+                    None,
+                ),
+            )
+        self._governance(
+            db,
+            "message_folded",
+            employee_id=sender_id,
+            project_id=project_id,
+            actor=f"employee:{sender_id}" if sender_id else "human",
+            reason=(
+                f"{sender_id} → {recipient_id} 在 {int(window)}s 内已发 {recent} 条，"
+                f"超过上限 {backpressure.fold_limit()}，本条折叠进摘要"
+            ),
+            payload={
+                "message_id": message_id,
+                "thread_id": key,
+                "folded_title": title,
+                "folded_count": count,
+                "recent": recent,
+            },
+        )
+        result = self._message(db, self._required(db, "messages", message_id))
+        result["folded"] = True
+        result["folded_count"] = count
+        return result
 
     def send_message(
         self,
@@ -1125,6 +1704,21 @@ class WorkbenchStore:
                 raise WorkbenchError("permission_denied", "人工消息不能冒用员工执行来源。")
             if recipient_id is not None:
                 self._message_member(db, project_id, recipient_id)
+                # T33 通讯录白名单：收件人一旦有通讯录，只有列内发件人可达（默认无列表 ⇒ 开放，不误伤）
+                verdict = workbench_contacts.may_message_in(db, project_id, sender_id, recipient_id)
+                if not verdict["allowed"]:
+                    raise WorkbenchError(
+                        "CONTACT_REQUIRED",
+                        "收件人设置了通讯录白名单，发件人不在其中；请先请对方把你加入通讯录。",
+                    )
+            elif sender_id is not None:
+                # 员工不能靠"群发"绕过白名单：本项目只要有人设了通讯录，员工群发即拒
+                enforcing = workbench_contacts.whitelisted_members_in(db, project_id)
+                if enforcing:
+                    raise WorkbenchError(
+                        "CONTACT_REQUIRED",
+                        "本项目有员工设置了通讯录白名单，员工不能群发（会绕过白名单）；请明确指定收件人。",
+                    )
             if request_work and (recipient_id is None or recipient_id == sender_id):
                 raise WorkbenchError("invalid_field", "请求工作需要明确选择另一名项目员工。")
             parent = self._required(db, "messages", reply_to) if reply_to is not None else None
@@ -1137,6 +1731,13 @@ class WorkbenchStore:
                 and sender_id not in (parent["sender_id"], parent["recipient_id"])
             ):
                 raise WorkbenchError("permission_denied", "不能回复无权查看的私信。")
+            # S3 执行点：被判定为回声环而冻结的线程，自动发送必须被挡住
+            # （检测在 echo_guard，这里只负责"不许再发"；解冻需人工留痕）
+            if parent is not None and echo_guard.thread_frozen(self, parent["thread_id"]):
+                raise WorkbenchError(
+                    "THREAD_FROZEN",
+                    "该线程因疑似回声环已被冻结，请人工确认后解除再发（解冻走 governance 事件）。",
+                )
             if request_id is not None:
                 previous = db.execute(
                     "SELECT * FROM messages WHERE project_id=? AND sender_id IS ? AND request_id=?",
@@ -1150,7 +1751,22 @@ class WorkbenchStore:
                     return self._message(db, previous)
             if request_work and source_task_id:
                 self._check_request_chain(db, source_task_id, recipient_id)
-            message_id, timestamp = _id("message"), _now()
+            timestamp = _now()
+            # 背压（S2/S4）：同一发件人→同一收件人超限 ⇒ 后续消息折叠进一条摘要，
+            # 收件箱不再线性增长（2026-10-04 回放：单日单对 70 封单向刷屏）。
+            if (
+                not request_work
+                and request_id is None
+                and sender_id is not None
+                and recipient_id is not None
+                and recipient_id != sender_id
+            ):
+                folded = self._fold_message(
+                    db, project_id, sender_id, recipient_id, title, timestamp
+                )
+                if folded is not None:
+                    return folded
+            message_id = _id("message")
             db.execute(
                 "INSERT INTO messages(id,project_id,title,body,sender_id,recipient_id,reply_to,thread_id,request_work,source_task_id,request_id,request_digest,created_at,source_session_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
@@ -1208,6 +1824,45 @@ class WorkbenchStore:
             )
             return self._message(db, self._required(db, "messages", message_id))
 
+    @staticmethod
+    def _claim_sql(node_id: str, project_ids: list[str] | None) -> tuple[str, list[str]]:
+        """The one claim query (shared by the writer and the read-only peek)."""
+        execution_clause, execution_params = workbench_contract.execution_sql("e")
+        params: list[str] = [node_id]
+        scope_clause = ""
+        if project_ids is not None:
+            placeholders = ",".join("?" for _ in project_ids)
+            scope_clause = f" AND t.project_id IN ({placeholders}) "
+            params.extend(project_ids)
+        sql = (
+            "SELECT t.* FROM tasks t WHERE t.node_id=? AND t.status='queued' AND t.execution_mode='managed' "
+            + scope_clause
+            + "AND EXISTS (SELECT 1 FROM employees e WHERE e.id=t.assignee_id AND e.lifecycle='active' "
+            + execution_clause
+            + ") "
+            + "AND EXISTS (SELECT 1 FROM memberships m WHERE m.employee_id=t.assignee_id AND m.project_id=t.project_id) "
+            + "AND NOT EXISTS (SELECT 1 FROM tasks a WHERE a.assignee_id=t.assignee_id "
+            "AND a.execution_mode='managed' AND a.status IN ('starting','running','waiting_approval')) "
+            "ORDER BY t.created_at,t.rowid LIMIT 1"
+        )
+        return sql, [*params, *execution_params]
+
+    def peek_claim(self, node_id: str, project_ids: list[str] | None = None) -> dict | None:
+        """Which task *would* be claimed next — **read-only** (no status change).
+
+        ``run_now`` needs this: claiming blindly can start a different task than the one
+        the human asked for, and there is no ``starting → queued`` way back.
+        """
+        with self._transaction(readonly=True) as db:
+            self._required(db, "devices", node_id)
+            if db.execute("SELECT paused FROM update_settings WHERE id=1").fetchone()[0]:
+                return None
+            if project_ids == []:
+                return None
+            sql, params = self._claim_sql(node_id, project_ids)
+            row = db.execute(sql, params).fetchone()
+            return self._entity(row) if row is not None else None
+
     def claim_task(self, node_id: str, project_ids: list[str] | None = None) -> dict | None:
         if project_ids is not None and (
             not isinstance(project_ids, list)
@@ -1221,22 +1876,8 @@ class WorkbenchStore:
                 return None
             if project_ids == []:
                 return None
-            scope_clause = ""
-            params: list[str] = [node_id]
-            if project_ids is not None:
-                placeholders = ",".join("?" for _ in project_ids)
-                scope_clause = f" AND t.project_id IN ({placeholders}) "
-                params.extend(project_ids)
-            row = db.execute(
-                "SELECT t.* FROM tasks t WHERE t.node_id=? AND t.status='queued' AND t.execution_mode='managed' "
-                + scope_clause
-                + "AND EXISTS (SELECT 1 FROM employees e WHERE e.id=t.assignee_id AND e.lifecycle='active' AND e.kind IN ('codex','claude') AND e.connection_type='cli') "
-                + "AND EXISTS (SELECT 1 FROM memberships m WHERE m.employee_id=t.assignee_id AND m.project_id=t.project_id) "
-                + "AND NOT EXISTS (SELECT 1 FROM tasks a WHERE a.assignee_id=t.assignee_id "
-                "AND a.execution_mode='managed' AND a.status IN ('starting','running','waiting_approval')) "
-                "ORDER BY t.created_at,t.rowid LIMIT 1",
-                params,
-            ).fetchone()
+            sql, params = self._claim_sql(node_id, project_ids)
+            row = db.execute(sql, params).fetchone()
             if row is None:
                 return None
             if row["permission_mode"] == "workspace-write" and node_id != self.local_node()["id"]:
@@ -1260,12 +1901,11 @@ class WorkbenchStore:
             return self._entity(self._required(db, "tasks", row["id"]))
 
     def get_task(self, task_id: str) -> dict:
-        with self._connection() as db:
+        with self._transaction(readonly=True) as db:
             return self._scrub(db, self._entity(self._required(db, "tasks", task_id)))
 
     def task_detail(self, task_id: str) -> dict:
-        with self._connection() as db:
-            db.execute("BEGIN")
+        with self._transaction(readonly=True) as db:
             task = self._entity(self._required(db, "tasks", task_id))
             events = db.execute(
                 "SELECT * FROM events WHERE task_id=? ORDER BY created_at,rowid", (task_id,)
@@ -1646,7 +2286,7 @@ class WorkbenchStore:
         return self._entity(row)
 
     def get_permission(self, task_id: str, request_id: str) -> dict:
-        with self._connection() as db:
+        with self._transaction(readonly=True) as db:
             self._required(db, "tasks", task_id)
             return self._permission(db, task_id, request_id)
 
@@ -1723,7 +2363,11 @@ class WorkbenchStore:
             return self._permission(db, task_id, request_id)
 
     def resolve_permission(self, task_id: str, request_id: str, decision: str) -> dict:
-        _choice(decision, {"allow_once", "deny"}, "请选择仅本次允许或拒绝。")
+        _choice(
+            decision,
+            {"allow_once", "allow_run", "deny"},
+            "请选择仅本次允许、本任务内允许或拒绝。",
+        )
         expired = False
         with self._transaction() as db:
             task = self._required(db, "tasks", task_id)
@@ -1745,13 +2389,291 @@ class WorkbenchStore:
                 "permission_expired", "权限请求已过期并默认拒绝，请让员工重新请求。"
             )
 
+    # 配额/限流信号：命中即视为"这个 agent 没额度了"，要上报给人（老板 2026-10-06 要求）
+    QUOTA_PATTERNS = (
+        "429",
+        "too many requests",
+        "rate limit",
+        "rate_limit",
+        "insufficient_quota",
+        "quota exceeded",
+        "quota_exhausted",
+        "exceeded your current quota",
+        "额度不足",
+        "配额已用尽",
+        "配额不足",
+        "超出配额",
+        "账户余额不足",
+    )
+
+    HEARTBEAT_TYPE = "agent_heartbeat"
+    QUOTA_TYPE = "quota_exhausted"
+    QUOTA_RESTORED_TYPE = "quota_restored"
+
+    @classmethod
+    def classify_run_output(cls, text: str) -> str | None:
+        """把一段运行输出归类：命中配额/限流信号返回 ``quota_exhausted``，否则 ``None``。
+
+        为什么单独分类：429/配额耗尽**不是普通失败** ✓ —— 普通失败要人判断技术原因 ✓，
+        而"没额度了" 要人**去续费/换套餐** ✓（同一句话，动作完全不同 ✓）。
+        """
+        if not text:
+            return None
+        lowered = text.lower()
+        return cls.QUOTA_TYPE if any(pat.lower() in lowered for pat in cls.QUOTA_PATTERNS) else None
+
+    def record_quota_restored(
+        self, employee_id: str, project_id: str | None = None, detail: str = ""
+    ) -> None:
+        """显式声明"额度已恢复"（续费/换套餐/成功跑通一次之后）。
+
+        **心跳不能代替它** ✗ —— 第四轮评审 eng-verify 实测：写一条心跳就把 quota_exhausted
+        洗成 False ⇒ 教室视图假绿（心跳只证"活着"，不证"额度恢复" ✓）。
+        """
+        with self._transaction() as db:
+            self._required(db, "employees", employee_id)
+            self._governance(
+                db,
+                self.QUOTA_RESTORED_TYPE,
+                employee_id=employee_id,
+                project_id=project_id,
+                task_id=None,
+                actor="human",
+                reason=detail,
+            )
+
+    def record_heartbeat(
+        self, employee_id: str, project_id: str | None = None, detail: str = ""
+    ) -> None:
+        """记一次心跳（落 governance 事件，无需改表结构）。"""
+        with self._transaction() as db:
+            self._required(db, "employees", employee_id)
+            self._governance(
+                db,
+                self.HEARTBEAT_TYPE,
+                employee_id=employee_id,
+                project_id=project_id,
+                task_id=None,
+                actor=employee_id,
+                reason=detail,
+            )
+
+    def agent_health(self, project_id: str | None = None, stale_seconds: int = 120) -> list[dict]:
+        """每个 agent 的健康：心跳新旧 · 是否没额度 · 是否在办（只读）。
+
+        * **心跳**：来自 ``agent_heartbeat`` 事件；**没有心跳来源就显式说"不可用"** ✗
+          （不拿 `devices.last_seen` 那种"没有写入方的列"凑数 —— 第二轮评审的教训 ✓）
+        * **额度**：最近一条 `quota_exhausted` 事件晚于最近一条心跳 ⇒ 判定"没额度" ✓
+        """
+        with self._transaction(readonly=True) as db:
+            scope, params = "", ()
+            if project_id:
+                scope, params = " AND project_id = ?", (project_id,)
+            out = []
+            for row in db.execute("SELECT id, name, kind FROM employees ORDER BY name").fetchall():
+                eid = row["id"]
+                hb = db.execute(
+                    "SELECT created_at FROM governance_events WHERE type=? AND employee_id=?"
+                    f"{scope} ORDER BY created_at DESC LIMIT 1",
+                    (self.HEARTBEAT_TYPE, eid, *params),
+                ).fetchone()
+                quota = db.execute(
+                    "SELECT created_at FROM governance_events WHERE type=? AND employee_id=?"
+                    f"{scope} ORDER BY created_at DESC LIMIT 1",
+                    (self.QUOTA_TYPE, eid, *params),
+                ).fetchone()
+                restored = db.execute(
+                    "SELECT created_at FROM governance_events WHERE type=? AND employee_id=?"
+                    f"{scope} ORDER BY created_at DESC LIMIT 1",
+                    (self.QUOTA_RESTORED_TYPE, eid, *params),
+                ).fetchone()
+                hb_at, quota_at = (
+                    (hb["created_at"] if hb else None),
+                    (quota["created_at"] if quota else None),
+                )
+                age = (
+                    db.execute(
+                        "SELECT CAST((julianday('now') - julianday(?)) * 86400 AS INTEGER)",
+                        (hb_at,),
+                    ).fetchone()[0]
+                    if hb_at
+                    else None
+                )
+                out.append(
+                    {
+                        "id": eid,
+                        "name": row["name"],
+                        "kind": row["kind"],
+                        "heartbeat_at": hb_at,
+                        "heartbeat_age_seconds": age,
+                        "heartbeat_available": hb is not None,  # 没来源就说不可用 ✓
+                        "stale": bool(hb_at) and age is not None and age > stale_seconds,
+                        "quota_exhausted": (
+                            bool(quota_at)
+                            and (restored is None or quota_at > restored["created_at"])
+                        ),
+                        "quota_at": quota_at,
+                        "quota_restored_at": restored["created_at"] if restored else None,
+                    }
+                )
+            return out
+
+    def activity_snapshot(self, project_id: str | None = None) -> dict:
+        """教室视图的数据底座：每个员工一行 + 每台设备一行（只读）。
+
+        设计依据（第二轮评审）：
+        * **砍掉"多久没动"** ✗ —— `devices.last_seen` 没有写入方（只在配对时写一次），
+          拿它排序等于**展示假数字**，会制造不信任；
+        * **加"最近一件产出/验收"** ✓ —— 四问全绿仍可能是空转（天天在跑、0 交付）；
+        * 时间一律用 `datetime()` 归一化比较（`expires_at` 是 ISO-T+tz，裸比字符串会侥幸成立 ✗）。
+        """
+        now_sql = "datetime('now')"
+        with self._transaction(readonly=True) as db:
+            scope_e, params_e = "", ()
+            if project_id:
+                scope_e = " AND m.project_id = ?"
+                params_e = (project_id,)
+            employees = []
+            rows = db.execute(
+                "SELECT e.id, e.name, e.kind, e.lifecycle, e.connection_type "
+                "FROM employees e LEFT JOIN memberships m ON m.employee_id = e.id "
+                f"WHERE 1=1{scope_e} GROUP BY e.id ORDER BY e.name",
+                params_e,
+            ).fetchall()
+            for row in rows:
+                eid = row["id"]
+                live_sessions = db.execute(
+                    "SELECT count(*) AS c FROM mailbox_sessions WHERE employee_id=? "
+                    f"AND revoked_at IS NULL AND ({now_sql} < datetime(expires_at) OR expires_at IS NULL)",
+                    (eid,),
+                ).fetchone()["c"]
+                active = db.execute(
+                    "SELECT count(*) AS c FROM tasks WHERE assignee_id=? "
+                    "AND status IN ('queued','starting','running','waiting_approval')",
+                    (eid,),
+                ).fetchone()["c"]
+                last = db.execute(
+                    "SELECT type, created_at FROM governance_events WHERE employee_id=? "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (eid,),
+                ).fetchone()
+                produced = db.execute(
+                    "SELECT id, title, updated_at FROM tasks WHERE assignee_id=? AND status IN ('review','done') "
+                    "ORDER BY updated_at DESC LIMIT 1",
+                    (eid,),
+                ).fetchone()
+                employees.append(
+                    {
+                        "id": eid,
+                        "name": row["name"],
+                        "kind": row["kind"],
+                        "lifecycle": row["lifecycle"],
+                        "connection_type": row["connection_type"],
+                        "live_sessions": live_sessions,
+                        "active_tasks": active,
+                        # 接线状态：有活跃会话 = 已接；否则登记未接（不再拿 execution_verified 硬凑）
+                        "wired": live_sessions > 0,
+                        "last_action": last["created_at"] if last else None,
+                        "last_action_type": last["type"] if last else None,
+                        "last_outcome": (
+                            {
+                                "task_id": produced["id"],
+                                "title": produced["title"],
+                                "at": produced["updated_at"],
+                            }
+                            if produced
+                            else None
+                        ),
+                    }
+                )
+            devices = []
+            for row in db.execute("SELECT id, name, is_local, status FROM devices").fetchall():
+                running = db.execute(
+                    "SELECT count(*) AS c FROM tasks WHERE status IN ('starting','running','waiting_approval')",
+                ).fetchone()["c"]
+                devices.append(
+                    {
+                        "id": row["id"],
+                        "name": row["name"],
+                        "is_local": bool(row["is_local"]),
+                        "status": row["status"],
+                        "running_tasks": running,
+                        # 明确不提供 last_seen：没有写入方，避免展示假数字 ✗
+                        "heartbeat_available": False,
+                    }
+                )
+            return {"employees": employees, "devices": devices}
+
+    def proof_index(self, project_id: str | None = None) -> dict[str, str]:
+        """任务 → 交付证明结论（只含有证明的任务）。
+
+        数据源是 ``governance_events`` 的 ``delivery_proof``（没有独立的证明表）。
+        列表行要能直接看出"这一单有没有据"——证据前移到决策点（第 10 轮 + 两路评审共识）。
+        """
+        with self._transaction(readonly=True) as db:
+            sql = "SELECT task_id, payload, created_at FROM governance_events WHERE type = 'delivery_proof'"
+            params: tuple = ()
+            if project_id:
+                sql += " AND project_id = ?"
+                params = (project_id,)
+            index: dict[str, str] = {}
+            for row in db.execute(sql + " ORDER BY created_at", params):
+                payload = row["payload"]
+                try:
+                    data = json.loads(payload) if isinstance(payload, str) else (payload or {})
+                except ValueError:
+                    data = {}
+                index[row["task_id"]] = str(data.get("verdict") or data.get("status") or "recorded")
+            return index
+
+    def pending_permissions(self, project_id: str | None = None) -> list[dict]:
+        """未决的权限请求（只读）。
+
+        没有它，人侧只能看到"有人在等"，看不出**等的是什么** —— 一屏三问就答不全
+        （第 10 轮/flow2 报告 FL-a）。
+        """
+        with self._transaction(readonly=True) as db:
+            sql = (
+                "SELECT p.request_id, p.task_id, p.run_id, p.created_at, p.expires_at, "
+                "t.project_id, t.title FROM permissions p JOIN tasks t ON t.id = p.task_id "
+                "WHERE p.status = 'pending'"
+            )
+            params: tuple = ()
+            if project_id:
+                sql += " AND t.project_id = ?"
+                params = (project_id,)
+            return [dict(row) for row in db.execute(sql + " ORDER BY p.created_at", params)]
+
+    def run_has_allow_run(self, task_id: str, run_id: str) -> bool:
+        """这个 run 是否已被授权「本任务内允许」（只读）。
+
+        人批过一次后，同一 run 的后续权限请求不再打断人（引擎据此自动放行）。
+        """
+        with self._transaction(readonly=True) as db:
+            row = db.execute(
+                "SELECT * FROM permissions WHERE task_id=? AND run_id=? "
+                "AND decision='allow_run' ORDER BY created_at DESC LIMIT 1",
+                (task_id, run_id),
+            ).fetchone()
+            if row is None:
+                return False
+            expires = row["expires_at"]
+            if expires:
+                # 存活校验：过期请求不再构成"本任务内允许"（已批准记录是 resolved，故只看时间）
+                try:
+                    if datetime.fromisoformat(str(expires)) <= datetime.now(timezone.utc):
+                        return False
+                except ValueError:
+                    return False
+            return True
+
     def _resolve_permission(self, db, task, request_id, decision):
         task_id = task["id"]
-        if decision == "allow_once" and not any(
-            isinstance(option, dict) and option.get("kind") == "allow_once"
+        if decision in {"allow_once", "allow_run"} and not any(
+            isinstance(option, dict) and option.get("kind") == decision
             for option in self._permission(db, task_id, request_id)["options"]
         ):
-            raise WorkbenchError("invalid_field", "员工没有提供仅本次允许的选项，请拒绝这次操作。")
+            raise WorkbenchError("invalid_field", "员工没有提供该批准选项，请拒绝这次操作。")
         cursor = db.execute(
             "UPDATE permissions SET status='resolved',decision=?,resolved_at=? "
             "WHERE task_id=? AND request_id=? AND status='pending'",
@@ -1810,7 +2732,7 @@ class WorkbenchStore:
         q = _text(q, "搜索内容", 1000, empty=True)
         # Escaping LIKE wildcards makes the user's search literal, including % and _.
         needle = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-        with self._connection() as db:
+        with self._transaction(readonly=True) as db:
             self._required(db, "projects", project_id)
             rows = db.execute(
                 "SELECT * FROM memories WHERE project_id=? "
@@ -1880,7 +2802,7 @@ class WorkbenchStore:
             return self._entity(self._required(db, "resources", resource_id))
 
     def read_resource(self, project_id: str, resource_id: str) -> dict:
-        with self._connection() as db:
+        with self._transaction(readonly=True) as db:
             self._required(db, "projects", project_id)
             row = self._required(db, "resources", resource_id)
             if row["project_id"] != project_id:
@@ -1926,8 +2848,7 @@ class WorkbenchStore:
     def resource_manifest(self, project_id: str) -> dict:
         from .workbench_resources import manifest
 
-        with self._connection() as db:
-            db.execute("BEGIN")
+        with self._transaction(readonly=True) as db:
             return manifest(self, db, project_id)
 
     def execution_resource_manifest(self, task_id: str, run_id: str) -> dict:
@@ -1951,19 +2872,422 @@ class WorkbenchStore:
     def knowledge_status(self, project_id: str) -> dict:
         from .workbench_knowledge import knowledge_status
 
-        with self._connection() as db:
+        with self._transaction(readonly=True) as db:
             project = self._required(db, "projects", project_id)
             path = project["path"]
         result = knowledge_status(path)
         result["provider_version"] = result.get("version")
         result["reason"] = result.get("error_code") or result.get("freshness_reason")
-        with self._connection() as db:
+        with self._transaction(readonly=True) as db:
             return self._scrub(db, result)
+
+    def merge_employee_memberships(
+        self, old_employee_id: str, new_employee_id: str, *, dry_run: bool = True
+    ) -> dict:
+        """合并两行的 **memberships**（合并员工行前**必须先做** ✓ **默认 dry-run** ✗）。
+
+        为什么必须单独做（评审预言 + 我实测双证 ✗）：`memberships` 主键是 `(employee_id, project_id)`
+        ⇒ 直接 `UPDATE memberships SET employee_id=新行`，在"两人同属一个项目"时**必然撞约束** ✗
+        （实测到 `IntegrityError` → `constraint_error` ✓）。
+
+        规则（按项目分情况 ✓）：
+        * 两人**同属**该项目 ⇒ 删旧行 ✓ + **撤销旧行的邮箱会话**（token 随之失效 ✓）
+        * **只有旧行**属于该项目 ⇒ 改指向新行 ✓（无冲突 ✓）
+        返回 {moved_projects, dropped_projects, revoked_sessions} ⇒ 迁移前后**数字对账**用 ✓。
+        """
+        if old_employee_id == new_employee_id:
+            raise WorkbenchError("INVALID_MERGE", "合并目标不能是同一行。")
+        with self._transaction() as db:
+            self._required(db, "employees", old_employee_id)
+            self._required(db, "employees", new_employee_id)
+            old_projects = [
+                row["project_id"]
+                for row in db.execute(
+                    "SELECT project_id FROM memberships WHERE employee_id=?", (old_employee_id,)
+                )
+            ]
+            new_projects = {
+                row["project_id"]
+                for row in db.execute(
+                    "SELECT project_id FROM memberships WHERE employee_id=?", (new_employee_id,)
+                )
+            }
+            moved = [pid for pid in old_projects if pid not in new_projects]
+            dropped = [pid for pid in old_projects if pid in new_projects]
+            session_ids = [
+                row["id"]
+                for row in db.execute(
+                    "SELECT id FROM mailbox_sessions WHERE employee_id=? AND revoked_at IS NULL",
+                    (old_employee_id,),
+                )
+            ]
+            if not dry_run:
+                for project_id in dropped:
+                    db.execute(
+                        "DELETE FROM memberships WHERE employee_id=? AND project_id=?",
+                        (old_employee_id, project_id),
+                    )
+                for project_id in moved:
+                    db.execute(
+                        "UPDATE memberships SET employee_id=? WHERE employee_id=? AND project_id=?",
+                        (new_employee_id, old_employee_id, project_id),
+                    )
+                for session_id in session_ids:
+                    db.execute(
+                        "UPDATE mailbox_sessions SET revoked_at=? WHERE id=?", (_now(), session_id)
+                    )
+            return {
+                "old": old_employee_id,
+                "new": new_employee_id,
+                "dry_run": dry_run,
+                "moved_projects": moved,
+                "dropped_projects": dropped,
+                "revoked_sessions": session_ids,
+                "moved": len(moved),
+                "dropped": len(dropped),
+                "sessions": len(session_ids),
+            }
+
+    def repoint_employee_references(
+        self, old_employee_id: str, new_employee_id: str, *, dry_run: bool = True
+    ) -> dict:
+        """把 `old` 的引用重指向 `new`（**默认 dry-run** ✗ 显式 False 才写 ✓）。
+
+        **故意排除 `memberships`** ✗：主键 `(employee_id, project_id)` ⇒ 盲 UPDATE 必撞约束 ✗
+        （实测 `constraint_error` ✓ 评审亦预言 ✓）⇒ 必须**先**调 `merge_employee_memberships()` ✓。
+
+        覆盖两类（只做外键会漏第二类 ✗）：
+        ① 动态发现的 id 列（employee_id/sender_id/recipient_id/assignee_id/owner_id ✓ 除 memberships）
+        ② `governance_events.actor` 的 `'employee:<id>'` **字符串**（无外键 ⇒ foreign_key_check 看不见 ✗）
+        返回每处 `表.列` 受影响行数 + `memberships_skipped` ⇒ 迁移前后**数字对账**用 ✓。
+        """
+        if old_employee_id == new_employee_id:
+            raise WorkbenchError("INVALID_MERGE", "合并目标不能是同一行。")
+        with self._transaction() as db:
+            self._required(db, "employees", old_employee_id)
+            self._required(db, "employees", new_employee_id)
+            id_columns = ("employee_id", "sender_id", "recipient_id", "assignee_id", "owner_id")
+            targets: list[tuple[str, str]] = []
+            for (table_name,) in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            ):
+                if table_name == "memberships":
+                    continue  # ✗ 交给 merge_employee_memberships（先去重 ✓）
+                for column in db.execute(f"PRAGMA table_info({table_name})"):
+                    if column["name"] in id_columns:
+                        targets.append((table_name, column["name"]))
+            counts: dict[str, int] = {}
+            for table, column in targets:
+                affected = db.execute(
+                    f"SELECT count(*) FROM {table} WHERE {column}=?", (old_employee_id,)
+                ).fetchone()[0]
+                if affected:
+                    counts[f"{table}.{column}"] = affected
+                    if not dry_run:
+                        db.execute(
+                            f"UPDATE {table} SET {column}=? WHERE {column}=?",
+                            (new_employee_id, old_employee_id),
+                        )
+            actor_prefix = f"employee:{old_employee_id}"
+            actor_affected = db.execute(
+                "SELECT count(*) FROM governance_events WHERE actor=?", (actor_prefix,)
+            ).fetchone()[0]
+            if actor_affected:
+                counts["governance_events.actor(字符串)"] = actor_affected
+                if not dry_run:
+                    db.execute(
+                        "UPDATE governance_events SET actor=? WHERE actor=?",
+                        (f"employee:{new_employee_id}", actor_prefix),
+                    )
+            return {
+                "old": old_employee_id,
+                "new": new_employee_id,
+                "dry_run": dry_run,
+                "affected": counts,
+                "total": sum(counts.values()),
+                "memberships_skipped": db.execute(
+                    "SELECT count(*) FROM memberships WHERE employee_id=?", (old_employee_id,)
+                ).fetchone()[0],
+            }
+
+    # ── ③ 外发通知（outbox）：**本地是权威 ✓ 飞书只是通道** ✗ ────────────────────
+    def record_notification(
+        self,
+        kind: str,
+        *,
+        channel: str,
+        target_kind: str,
+        target_id: str,
+        state_hash: str,
+        project_id: str | None = None,
+        task_id: str | None = None,
+    ) -> dict:
+        """记一条外发通知；**同一 (kind, 目标, 状态哈希) 只可能有一行** ✓。
+
+        幂等由**数据库唯一索引**保证 ✓（不是靠调用方自觉 ✗）⇒ "**没变就闭嘴**" 成为结构性事实 ✓
+        （`notifications_dedupe` ✓）。重复调用返回既有行 ✓ 而不是报错 ✗。
+        """
+        if not kind or not channel or not target_kind or not target_id or not state_hash:
+            raise WorkbenchError(
+                "INVALID_NOTIFICATION", "通知的 kind/channel/目标/状态哈希都不能为空。"
+            )
+        now = _now()
+        with self._transaction() as db:
+            existing = db.execute(
+                "SELECT * FROM notifications WHERE kind=? AND target_kind=? AND target_id=? AND state_hash=?",
+                (kind, target_kind, target_id, state_hash),
+            ).fetchone()
+            if existing is not None:
+                return dict(existing)
+            notification_id = _id("note")
+            db.execute(
+                "INSERT INTO notifications(id,kind,channel,target_kind,target_id,project_id,task_id,"
+                "state_hash,external_message_id,status,attempts,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,NULL,'pending',0,?,?)",
+                (
+                    notification_id,
+                    kind,
+                    channel,
+                    target_kind,
+                    target_id,
+                    project_id,
+                    task_id,
+                    state_hash,
+                    now,
+                    now,
+                ),
+            )
+            return dict(
+                db.execute("SELECT * FROM notifications WHERE id=?", (notification_id,)).fetchone()
+            )
+
+    def mark_notification(
+        self,
+        notification_id: str,
+        *,
+        status: str,
+        external_message_id: str | None = None,
+        last_error: str | None = None,
+    ) -> dict:
+        """记录发送结果（成功 ⇒ 存 `external_message_id` 供**原地更新** ✓）。"""
+        with self._transaction() as db:
+            self._required(db, "notifications", notification_id)
+            db.execute(
+                "UPDATE notifications SET status=?, external_message_id=COALESCE(?, external_message_id),"
+                " last_error=?, attempts=attempts+1, updated_at=? WHERE id=?",
+                (status, external_message_id, last_error, _now(), notification_id),
+            )
+            return dict(
+                db.execute("SELECT * FROM notifications WHERE id=?", (notification_id,)).fetchone()
+            )
+
+    def latest_notification(self, kind: str, *, target_kind: str, target_id: str) -> dict | None:
+        """该目标最近一次外发的状态哈希 ⇒ 与当前状态比对即可"变了才发" ✓（只读 ✓）。"""
+        with self._transaction(readonly=True) as db:
+            row = db.execute(
+                "SELECT * FROM notifications WHERE kind=? AND target_kind=? AND target_id=? "
+                "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (kind, target_kind, target_id),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def link_identity(
+        self, channel: str, external_id: str, employee_id: str, note: str = ""
+    ) -> dict:
+        """外部身份 → 员工（评审指出此前**缺这张表** ✗）；重复绑定覆盖 ✓。"""
+        if not channel or not external_id:
+            raise WorkbenchError("INVALID_IDENTITY", "channel 与 external_id 都不能为空。")
+        with self._transaction() as db:
+            self._required(db, "employees", employee_id)
+            db.execute(
+                "INSERT INTO identity_links(channel,external_id,employee_id,note,created_at) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(channel,external_id) DO UPDATE SET employee_id=excluded.employee_id, note=excluded.note",
+                (channel, external_id, employee_id, note, _now()),
+            )
+            return dict(
+                db.execute(
+                    "SELECT * FROM identity_links WHERE channel=? AND external_id=?",
+                    (channel, external_id),
+                ).fetchone()
+            )
+
+    def identity_employee(self, channel: str, external_id: str) -> str | None:
+        """反查：外部身份对应的员工 id（未绑定 ⇒ None ✓ 不猜 ✗）。"""
+        with self._transaction(readonly=True) as db:
+            row = db.execute(
+                "SELECT employee_id FROM identity_links WHERE channel=? AND external_id=?",
+                (channel, external_id),
+            ).fetchone()
+            return row["employee_id"] if row else None
+
+    def task_counts_by_status(self, project_id: str | None = None) -> dict:
+        """只读：任务**按状态计数**（投影卡"一屏三问"的数据源 ✓ 真实列值 ✓ 不猜 ✗）。
+
+        真实状态分布（2026-10-07 实测 ✓）：`queued` / `review` / `failed` / `done`。
+        另即时算出 `done_today`（按 `updated_at` 日期 ✓）。
+        """
+        with self._transaction(readonly=True) as db:
+            rows = db.execute(
+                "SELECT status, count(*) AS c FROM tasks "
+                + ("WHERE project_id=? " if project_id else "")
+                + "GROUP BY status",
+                (project_id,) if project_id else (),
+            )
+            counts = {row["status"]: row["c"] for row in rows}
+            today = _now()[:10]
+            done_today = db.execute(
+                "SELECT count(*) FROM tasks WHERE status='done' AND substr(updated_at,1,10)=? "
+                + ("AND project_id=? " if project_id else ""),
+                (today, project_id) if project_id else (today,),
+            ).fetchone()[0]
+            today_items = [
+                row["title"]
+                for row in db.execute(
+                    "SELECT title FROM tasks WHERE status='done' AND substr(updated_at,1,10)=? "
+                    + ("AND project_id=? " if project_id else "")
+                    + "ORDER BY updated_at DESC LIMIT 5",
+                    (today, project_id) if project_id else (today,),
+                )
+            ]
+        return {"counts": counts, "done_today": done_today, "today_items": today_items}
+
+    def duplicate_employee_report(self) -> dict:
+        """只读：列出**疑似重复的员工身份**及其引用计数（合并迁移的数字对账基准 ✓）。
+
+        HS 审计：同一人因 connection_type 不同建了多行（DSH / DSH App ✗ …）。
+        本报告**只读** ✓：分组 · 每行引用计数 · 建议保留行 · 需重指向的行数 ✓
+        引用统计**动态找列**并**单独统计 `governance_events.actor` 字符串**（无外键 ⇒
+        `foreign_key_check` 看不见 ✗ 评审教训 ✓）。
+        """
+        with self._transaction(readonly=True) as db:
+            # 显式循环（推导里重名 row 会把列名当表名 ✗ —— 已踩）
+            id_columns = ("employee_id", "sender_id", "recipient_id", "assignee_id", "owner_id")
+            columns: list[tuple[str, str]] = []
+            for (table_name,) in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            ):
+                for column in db.execute(f"PRAGMA table_info({table_name})"):
+                    if column["name"] in id_columns:
+                        columns.append((table_name, column["name"]))
+            people = [
+                dict(row)
+                for row in db.execute(
+                    "SELECT id, name, kind, connection_type, lifecycle, node_id, created_at "
+                    "FROM employees ORDER BY name, created_at"
+                )
+            ]
+            refs: dict[str, int] = {person["id"]: 0 for person in people}
+            detail: list[dict] = []
+            for table, column in columns:
+                for row in db.execute(
+                    f"SELECT {column} AS eid, count(*) AS c FROM {table} "
+                    f"WHERE {column} IS NOT NULL GROUP BY {column}"
+                ):
+                    if row["eid"] in refs:
+                        refs[row["eid"]] += row["c"]
+                        detail.append(
+                            {
+                                "table": table,
+                                "column": column,
+                                "employee_id": row["eid"],
+                                "count": row["c"],
+                            }
+                        )
+            for row in db.execute(
+                "SELECT actor, count(*) AS c FROM governance_events "
+                "WHERE actor LIKE 'employee:%' GROUP BY actor"
+            ):
+                eid = row["actor"][len("employee:") :]
+                if eid in refs:
+                    refs[eid] += row["c"]
+                    detail.append(
+                        {
+                            "table": "governance_events",
+                            "column": "actor(字符串)",
+                            "employee_id": eid,
+                            "count": row["c"],
+                        }
+                    )
+            groups: dict[tuple, list[dict]] = {}
+            for person in people:
+                groups.setdefault((person["name"].split()[0].lower(), person["kind"]), []).append(
+                    person
+                )
+        duplicates = []
+        for (person, kind), rows in sorted(groups.items()):
+            if len(rows) < 2:
+                continue
+            for row in rows:
+                row["references"] = refs.get(row["id"], 0)
+            keep = max(rows, key=lambda r: (r["references"], r["created_at"]))
+            duplicates.append(
+                {
+                    "person": person,
+                    "kind": kind,
+                    "forms": len(rows),
+                    "keeper_suggestion": keep["id"],
+                    "rows": rows,
+                    "references_to_move": sum(
+                        r["references"] for r in rows if r["id"] != keep["id"]
+                    ),
+                }
+            )
+        return {
+            "employees": len(people),
+            "duplicate_groups": duplicates,
+            "total_duplicate_rows": sum(len(g["rows"]) for g in duplicates),
+            "reference_breakdown": detail,
+            "ok": not duplicates,
+        }
+
+    def orphan_report(self) -> dict:
+        """只读体检：列出**孤立引用**（迁移前必查 ✓）。
+
+        两类都要查（对抗评审实测 ✗：只查 `PRAGMA foreign_key_check` 会漏掉第二类 ✓）：
+        ① 有外键的孤立行 —— `PRAGMA foreign_key_check` ✓
+        ② **无外键但存 id 的引用**：`mail_view_marks.employee_id`（建表未写 REFERENCES ✗）
+           与 `governance_events.actor` 里 `'employee:<id>'` 字符串（会被反解成 id ✓）
+        """
+
+        def _has_table(db: sqlite3.Connection, name: str) -> bool:
+            return (
+                db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+                ).fetchone()
+                is not None
+            )
+
+        with self._transaction(readonly=True) as db:
+            violations = [list(row) for row in _foreign_key_violations(db)]
+            ghost_marks = 0
+            if _has_table(db, "mail_view_marks"):  # 视图层懒建 ⇒ 缺表时计 0（不报假警 ✗）
+                ghost_marks = db.execute(
+                    "SELECT count(*) FROM mail_view_marks WHERE employee_id NOT IN (SELECT id FROM employees)"
+                ).fetchone()[0]
+            ghost_actors = db.execute(
+                "SELECT count(*) FROM governance_events WHERE actor LIKE 'employee:%' "
+                "AND substr(actor, 10) NOT IN (SELECT id FROM employees)"
+            ).fetchone()[0]
+        return {
+            "foreign_key_violations": violations,
+            "ghost_view_marks": ghost_marks,
+            "ghost_actors": ghost_actors,
+            "ok": not violations and ghost_marks == 0 and ghost_actors == 0,
+        }
+
+    def project_path_for(self, project_id: str) -> str:
+        """按项目解析 checkout 路径（**只读诊断的唯一入口** ✓）。
+
+        agent **不传路径** ✗ —— 服务端按项目解析后再交给 graft/aoci 包装 ✓（HS 2026-10-07 裁定 ✓）。
+        """
+        with self._transaction(readonly=True) as db:
+            row = self._required(db, "projects", project_id)
+        return str(row["path"])
 
     def query_knowledge(self, project_id: str, query: str) -> dict:
         from .workbench_knowledge import knowledge_query
 
-        with self._connection() as db:
+        with self._transaction(readonly=True) as db:
             project = self._required(db, "projects", project_id)
             path = project["path"]
         result = knowledge_query(path, query)
@@ -1981,13 +3305,11 @@ class WorkbenchStore:
             )
         }
         result["content"] = json.dumps(result.get("symbols", []), ensure_ascii=False, indent=2)
-        with self._connection() as db:
+        with self._transaction(readonly=True) as db:
             return self._scrub(db, result)
 
     def project_context(self, project_id: str, employee_id: str | None = None) -> dict:
-        with self._connection() as db:
-            if not db.in_transaction:
-                db.execute("BEGIN")
+        with self._transaction(readonly=True) as db:  # 事务已由 _transaction 开启
             project = self._entity(self._required(db, "projects", project_id))
             team = db.execute(
                 "SELECT e.*,m.role AS project_role FROM employees e JOIN memberships m ON m.employee_id=e.id WHERE m.project_id=? ORDER BY e.name,e.id",
@@ -2078,7 +3400,7 @@ class WorkbenchStore:
         )
 
     def employee_credentials(self, employee_id: str, project_id: str) -> dict:
-        with self._connection() as db:
+        with self._transaction(readonly=True) as db:
             employee = self._required(db, "employees", employee_id)
             if employee["lifecycle"] == "retired":
                 raise WorkbenchError("employee_retired", "这位员工已退役，项目授权已撤销。")
@@ -2092,7 +3414,7 @@ class WorkbenchStore:
 
     def execution_credentials(self, task_id: str) -> dict:
         """Private capability for one owned execution, never a UI response."""
-        with self._connection() as db:
+        with self._transaction(readonly=True) as db:
             task = self._required(db, "tasks", task_id)
             employee = self._required(db, "employees", task["assignee_id"])
             if (
@@ -2119,7 +3441,7 @@ class WorkbenchStore:
             for value in (token, employee_id, project_id, task_id, run_id)
         ):
             return False
-        with self._connection() as db:
+        with self._transaction(readonly=True) as db:
             task = db.execute(
                 "SELECT t.* FROM tasks t JOIN employees e ON e.id=t.assignee_id WHERE t.id=? AND t.assignee_id=? AND t.project_id=? AND t.run_id=? AND e.lifecycle!='retired'",
                 (task_id, employee_id, project_id, run_id),
@@ -2144,7 +3466,7 @@ class WorkbenchStore:
             for value in (token, employee_id, project_id)
         ):
             return False
-        with self._connection() as db:
+        with self._transaction(readonly=True) as db:
             employee = db.execute(
                 "SELECT m.secret_token FROM memberships m JOIN employees e ON e.id=m.employee_id WHERE m.employee_id=? AND m.project_id=? AND e.lifecycle!='retired'",
                 (employee_id, project_id),
