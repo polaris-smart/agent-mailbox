@@ -34,6 +34,8 @@ jobs:
               assert ref.removeprefix("refs/tags/v") == version, "Tag/package version mismatch"
           PYTHON
       - run: python -m pip install build
+      - name: Generate source build provenance
+        run: python -c "import runpy; runpy.run_path('scripts/build-workbench.py')['write_build_info']()"
       - run: python -m build
       - uses: actions/upload-artifact@v4
         with: { name: dist, path: dist/ }

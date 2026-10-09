@@ -19,8 +19,10 @@ from typing import Any
 from xml.parsers.expat import ExpatError
 
 from . import __version__
+from .workbench_contract import EXECUTION_KINDS, execution_supported
 
-SUPPORTED = {"codex": "Codex", "claude": "Claude Code"}
+# 能力契约单源（T29）：这里只是别名，不复制字典 —— 改了契约，全仓同步
+SUPPORTED = EXECUTION_KINDS
 KNOWN_AGENTS = {
     **SUPPORTED,
     "gemini": "Gemini",
@@ -201,7 +203,7 @@ def discovery_record(kind: str, connection_type: str, entrypoint: str | None) ->
         "binary": entrypoint if connection_type == "cli" else None,
         "entrypoint": entrypoint,
         "connection_type": connection_type,
-        "execution_supported": connection_type == "cli" and kind in SUPPORTED,
+        "execution_supported": execution_supported(kind, connection_type),
         "execution_verified": False,
         "auth_status": "not_checked",
         "discovery_id": hashlib.sha256(identity.encode("utf-8")).hexdigest(),
@@ -294,6 +296,50 @@ def check_native_auth(record: dict, timeout: float) -> None:
         record["detail"] = "Installed; sign-in check timed out or was unavailable."
 
 
+SUSPECT_SUFFIXES = ("-ai", "-code", "-agent")
+
+
+def discover_suspects(limit: int = 20) -> list[dict]:
+    """PATH 里**疑似** agent 的可执行文件（第 10c 条 ✓ **只提示，绝不自动登记** ✗）。
+
+    判定：文件名以 `-ai` / `-code` / `-agent` 结尾 ✓ 且**不在** `KNOWN_AGENTS` 名单里 ✓
+    返回 `{name, path, reason}` ✓ 供 UI 提示「检测到疑似 agent，是否添加？」✓
+    —— 是否添加**由用户决定** ✓（HS：提示但不自作主张 ✓）
+    """
+    known = {name.casefold() for name in KNOWN_AGENTS}
+    known |= {name.casefold() for name in APP_NAMES}
+    found: list[dict] = []
+    seen: set[str] = set()
+    directories = [Path(p).expanduser() for p in os.environ.get("PATH", "").split(os.pathsep) if p]
+    for directory in directories:
+        try:
+            entries = sorted(directory.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            name = entry.name
+            if name in seen or not name.casefold().endswith(SUSPECT_SUFFIXES):
+                continue
+            if name.casefold() in known or name.casefold() in {n.split(".")[0] for n in known}:
+                continue
+            try:
+                if (
+                    not entry.is_file()
+                    or entry.is_symlink() is False
+                    and not os.access(entry, os.X_OK)
+                ):
+                    continue
+                if not os.access(entry, os.X_OK):
+                    continue
+            except OSError:
+                continue
+            seen.add(name)
+            found.append({"name": name, "path": str(entry), "reason": "suffix-suspect"})
+            if len(found) >= limit:
+                return found
+    return found
+
+
 def discover_employees() -> list[dict]:
     """Known CLI entries and macOS agent bundles; discovery never implies execution."""
     found = []
@@ -347,7 +393,16 @@ def runtime_status(root: Path) -> dict:
         "Pinned dependencies and native Codex executables are installed; "
         "the first task will validate agent compatibility and execution."
         if installed and node_available
-        else "Install the execution runtime (Node.js >=22.13) before starting an employee."
+        # 无引擎时的**引导**（HS 0.8.1 本体第 2 条 ✓）：不说一句 unavailable 就完事 ✗
+        # 告知：受管执行需要什么 ✓ 官方安装方式 ✓ 装好回来即可用 ✓
+        # 硬约束 ✗：**不把引擎打成我们的插件/分发包** ✓（体积/license/用户选择权三问题会原路返回 ✓）
+        else (
+            "Managed execution needs Node.js >=22.13 plus **your own** Codex CLI or Claude Code CLI on PATH. "
+            "Install Node from https://nodejs.org/ (or `brew install node`), "
+            "Codex with `npm install -g @openai/codex`, "
+            "Claude Code with `npm install -g @anthropic-ai/claude-code`, then come back - "
+            "no restart needed. Mailbox mode (reading and writing mail) needs none of this."
+        )
     )
     return {
         "installed": installed,

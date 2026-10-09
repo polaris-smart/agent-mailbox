@@ -75,7 +75,7 @@ def _authorized_task(store, db, token, task_id):
 
 
 def list_mail_tasks(store, token):
-    with store._transaction() as db:
+    with store._transaction(readonly=True) as db:
         session = validate_session(store, db, token)
         rows = db.execute(
             "SELECT * FROM tasks WHERE project_id=? AND assignee_id=? "

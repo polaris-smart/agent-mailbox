@@ -9,7 +9,7 @@
 | 资料 | 实时查看与不可变版本分开；员工提案由 owner 确认；任务领取时固定批准版本 | 文本提案不覆盖源文件；没有后台 Git 同步；历史内容可能因新增凭据脱敏而改变返回校验值，会明确标记 |
 | 资料展示 | PRD、todo、daily update、架构资料；离线单文件 HTML 隔离预览 | 阻止外部网络、父页面和工作台 API；依赖 CDN 的报告需转为离线单文件 |
 | 工作日志 | 从持久任务事件、邮件、笔记和资料审批生成，只读 | 不等于防篡改审计；内部 subagent 作者身份没有独立认证，沿用父员工会话归属 |
-| 检索工具 | 可选 CodeGraph 本机 CLI 与已有索引；失败原因与新鲜度未知可见 | 不自动建立索引；Windows 适配器明确不支持；AOCI-Code 索引路径错误，完整治理未整合；Graft 未整合 |
+| 检索工具 | 可选 CodeGraph 本机 CLI 与已有索引；失败原因与新鲜度未知可见 | 不自动建立索引（人侧 `agent-mailbox knowledge index --project <id> --yes` 可显式重建 ✓）；Windows 适配器明确不支持；**Graft 与 AOCI 的只读诊断已整合**（2026-10-07：5 个工具双面挂载 ✓ 含路径约束与陈旧门 ✓）；AOCI-Code 完整治理仍未整合 |
 | 跨设备 | Mac 协调端 → Ubuntu ARM64 容器节点，配对、HTTPS 身份校验、授权、映射、任务回执、版本校验、断线恢复、撤销 | 节点任务使用确定性测试执行器；Ubuntu 原生 LLM 适配器和真实 HK/US 服务器未验证 |
 | UI | 左侧团队/当前项目/管理分组，项目选择器，中英文，手机抽屉与键盘操作，带样式的协议与帮助 | 其他语言未声明支持 |
 | 安装升级 | Mac ARM64 独立 wheel、打包 App、本机保留数据升级与迁移备份 | App 无 Developer ID 签名/公证；手动升级，无自动更新器；Beta 4 三平台包检查见下节，真实 Windows/Linux 模型仍未验 |
@@ -56,4 +56,4 @@ Paperclip 的固定源码参考包含 SSH 执行目标及工作区传输，可�
 - 项目工具新增 `project_delivery(task_id)`，共 11 项；读取本项目固定同事交付，不任意复制工作区文件。二进制、符号链接、凭据、不安全或过大 patch 不自动合入。
 - SQLite/身份更新备份不含 home/task-workspaces、外部 Git 或供应商登录；工作区保留但须独立备份。
 
-当前证据草稿：Mac 回归 349 passed、1 skipped；UI 27 项检查（原 20 项流程及 7 项模型 payload/元数据场景）、0 页面异常；7 项补充场景没有运行模型。Beta 3 真实 Codex/Claude 已通过 context/note probe、独立编辑、project_delivery 固定差异审查、Human 验收与显式合入。初次默认模型 MODEL_UNSUPPORTED 的失败另行保留，成功重跑由显式选择 gpt-6-luna 完成。Windows/Linux 实体设备和真实 HK/US 未验收。最终结果以[Beta 3 证据](evidence/v080/beta3-collaboration.md)及对应构建目录记录为准；历史 Beta 1/2 的 provider、Ubuntu 或安装包证据不视为本轮重跑。
+当前证据草稿：Mac 回归 349 passed、1 skipped；UI 27 项检查（原 20 项流程及 7 项模型 payload/元数据场景）、0 页面异常；7 项补充场景没有运行模型。Beta 3 真实 Codex/Claude 已通过 context/note probe、独立编辑、project_delivery 固定差异审查、Human 验收与显式合入。初次默认模型 MODEL_UNSUPPORTED 的失败另行保留，成功重跑由显式选择兼容模型 完成。Windows/Linux 实体设备和真实 HK/US 未验收。最终结果以[Beta 3 证据](evidence/v080/beta3-collaboration.md)及对应构建目录记录为准；历史 Beta 1/2 的 provider、Ubuntu 或安装包证据不视为本轮重跑。

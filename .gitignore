@@ -17,3 +17,33 @@ dist/
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /docs/context-graph/
 graft/.cache/
+
+# codegraph 语义索引（本地工具状态，不入库）
+.codegraph/
+
+# ── 卫生门：凭据/会话/私有库/备份一律不得进仓（2026-10-07 扫出真缺口：此前只挡 .env ✗）──
+state.db
+state.db-wal
+state.db-shm
+instance.json
+mail_session_*.json
+**/secrets/
+*.token
+.env
+.env.*
+!.env.example
+update-backups/
+.agent-mailbox/
+.agent-mailbox-*/
+personal/
+*.pem
+*.p12
+id_rsa*
+
+# 运行时依赖树（npm ci 产物 ✓ 绝不该进仓 ✗ —— 2026-10-07 发现未 ignore ✓）
+node_modules/
+# 构建时生成（revision/built_at/资源哈希 ✓）——不进仓 ✗
+src/agent_mailbox/workbench_assets/build-info.json
+
+# Also ignore local virtualenv symlinks.
+/.venv

@@ -86,6 +86,46 @@ def build_server(store, employee_id, project_id, token, endpoint="", task_id="",
         return project_task_delivery(store, project_id, task_id)
 
     @server.tool()
+    def project_graft_ask(task: str) -> dict:
+        """Read-only repo structure question (graft ask). No managed execution, no state change."""
+        guard()
+        from . import workbench_graft as _graft
+
+        return _graft.graft_ask(store.project_path_for(project_id), task)
+
+    @server.tool()
+    def project_graft_callers(symbol: str) -> dict:
+        """Read-only call-chain lookup (graft callers). No managed execution."""
+        guard()
+        from . import workbench_graft as _graft
+
+        return _graft.graft_callers(store.project_path_for(project_id), symbol)
+
+    @server.tool()
+    def project_aoci_doctor() -> dict:
+        """Read-only cognition health check (aoci doctor). No managed execution."""
+        guard()
+        from . import workbench_aoci as _aoci
+
+        return _aoci.aoci_doctor(store.project_path_for(project_id))
+
+    @server.tool()
+    def project_aoci_status() -> dict:
+        """Read-only cognition status (aoci status). No managed execution."""
+        guard()
+        from . import workbench_aoci as _aoci
+
+        return _aoci.aoci_status(store.project_path_for(project_id))
+
+    @server.tool()
+    def project_aoci_check() -> dict:
+        """Read-only cognition findings (aoci check). No managed execution."""
+        guard()
+        from . import workbench_aoci as _aoci
+
+        return _aoci.aoci_check(store.project_path_for(project_id))
+
+    @server.tool()
     def project_code_search(query: str) -> dict:
         """Search this project's optional CodeGraph symbol index. No index rebuild or LLM call."""
         guard()
@@ -164,7 +204,7 @@ def build_server(store, employee_id, project_id, token, endpoint="", task_id="",
 
     @server.tool()
     def project_message(
-        title: str, body: str, recipient_id: str = "", reply_to: str = "", request_id: str = ""
+        title: str, body: str, recipient_id: str, reply_to: str = "", request_id: str = ""
     ) -> dict:
         """Send or reply without triggering work. Identity comes from the bound execution session."""
         return send(title, body, recipient_id, reply_to or None, request_id=request_id or None)
@@ -280,7 +320,7 @@ def build_remote_server(client, employee_id, project_id, task_id="", run_id=""):
 
     @server.tool()
     def project_message(
-        title: str, body: str, recipient_id: str = "", reply_to: str = "", request_id: str = ""
+        title: str, body: str, recipient_id: str, reply_to: str = "", request_id: str = ""
     ) -> dict:
         """Send or reply to a project message without starting work."""
         return call(

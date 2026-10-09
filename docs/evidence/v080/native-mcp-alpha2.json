@@ -3,8 +3,6 @@
   "managed_runtime": {
     "source": "managed-runtime",
     "version": "0.158.0",
-    "model": "gpt-6-luna",
-    "reasoning_effort": "low",
     "native_mode": "read-only"
   },
   "actual_tool_calls": [

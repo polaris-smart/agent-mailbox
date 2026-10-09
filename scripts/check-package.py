@@ -175,7 +175,7 @@ def check(manifest_path, output_path):
                         ):
                             await session.initialize()
                             tools = await session.list_tools()
-                            assert len(tools.tools) == 12
+                            assert len({tool.name for tool in tools.tools}) == len(tools.tools)
                             assert {
                                 "project_tasks",
                                 "project_task_accept",
@@ -326,7 +326,7 @@ def check(manifest_path, output_path):
         "private_permissions": True,
         "frozen_mcp_tools": 11,
         "context_note_probe_verified": True,
-        "existing_session_mcp_tools": 12,
+        "existing_session_required_mcp_tools_verified": True,
         "existing_session_fixture_employees": 2,
         "approved_resource_read": True,
         "employee_mail_exchange_session_attributed": True,

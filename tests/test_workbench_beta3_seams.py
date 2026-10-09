@@ -18,7 +18,7 @@ from agent_mailbox.workbench_execution_resources import (
 )
 from agent_mailbox.workbench_onboarding import create_probe
 from agent_mailbox.workbench_private import private_access
-from agent_mailbox.workbench_store import WorkbenchError, WorkbenchStore
+from agent_mailbox.workbench_store import SCHEMA_VERSION, WorkbenchError, WorkbenchStore
 from agent_mailbox.workbench_workspaces import apply_delivery, task_delivery
 
 
@@ -161,7 +161,7 @@ def test_schema8_upgrade_preserves_rows_and_private_backup(fixture):
     assert upgraded.snapshot()["employees"] == before["employees"]
     assert private_access(upgraded.migration_backup_path, 0o600)
     with sqlite3.connect(upgraded.db_path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
 
 

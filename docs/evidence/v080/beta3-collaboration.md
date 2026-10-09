@@ -1,6 +1,6 @@
 # Beta 3 接入、工作区与交付验证
 
-版本 0.8.0b3，2026-10-01。本地开发与验证，尚未公开 GitHub/PyPI 发布，未部署 HK/US。构建与验证保存在 `/Users/interia/tools/agent-mailbox-builds/v080-beta3/`；本页区分原生执行、UI 场景和历史版本证据。
+版本 0.8.0b3，2026-10-01。本地开发与验证，尚未公开 GitHub/PyPI 发布，未部署 HK/US。构建与验证保存在 `/Users/example/tools/agent-mailbox-builds/v080-beta3/`；本页区分原生执行、UI 场景和历史版本证据。
 
 ## 当前已确认
 
@@ -11,7 +11,7 @@
 
 ## 原生协作与发行包
 
-- 原生 Codex/Claude Beta 3 协作已通过，证据 `v080-beta3/native-collaboration.json` 为 passed:true：两员工 probe 均有真实 context/note 回执；Codex 显式选用 gpt-6-luna 独立修改，原目录保持不变；Claude 通过 project_delivery 读取固定 diff 并写笔记审查；Human 验收不改源文件，显式 apply 后精确标记合入。4 个任务均实际进入 review，再由验证操作者作为 owner 验收。
+- 原生 Codex/Claude Beta 3 协作已通过，证据 `v080-beta3/native-collaboration.json` 为 passed:true：两员工 probe 均有真实 context/note 回执；Codex 显式选用兼容模型 独立修改，原目录保持不变；Claude 通过 project_delivery 读取固定 diff 并写笔记审查；Human 验收不改源文件，显式 apply 后精确标记合入。4 个任务均实际进入 review，再由验证操作者作为 owner 验收。
 - 初次默认模型 MODEL_UNSUPPORTED 另存 `native-default-model-failure.json`；不是产品自动换模型，失败未伪装成功。
 - wheel 和 macOS ARM64 App 均从独立数据目录启动，版本、协议版权、全局登记/入组、普通消息不触发任务、识别安装方式和正常退出通过；包验证没有调用模型。
 - 冻结 App 的 MCP：11 个工具；固定资料读取、显式文本提案、真实 context/note probe 回执及 project_delivery 读取通过。没有员工审批/合入工具。

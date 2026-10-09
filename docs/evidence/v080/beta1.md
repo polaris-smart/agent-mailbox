@@ -2,7 +2,7 @@
 
 版本：0.8.0b1；日期：2026-10-01。未公开推送或发行，未部署 HK/US。
 
-可复核产物位于本机 `/Users/interia/tools/agent-mailbox-builds/v080-beta1/`；证据不包含凭据。发布前应另行在目标发行环境复验。
+可复核产物位于本机 `/Users/example/tools/agent-mailbox-builds/v080-beta1/`；证据不包含凭据。发布前应另行在目标发行环境复验。
 
 | 证据 | 结果 |
 | --- | --- |

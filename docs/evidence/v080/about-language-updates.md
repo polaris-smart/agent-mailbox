@@ -11,4 +11,4 @@
 
 未重新跑上一轮全部 259 个测试，不将上一轮结果当本轮全套验证。App 仍 ad-hoc 签名、未公证；受控自动更新是后续建议。
 
-构建和截图：`/Users/interia/tools/agent-mailbox-builds/v080-about-language-alpha8/`。
+构建和截图：`/Users/example/tools/agent-mailbox-builds/v080-about-language-alpha8/`。

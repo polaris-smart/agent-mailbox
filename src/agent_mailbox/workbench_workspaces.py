@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
 
+from . import workbench_policy, workbench_proof
 from .workbench_private import private_mode
 from .workbench_resources import scrub_credentials
 from .workbench_store import WorkbenchError, _now
@@ -333,7 +334,7 @@ def _apply_reason(task, row, payload, applied):
 
 
 def task_delivery(store, taskid):
-    with store._connection() as db:
+    with store._transaction(readonly=True) as db:
         task = store._required(db, "tasks", taskid)
         if task["execution_mode"] == "mailbox":
             return store._scrub(
@@ -382,6 +383,37 @@ def apply_delivery(store, taskid):
     # HTTP owner confirmation is handled by the caller. This transaction serializes applies.
     with store._transaction() as db:
         task = store._required(db, "tasks", taskid)
+        project_id = task["project_id"]
+    # 审核机制（默认 off ⇒ 行为不变）：门禁放在写事务之前，且**重算哈希**
+    # —— 同行校验过后再替换产出物（TOCTOU）不得仍然放行
+    policy = workbench_policy.effective_policy(store, project_id)
+    if policy.get("peer_review") == "required_for_write":
+        verdict = workbench_proof.verify_proof(store, taskid)
+        if verdict.get("verdict") != "verified":
+            raise WorkbenchError(
+                "PROOF_NOT_VERIFIED",
+                f"交付产出物当前校验不通过（{verdict.get('verdict')}）："
+                f"不符 {verdict.get('mismatch', 0)} · 缺失 {verdict.get('missing', 0)}；"
+                "请重新校验后再合入。",
+            )
+        if not workbench_policy.peer_verified(store, taskid, task["assignee_id"]):
+            raise WorkbenchError(
+                "PEER_REVIEW_REQUIRED",
+                "本项目策略要求：写能力交付须由另一名员工校验通过（同行校验）后才能合入。",
+            )
+    with store._transaction() as db:
+        # 门在事务外算过一次；进入**写事务**后用同一连接复检 ——
+        # 覆盖"门通过后有人重录证明"或"策略翻成 required"这两种竞态（第三轮复查指出）
+        policy_in = workbench_policy.effective_policy_in(db, project_id)
+        if policy_in.get(
+            "peer_review"
+        ) == "required_for_write" and not workbench_policy.peer_verified_in(
+            db, taskid, task["assignee_id"]
+        ):
+            raise WorkbenchError(
+                "PEER_REVIEW_REQUIRED",
+                "本项目策略要求：写能力交付须由另一名员工校验通过（同行校验）后才能合入。",
+            )
         row = db.execute("SELECT * FROM task_deliveries WHERE task_id=?", (taskid,)).fetchone()
         payload = json.loads(row["payload"]) if row else {}
         applied = bool(

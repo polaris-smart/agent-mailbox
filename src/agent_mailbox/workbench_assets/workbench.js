@@ -26,6 +26,7 @@ const state = {
   updates: null, updatesLoading: false, updatesError: null, updatesAction: "", updatesAttempted: false, updatePauseUnconfirmed: false,
   taskFormUpdate: null,
   employeeQuery: "", employeeFilter: "all", mailboxEmployeeId: "", mailboxFolder: "inbox",
+  mailboxMessageId: "",
   messageDrafts: {}, messages: {}, messagesLoading: false, messagesError: null, dragEmployeeId: null,
 };
 try { state.projectId = sessionStorage.getItem("agent-mailbox.workbench.project") || ""; } catch { /* optional */ }
@@ -33,9 +34,15 @@ try { state.projectId = sessionStorage.getItem("agent-mailbox.workbench.project"
 try { if (sessionStorage.getItem("agent-mailbox.workbench.language-view") === "about") { state.view = "about"; sessionStorage.removeItem("agent-mailbox.workbench.language-view"); } } catch { /* optional */ }
 
 const navLabels = {
+  wall: t("交接台", "Handover desk"),
   overview: t("项目概览", "Overview"), tasks: t("任务", "Tasks"), activity: t("工作日志", "Work log"),
   employees: t("所有员工", "All employees"), members: t("项目成员", "Project members"), messages: t("项目消息", "Messages"), resources: t("资料与记忆", "Resources & memory"),
-  mailboxes: t("员工信箱", "Employee mailboxes"), devices: t("设备", "Devices"), about: t("关于与设置", "About & settings"),
+  mailboxes: t("员工信箱", "Employee mailboxes"), classroom: t("教室", "Classroom"), blackboard: t("任务黑板", "Task board"), keys: t("钥匙", "Keys"), devices: t("设备", "Devices"), about: t("关于与设置", "About & settings"),
+};
+const viewScopes = {
+  employees: "global", mailboxes: "global", keys: "global", devices: "global", about: "global",
+  wall: "project", overview: "project", tasks: "project", members: "project",
+  messages: "project", resources: "project", activity: "project", classroom: "project", blackboard: "project",
 };
 const statusLabels = {
   queued: t("排队中", "Queued"), starting: t("正在启动", "Starting"),
@@ -145,8 +152,17 @@ function errorText(error) {
     connection_failed: t("无法连接工作台服务，请确认它正在运行后重试。", "Could not connect to the workbench. Check that it is running and try again."),
     invalid_response: t("服务返回了无法读取的数据，请刷新后重试。", "The service returned an unreadable response. Refresh and try again."),
     request_failed: t("操作没有完成，请重试。", "The operation did not complete. Try again."),
+    // 铁律 2：这三条此前 UI 零映射，中文界面会直接漏出英文原文（a11y 评审 A6）
+    MAILBOX_TOOL_DENIED: t("邮箱接入不提供这个操作。请让员工改用项目工具；若必须执行，请在终端运行 agent-mailbox wall 查看可用入口。", "This mailbox does not expose that operation. Ask the employee to use project tools; run `agent-mailbox wall` in a terminal to see available entries."),
+    MAILBOX_ARGUMENT_DENIED: t("邮箱接入不允许这些参数（不能指定他人身份/项目/执行参数）。请让员工只传收件人与正文。", "These arguments are not allowed for a mailbox (no impersonation, project or execution overrides)."),
+    CONTACT_REQUIRED: t("对方设置了通讯录白名单，你不在其中。请让对方把你加入通讯录（项目成员页 → 该员工 → 通讯录）。", "The recipient restricts senders. Ask them to add you under project members → employee → contacts."),
+    DELIVERY_CAPTURE_FAILED: t("交付内容没能完整捕获，暂不能验收。请打开任务详情查看工作区与交付详情，必要时让员工重新提交。", "The delivery could not be captured, so it cannot be reviewed. Open the task to inspect the workspace and delivery details."),
+    permission_expired: t("这次授权请求已过期，员工需要重新提出请求。请在团队墙「等你授权」查看是否还有新请求。", "This permission request expired; the employee must ask again. Check Team wall → Needs your approval."),
   };
-  return messages[error.code] || messages[error.message] || error.message || t("操作没有完成，请重试。", "The operation did not complete. Try again.");
+  const mapped = messages[error.code] || messages[error.message];
+  // 未命中映射时把**错误码**一起显形（否则只有服务端英文原文，且无处可查）
+  if (mapped) return mapped;
+  return error.code ? `${error.code}: ${error.message || t("操作没有完成，请重试。", "The operation did not complete. Try again.")}` : (error.message || t("操作没有完成，请重试。", "The operation did not complete. Try again."));
 }
 function humanDetail(value) {
   const messages = {
@@ -201,11 +217,110 @@ function setSidebar(open) {
   if (open) sidebar.querySelector(".brand").focus();
   else if (returnFocus) document.getElementById("sidebar-toggle").focus();
 }
+const projectPlus = document.querySelector('.project-switcher summary [data-action="new-project"]');
+
+// ══ **AM-14** ✓（Codex）：App 内"切换项目"用**独立浮层** ✓ 浏览器**完全不动** ✗ ══
+// 桌面标记由**原生 WKWebView 外壳**注入 ✓（不用 mode 判断 ✗ 浏览器也能访问成品服务 ✓）
+const desktopShell = () => document.documentElement.dataset.shell === "desktop";
+const POPOVER_API_OK = () => document.documentElement.dataset.popoverApi === "yes";
+
+let projectPopover = null;
+
+function closeProjectPopover({ restoreFocus = false } = {}) {
+  const trigger = document.getElementById("project-switcher");
+  const list = projectPopover?.querySelector(".project-list");
+  // 把列表**放回** details 里 ✓ ⇒ 其它代码路径与浏览器行为都不受影响 ✓
+  if (list && trigger) trigger.append(list);
+  if (projectPopover) {
+    const host = projectPopover;
+    projectPopover = null;
+    if (host.matches(":popover-open")) host.hidePopover?.();
+    host.remove();
+  }
+  if (trigger) trigger.open = false;
+  if (restoreFocus) document.querySelector(".project-switcher > summary")?.focus();
+}
+
+function positionProjectPopover() {
+  if (!projectPopover) return;
+  const trigger = document.querySelector(".project-switcher > summary");
+  if (!trigger) return closeProjectPopover();
+  const rect = trigger.getBoundingClientRect();
+  const gap = 6;
+  const width = Math.min(360, window.innerWidth - 24);
+  projectPopover.style.width = `${width}px`;
+  projectPopover.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - width - 12))}px`;
+  const top = rect.bottom + gap;
+  projectPopover.style.top = `${top}px`;
+  projectPopover.style.maxHeight = `${Math.max(160, window.innerHeight - top - 12)}px`;
+}
+
+function openProjectPopover(details) {
+  closeProjectPopover();
+  const source = details.querySelector(".project-list");
+  if (!source) return;
+  const host = document.createElement("div");
+  host.className = "project-popover";
+  if (POPOVER_API_OK()) {
+    // **优先 Popover API** ✓：自动获得 light-dismiss 与 Esc ✓ 且位于 top layer ⇒ **不受祖先裁切** ✗
+    host.setAttribute("popover", "auto");
+  }
+  host.append(source);
+  document.body.append(host);
+  projectPopover = host;
+  if (host.matches(":popover-open") === false && host.hasAttribute("popover")) host.showPopover?.();
+  positionProjectPopover();
+  details.open = true;
+  source.querySelector(".project-item")?.focus?.();
+}
+
+document.addEventListener(
+  "click",
+  (event) => {
+    if (!desktopShell()) return;                       // 浏览器：**原样不动** ✗
+    const summary = event.target.closest?.(".project-switcher > summary");
+    if (!summary) return;
+    // **Codex 抓到的真回归** ✗：`＋ 新建项目` 按钮**嵌在该 summary 内** ✓
+    // ⇒ 若连它一起拦 ✓ App 里点＋只会开关浮层、**根本建不了项目** ✗
+    // ⇒ 凡落在 summary 内**交互控件**上的点击，一律**放行原路径** ✗（不 preventDefault / 不 stopPropagation）
+    if (event.target.closest?.('[data-action="new-project"], button, a, input, [role="button"]')) return;
+    // details 的内联展开 = 挤压/截断的根因 ✗ ⇒ 桌面下**拦掉**它 ✓ 改用浮层 ✓
+    event.preventDefault();
+    event.stopPropagation();
+    if (projectPopover) closeProjectPopover();
+    else openProjectPopover(summary.closest(".project-switcher"));
+  },
+  true,
+);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && projectPopover) closeProjectPopover({ restoreFocus: true });
+});
+document.addEventListener("click", (event) => {
+  if (!projectPopover) return;
+  if (projectPopover.contains(event.target) || event.target.closest?.(".project-switcher > summary")) return;
+  // 选中项目后关闭 ✓ 点外部关闭 ✓（Popover API 的 light-dismiss 会先触发，这里做双保险 ✓）
+  closeProjectPopover();
+});
+document.addEventListener("click", (event) => {
+  if (projectPopover && event.target.closest?.(".project-popover .project-item")) closeProjectPopover({ restoreFocus: true });
+});
+window.addEventListener("resize", () => (projectPopover ? positionProjectPopover() : null));
+document.addEventListener("scroll", () => (projectPopover ? positionProjectPopover() : null), true);
+
+if (projectPlus) {
+  // 只触发「新建项目」，不连带把项目下拉展开
+  // **HS/Codex 抓到的真阻塞** ✗：这里原有的 `event.stopPropagation()` 把点击**截断** ✗
+  // ⇒ 冒泡段的主委托（`actions["new-project"] = openProjectForm`）收不到 ⇒ **点＋没反应** ✓
+  // ⇒ 只删 stopPropagation ✓ **保留 preventDefault** ✗（删了点＋会连带展开项目下拉 ✓）
+  projectPlus.addEventListener("click", (event) => { event.preventDefault(); });
+}
+
 function selectProject(id) {
   if (!state.data?.projects.some((item) => item.id === id)) return;
   document.getElementById("project-switcher").open = false;
   state.projectId = id;
-  state.view = "overview";
+  // 有活的项目落「团队墙」（一屏三问）；空项目落「项目概览」（首跑引导在那里）
+  state.view = (state.data?.tasks || []).some((task) => task.project_id === id && task.status !== "cancelled") ? "wall" : "overview";
   state.search = "";
   state.taskFilter = "all";
   state.discovered = null;
@@ -217,7 +332,7 @@ function selectProject(id) {
   if (state.view === "members") loadGovernance();
 }
 function selectView(view) {
-  if (!Object.hasOwn(navLabels, view)) return;
+  if (!Object.hasOwn(navLabels, view) || (viewScopes[view] === "project" && !project())) return;
   state.view = view;
   state.search = "";
   render();
@@ -268,13 +383,14 @@ function renderSidebar() {
   document.getElementById("current-project-name").textContent = current?.name || t("选择项目", "Select project");
   document.getElementById("current-project-symbol").textContent = (current?.name || "P").slice(0, 1);
   document.getElementById("project-switch-hint").textContent = t("切换项目", "Switch project");
-  for (const control of document.querySelectorAll(".project-nav [data-view]")) control.disabled = !current;
-  document.getElementById("breadcrumb-project").textContent = ["employees", "mailboxes", "about", "devices"].includes(state.view) ? t("工作台", "Workbench") : current?.name || t("工作台", "Workbench");
+  for (const control of document.querySelectorAll("[data-view]")) control.disabled = viewScopes[control.dataset.view] === "project" && !current;
+  document.getElementById("breadcrumb-project").textContent = viewScopes[state.view] === "global" ? t("工作台", "Workbench") : current?.name || t("工作台", "Workbench");
   document.getElementById("breadcrumb-page").textContent = navLabels[state.view];
   document.getElementById("task-nav-count").textContent = current ? String(projectTasks().filter((task) => task.status !== "done" && task.status !== "cancelled").length) : "";
+  updateStatusbar();
 }
 function heading(title, description, actions = []) {
-  return el("div", { class: "page-heading" }, el("div", {}, el("h1", {}, title), description ? el("p", { class: "subheading" }, description) : null), actions.length ? el("div", { class: "page-heading-actions" }, actions) : null);
+  return el("div", { class: "page-heading" }, el("div", {}, el("h1", { tabindex: "-1" }, title), description ? el("p", { class: "subheading" }, description) : null), actions.length ? el("div", { class: "page-heading-actions" }, actions) : null);
 }
 function runtimeNotice({ force = false } = {}) {
   const runtime = state.data?.runtime;
@@ -284,8 +400,8 @@ function runtimeNotice({ force = false } = {}) {
   const installation = runtime.install;
   const installing = state.runtimeInstalling || installation?.status === "installing";
   const failed = installation?.status === "failed";
-  const title = installing ? t("正在准备执行环境", "Preparing the execution environment") : failed ? t("执行环境准备失败", "Execution setup failed") : runtime.installed ? t("执行服务需要处理", "Execution service needs attention") : t("让员工开始工作，还需要准备执行环境", "Prepare the environment to let employees work");
-  return el("div", { class: "runtime-notice" }, icon("download"), el("div", {}, el("strong", {}, title), el("p", {}, installing ? t("完成后这里会自动更新，你可以先整理项目和资料。", "This will update automatically. You can organize your project and resources meanwhile.") : installation?.error?.message || humanDetail(runtime.detail) || t("一次准备，后续任务会使用同一套环境。", "Set it up once for future tasks."))), button(installing ? t("准备中…", "Preparing…") : failed ? t("重试准备", "Retry setup") : t("准备执行环境", "Set up execution"), "install-runtime", { class: "small", disabled: installing }));
+  const title = installing ? t("正在准备执行环境", "Preparing the execution environment") : failed ? t("执行环境准备失败", "Execution setup failed") : runtime.installed ? t("执行服务需要处理", "Execution service needs attention") : t("邮箱模式现在已经可用", "Mailbox mode works right now");
+  return el("div", { class: "runtime-notice" }, icon("download"), el("div", {}, el("strong", {}, title), el("p", {}, installing ? t("完成后这里会自动更新，你可以先整理项目和资料。", "This will update automatically. You can organize your project and resources meanwhile.") : installation?.error?.message || humanDetail(runtime.detail) || t("本产品**不含任何内置智能体** ✓ 让员工在自己的会话里读信即可开始 ✓；只有要我们代跑时，才需要准备执行环境（可选 ✓）。", "This product ships without any built-in agent. Employees can start by reading mail in their own session; preparing the execution environment is optional, only for when this workbench runs them for you."))), button(installing ? t("准备中…", "Preparing…") : failed ? t("重试准备", "Retry setup") : t("准备执行环境", "Set up execution"), "install-runtime", { class: "small", disabled: installing }));
 }
 function taskIcon(status) {
   const name = status === "done" ? "check" : status === "review" ? "review" : status === "waiting_approval" ? "shield" : status === "running" ? "play" : attentionStatuses.has(status) ? "warning" : "clock";
@@ -294,7 +410,8 @@ function taskIcon(status) {
 function taskRow(task) {
   return el("button", { type: "button", class: "task-row", "data-task": task.id, "aria-label": `${task.title} · ${statusLabels[task.status] || statusLabels.unknown}` },
     taskIcon(task.status), el("div", {}, el("div", { class: "task-title" }, task.title), el("div", { class: "task-meta" }, el("span", {}, employeeName(task.assignee_id)), el("span", {}, formatDate(task.updated_at || task.created_at)))),
-    el("div", { class: "task-row-end" }, task.execution_mode === "mailbox" ? el("span", { class: "small" }, t("邮件交办", "Mailbox task")) : null, task.execution_mode === "mailbox" && task.status === "queued" ? el("span", { class: "status-tag" }, t("待接单", "Awaiting acceptance")) : tag(task.status), icon("arrow")));
+    el("div", { class: "task-row-end" }, task.proof ? el("span", { class: "status-tag proof-tag", title: t("交付证明结论", "Delivery proof verdict") }, t(`证明=${task.proof}`, `proof=${task.proof}`))
+      : (["review", "done"].includes(task.status) ? el("span", { class: "status-tag proof-tag is-missing", title: t("这一单没有任何交付证明，验收前请先看交付详情", "No delivery proof is recorded for this task; check delivery details before accepting") }, t("证明=无", "proof=none")) : null), task.execution_mode === "mailbox" ? el("span", { class: "small" }, t("邮件交办", "Mailbox task")) : null, task.execution_mode === "mailbox" && task.status === "queued" ? el("span", { class: "status-tag" }, t("待接单", "Awaiting acceptance")) : tag(task.status), icon("arrow")));
 }
 function taskSection(title, tasks, explanation, symbol) {
   return el("section", { class: "work-section" }, el("div", { class: "section-heading" }, el("h2", { class: "section-title" }, icon(symbol), title, el("span", { class: "section-count" }, tasks.length))),
@@ -325,6 +442,47 @@ function projectContext() {
     el("section", { class: "context-panel" }, el("div", { class: "section-heading" }, el("h2", {}, t("项目员工", "Project employees")), el("button", { type: "button", class: "text-button", "data-action": "discover" }, t("加入", "Add"))),
       people.length ? people.slice(0, 5).map((employee) => el("div", { class: "employee-mini" }, avatar(employee.name), el("div", {}, el("div", { class: "employee-name" }, employee.name), el("div", { class: "employee-kind" }, employee.kind)), tag(employee.lifecycle && employee.lifecycle !== "active" ? employee.lifecycle : employee.status))) : el("p", { class: "panel-note" }, t("先发现已有的 AI 工具，把员工加入这个项目。", "Discover existing AI tools and connect employees to this project."))));
 }
+function sparkline(values, width = 132, height = 30) {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("class", "sparkline");
+  svg.setAttribute("aria-hidden", "true");
+  const max = Math.max(1, ...values);
+  const step = values.length > 1 ? width / (values.length - 1) : width;
+  const points = values.map((value, index) => `${(index * step).toFixed(1)},${(height - 3 - (value / max) * (height - 8)).toFixed(1)}`);
+  const area = document.createElementNS(ns, "polygon");
+  area.setAttribute("class", "sparkline-area");
+  area.setAttribute("points", `0,${height} ${points.join(" ")} ${width},${height}`);
+  const line = document.createElementNS(ns, "polyline");
+  line.setAttribute("class", "sparkline-line");
+  line.setAttribute("points", points.join(" "));
+  svg.append(area, line);
+  values.forEach((value, index) => {
+    const dot = document.createElementNS(ns, "circle");
+    dot.setAttribute("class", "sparkline-dot");
+    dot.setAttribute("cx", (index * step).toFixed(1));
+    dot.setAttribute("cy", (height - 3 - (value / max) * (height - 8)).toFixed(1));
+    dot.setAttribute("r", "2");
+    svg.append(dot);
+  });
+  return svg;
+}
+function last7DaysCounts(items, field = "created_at") {
+  const days = [];
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  for (let index = 6; index >= 0; index--) {
+    const day = new Date(today); day.setDate(day.getDate() - index);
+    days.push({ start: day.getTime(), end: day.getTime() + 86400000, count: 0 });
+  }
+  for (const item of items) {
+    const time = new Date(item[field] || 0).getTime();
+    if (Number.isNaN(time)) continue;
+    const slot = days.find(day => time >= day.start && time < day.end);
+    if (slot) slot.count += 1;
+  }
+  return days.map(day => day.count);
+}
 function renderOverview() {
   if (!project()) return renderWelcome();
   const current = project();
@@ -332,9 +490,42 @@ function renderOverview() {
   const people = projectEmployees().filter(e => e.lifecycle === "active");
   const finished = tasks.filter((task) => task.status === "done");
   const running = tasks.filter((task) => ["queued", "starting", "running"].includes(task.status));
+  // **AM-12** ✗：概览专用"执行中" —— 排队**不算**"正在做" ✗（Codex：同单双计 ✓）
+  // 不动上面的 `running` ✓（交接台与既有排版判据依赖它 ✓）
+  const executing = tasks.filter((task) => ["starting", "running"].includes(task.status));
   const reviewing = tasks.filter((task) => task.status === "review");
   const blocked = tasks.filter((task) => attentionStatuses.has(task.status));
+  const awaiting = tasks.filter((task) => task.execution_mode === "mailbox" && task.status === "queued");
+  const projectMail = (state.data.messages || []).filter(message => message.project_id === current.id)
+    .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
   const firstRun = tasks.length === 0;
+  const statCard = (label, count, filter, symbol, tone = "") => {
+    const card = el("button", { type: "button", class: `stat-card ${tone}`, "aria-label": `${label} ${count}` },
+      el("span", { class: "stat-card-icon" }, icon(symbol)),
+      el("span", { class: "stat-card-value mono" }, count),
+      el("span", { class: "stat-card-label" }, label));
+    card.addEventListener("click", () => { state.taskFilter = filter; selectView("tasks"); });
+    return card;
+  };
+  const statStrip = el("div", { class: "stat-strip", "aria-label": t("项目状态一览", "Project status at a glance") },
+    statCard(t("等你验收", "For review"), reviewing.length, "review", "review", reviewing.length ? "attention-warn" : ""),
+    statCard(t("待接单", "Awaiting acceptance"), awaiting.length, "awaiting", "clock"),
+    statCard(t("正在做", "In progress"), executing.length, "executing", "play"),
+    statCard(t("需处理", "Needs attention"), blocked.length, "attention", "warning", blocked.length ? "attention-danger" : ""));
+  const mailCounts = last7DaysCounts(projectMail);
+  const mailSection = el("section", { class: "work-section mail-first-section" },
+    el("div", { class: "section-heading" },
+      el("h2", { class: "section-title" }, icon("document"), t("最新来信", "Latest mail"), el("span", { class: "section-count mono" }, projectMail.length)),
+      el("div", { class: "section-heading-side" }, sparkline(mailCounts), el("button", { class: "text-button", type: "button", "data-view": "messages" }, t("全部消息", "All messages")))),
+    projectMail.length ? el("div", { class: "mail-first-list" }, projectMail.slice(0, 5).map(message => {
+      const row = el("button", { type: "button", class: "mail-first-row" },
+        el("span", { class: "mail-first-sender" }, message.sender?.name || t("你 · Human", "You · Human")),
+        el("span", { class: "mail-first-title" }, message.title),
+        el("time", { class: "mono" }, formatDate(message.created_at, true)));
+      row.addEventListener("click", () => { selectView("messages"); });
+      return row;
+
+    })) : el("div", { class: "section-empty" }, icon("document"), t("项目里还没有邮件。员工通过项目邮箱收发信，记录会留在这里。", "No project mail yet. Employee correspondence is recorded here.")));
   return [heading(current.name, t("把目标、进度和成果放在同一个项目里。", "Keep goals, progress, and outcomes in one project."), [button(t("新任务", "New task"), "new-task", { class: "primary", icon: "plus", disabled: !state.data })]),
     firstRun ? el("div", { class: "overview-layout" }, el("div", {}, el("section", { class: "onboarding-panel" },
       el("div", { class: "onboarding-step" }, el("span", { class: "step-number complete", "aria-hidden": "true" }, icon("check")), el("div", { class: "step-body" }, el("h2", {}, t("项目已准备好", "Your project is ready")), el("p", {}, el("code", {}, current.path)))),
@@ -342,16 +533,63 @@ function renderOverview() {
       el("div", { class: "onboarding-step" }, el("span", { class: `step-number${people.length ? " active" : ""}`, "aria-hidden": "true" }, "3"), el("div", { class: "step-body" }, el("h2", {}, t("交代第一件事", "Assign the first task")), el("p", {}, t("写清目标与验收标准，员工的执行记录会出现在任务里。", "Describe the goal and acceptance criteria. The task will record the employee's work.")), button(t("创建第一个任务", "Create your first task"), "new-task", { class: people.length ? "primary" : "", icon: "plus", disabled: !people.length })))),
       el("p", { class: "welcome-footnote" }, t("先连接员工的项目 MCP 邮箱。邮件交办不启动 CLI，员工在原来的会话中处理；自动执行是另一个选项。", "Connect the employee project MCP mailbox first. Mailbox tasks run in the existing session; managed execution is a separate option."))), projectContext()) :
     el("div", { class: "overview-layout" }, el("div", {},
-      taskSection(t("正在做", "In progress"), running, t("当前没有排队或执行中的任务。", "No tasks are queued or running."), "play"),
+      statStrip,
+      mailSection,
       taskSection(t("等你验收", "Ready for your review"), reviewing, t("员工完成后，成果会在这里等待验收。", "Completed work will appear here for your review."), "review"),
+      taskSection(t("正在做", "In progress"), executing, t("当前没有执行中的任务。", "No tasks are running."), "play"),
       taskSection(t("需要你处理", "Needs your attention"), blocked, t("没有等待授权、失败或中断的任务。", "No tasks need permission or recovery."), "warning"),
       el("section", { class: "work-section" }, el("div", { class: "section-heading" }, el("h2", { class: "section-title" }, icon("check"), t("近期成果", "Recent outcomes")), el("button", { class: "text-button", type: "button", "data-view": "tasks" }, t("全部任务", "All tasks"))),
         finished.length ? el("ul", { class: "outcomes" }, finished.slice(0, 5).map((task) => el("li", { class: "outcome-row" }, icon("check"), el("div", {}, el("button", { type: "button", class: "text-button", "data-task": task.id }, task.title), el("p", {}, task.result || t("任务已通过验收。", "This task was accepted.")), el("div", { class: "task-meta" }, employeeName(task.assignee_id), formatDate(task.updated_at)))))) : el("p", { class: "inline-empty" }, t("通过验收的成果会留在这里，方便以后查阅。", "Accepted outcomes stay here for later reference.")))), projectContext())];
 }
+function renderWall() {
+  // 一屏三问的顺序：**先答"该我干什么"**（等授权/等验收），再答在跑与卡住。
+  // 第 10 轮 + 两路评审一致指出：原首组是"在跑"、且把 review 与 waiting_approval 混成一格。
+  if (!project()) return [heading(navLabels.wall, t("先选一个项目，再打开团队墙。", "Select a project to open the team wall.")), empty(t("从一个项目开始", "Start with a project"), t("团队墙把在跑、等人、卡住放在同一屏。", "The team wall puts running, waiting, and stuck work on one screen."), "new-project", t("选择项目", "Choose project"), "monitor")];
+  const tasks = projectTasks();
+  // 与 workbench_wall.py 同源：在跑=starting/running · 等人=waiting_approval/review · 卡住=failed/interrupted/cancelled
+  const running = tasks.filter((task) => ["starting", "running"].includes(task.status));
+  const review = tasks.filter((task) => task.status === "review");
+  const stuck = tasks.filter((task) => ["failed", "interrupted", "cancelled"].includes(task.status));
+  const row = (task) => {
+    const item = el("li", { class: "outcome-row" }, icon(task.status === "review" ? "review" : "play"),
+      el("div", {}, el("button", { type: "button", class: "text-button", "data-task": task.id }, task.title),
+        el("p", {}, `${employeeName(task.assignee_id)} · ${statusLabels[task.status] || task.status} · ${formatDate(task.updated_at)}`)));
+    // 直达可操作处：任务详情里就是授权面板/验收按钮
+    const open = item.querySelector("button");
+    if (open) open.addEventListener("click", () => openTaskDetail(task.id));
+    return item;
+  };
+  const group = (title, items, emptyText, symbol) => el("section", { class: "work-section" },
+    el("div", { class: "section-heading" }, el("h2", { class: "section-title" }, icon(symbol), title, el("span", { class: "section-count mono" }, items.length))),
+    items.length ? el("ul", { class: "outcomes" }, items.slice(0, 8).map(row)) : el("p", { class: "inline-empty" }, emptyText));
+  const card = (label, count, symbol, tone) => el("div", { class: `stat-card ${tone || ""}` },
+    el("span", { class: "stat-card-icon" }, icon(symbol)), el("span", { class: "stat-card-value mono" }, count), el("span", { class: "stat-card-label" }, label));
+  const approvals = (state.data?.pending_permissions || []).filter((item) => item.project_id === state.projectId);
+  return [heading(navLabels.wall, t("一屏三问：该我做什么 · 在跑什么 · 卡没卡。", "One screen: what needs me, what is running, what is stuck."), [button(t("新任务", "New task"), "new-task", { class: "primary", icon: "plus", disabled: !state.data })]),
+    el("div", { class: "stat-strip", "aria-label": t("团队墙计数", "Team wall counts"), "aria-live": "polite" },
+      card(t("等你授权", "Needs your approval"), approvals.length, "shield", approvals.length ? "warn" : ""),
+      card(t("等你验收", "Needs your review"), review.length, "review", review.length ? "warn" : ""),
+      card(t("在跑", "Running"), running.length, "play"),
+      card(t("卡住", "Stuck"), stuck.length, "warning", "danger")),
+    group(t("等你授权", "Needs your approval"), approvals.map((item) => ({ id: item.task_id, title: item.title, status: "waiting_approval", assignee_id: null, updated_at: item.created_at })), t("没有权限请求在等你。", "No permission request is waiting."), "shield"),
+    group(t("等你验收", "Needs your review"), review, t("没有成果在等你验收。", "Nothing is waiting for your review."), "review"),
+    group(t("在跑", "Running"), running, t("当前没有执行中的任务。", "Nothing is running."), "play"),
+    group(t("卡住", "Stuck"), stuck, t("没有失败或中断的任务。", "Nothing is stuck."), "warning")];
+}
+
 function renderTasks() {
   if (!project()) return [heading(navLabels.tasks, t("先选一个项目，再查看和分配任务。", "Select a project to view and assign tasks.")), empty(t("从一个项目开始", "Start with a project"), t("任务会保留目标、员工和完整工作记录。", "Tasks keep the goal, employee, and work record together."), "new-project", t("选择项目", "Choose project"), "task")];
-  const filters = [["all", t("全部", "All")], ["active", t("进行中", "In progress")], ["review", t("待验收", "For review")], ["attention", t("需处理", "Needs attention")], ["done", t("已验收", "Accepted")]];
-  const filterRow = el("div", { class: "toolbar" }, filters.map(([value, label]) => el("button", { type: "button", class: `filter-button${state.taskFilter === value ? " selected" : ""}`, "data-filter": value, "aria-pressed": String(state.taskFilter === value) }, label)));
+  const filters = [["all", t("全部", "All")], ["active", t("活跃", "Active")], ["review", t("待验收", "For review")], ["attention", t("需处理", "Needs attention")], ["done", t("已验收", "Accepted")]];
+  const filterCounts = { all: projectTasks().length, active: projectTasks().filter((task) => liveStatuses.has(task.status)).length, review: projectTasks().filter((task) => task.status === "review").length, attention: projectTasks().filter((task) => attentionStatuses.has(task.status)).length, done: projectTasks().filter((task) => task.status === "done").length };
+  // Preserve the visible filter context when entering through an overview card.
+  if (state.taskFilter === "awaiting") {
+    filters.splice(1, 0, ["awaiting", t("待接单", "Awaiting acceptance")]);
+    filterCounts.awaiting = projectTasks().filter(task => task.execution_mode === "mailbox" && task.status === "queued").length;
+  } else if (state.taskFilter === "executing") {
+    filters.splice(1, 0, ["executing", t("正在做", "In progress")]);
+    filterCounts.executing = projectTasks().filter(task => ["starting", "running"].includes(task.status)).length;
+  }
+  const filterRow = el("div", { class: "toolbar" }, filters.map(([value, label]) => el("button", { type: "button", class: `filter-button${state.taskFilter === value ? " selected" : ""}`, "data-filter": value, "aria-pressed": String(state.taskFilter === value) }, label, el("span", { class: "filter-count mono" }, filterCounts[value]))));
   const search = el("input", { type: "search", class: "search-field", placeholder: t("搜索任务", "Search tasks"), "aria-label": t("搜索当前项目的任务", "Search this project's tasks"), value: state.search });
   search.addEventListener("input", () => { state.search = search.value; renderTaskList(); });
   filterRow.append(search);
@@ -367,6 +605,10 @@ function renderTaskList() {
   const tasks = projectTasks().filter((task) => {
     const filter = state.taskFilter;
     if (filter === "active" && !liveStatuses.has(task.status)) return false;
+    // **AM-16**：卡片计数与下钻列表**共用同一谓词** ✓（Codex：点卡片会看到不属于该卡的任务 ✗）
+    // **不动 `liveStatuses`** ✗（它还决定"取消任务"按钮可见性 ✓）
+    if (filter === "awaiting" && !(task.execution_mode === "mailbox" && task.status === "queued")) return false;
+    if (filter === "executing" && !["starting", "running"].includes(task.status)) return false;
     if (filter === "attention" && !attentionStatuses.has(task.status)) return false;
     if (["review", "done"].includes(filter) && task.status !== filter) return false;
     return !query || [task.title, task.prompt, employeeName(task.assignee_id)].some((value) => String(value || "").toLocaleLowerCase().includes(query));
@@ -425,7 +667,12 @@ function openMailConnection(employee) {
     const result = await api.mailSessions(employee.id, select.value);
     records.replaceChildren(...result.sessions.map(item => {
       const revoke = button(t("撤销", "Revoke"), null, { disabled: !!item.revoked_at });
-      revoke.addEventListener("click", async () => { try { await api.revokeMailSession(item.id); await load(); } catch (e) { formError(error, e); } });
+      // 确认必须**在点击时**问 ✗：原先它在 map 渲染循环里 ⇒ 一渲染就弹框，
+      // 用户取消时按钮已被造出却**没绑处理器**（死按钮 ✗）。2026-10-07 修复 ✓
+      revoke.addEventListener("click", async () => {
+        if (!window.confirm(t("撤销邮箱会话不可撤销，确定继续？", "This cannot be undone. Continue?"))) return;
+        try { await api.revokeMailSession(item.id); await load(); } catch (e) { formError(error, e); }
+      });
       return el("div", { class: "field-hint" }, `${item.label} · ${!item.active ? t("已失效", "Inactive") : t("已签发，未代表已连接", "Issued; connection unverified")} · ${item.expires_at}`, revoke);
     }));
   };
@@ -524,6 +771,7 @@ function employeeRow(employee, { membership = false } = {}) {
     remove.addEventListener("click", async () => {
       const projectId = state.projectId;
       remove.disabled = true;
+      if (!window.confirm(t("移出项目不可撤销，确定继续？", "This cannot be undone. Continue?"))) return;
       try { await api.removeProjectMember(projectId, employee.id); await refresh(); showToast(t("已移出项目，员工身份与历史仍保留。", "Removed from this project. Identity and history are retained.")); }
       catch (error) { showToast(errorText(error), true); remove.disabled = false; }
     });
@@ -577,6 +825,154 @@ function employeeRow(employee, { membership = false } = {}) {
   }
   return row;
 }
+// 四动词（派 → 接 → 交 → 验）在任务状态上的映射 ✓（黑板要一眼看出"走到哪一步"✓）
+function verbStage(status) {
+  if (["queued", "starting"].includes(status)) return t("派", "Dispatch");
+  if (["running", "waiting_approval"].includes(status)) return t("接", "Accept");
+  if (status === "review") return t("交", "Submit");
+  if (status === "done") return t("验", "Verify");
+  return t("卡", "Stuck");
+}
+
+function renderBlackboard() {
+  // 任务黑板（④）：流程（四动词）+ 负责人 + 证据 一屏可读 ✓
+  // 只用既有字段 ✓（`task.proof` 来自 proof_index ✓）；拿不到的一律写「—」✗ 不造 ✗
+  if (!project()) return [heading(navLabels.blackboard, t("先选一个项目，再看任务黑板。", "Select a project to open the task board.")), empty(t("从一个项目开始", "Start with a project"), t("黑板把每个任务走到哪一步、谁负责、证据齐不齐放在一屏。", "The board shows each task's stage, owner and evidence."), "new-project", t("选择项目", "Choose project"), "monitor")];
+  const order = { queued: 0, starting: 1, running: 2, waiting_approval: 3, review: 4, failed: 5, interrupted: 6, cancelled: 7, done: 8 };
+  const tasks = [...projectTasks()].sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9));
+  const rows = tasks.map(task => el("tr", {},
+    el("td", {}, el("button", { type: "button", class: "text-button", "data-task": task.id }, task.title || task.id.slice(-8))),
+    el("td", {}, el("span", { class: `stage stage-${task.status}` }, verbStage(task.status))),
+    el("td", {}, tag(task.status)),
+    el("td", {}, employeeName(task.assignee_id)),
+    el("td", {}, task.proof ? t("有", "Yes") : t("无", "None")),
+    el("td", {}, formatDate(task.updated_at))));
+  return [heading(navLabels.blackboard, t("每个任务走到哪一步、谁负责、证据齐不齐。", "Each task's stage, owner and evidence.")),
+    rows.length
+      ? el("table", { class: "board-table" },
+          el("thead", {}, el("tr", {},
+            el("th", { scope: "col" }, t("任务", "Task")), el("th", { scope: "col" }, t("流程", "Stage")),
+            el("th", { scope: "col" }, t("状态", "Status")), el("th", { scope: "col" }, t("负责人", "Owner")),
+            el("th", { scope: "col" }, t("证明", "Proof")), el("th", { scope: "col" }, t("更新", "Updated")))),
+          el("tbody", {}, ...rows))
+      : empty(t("这个项目还没有任务", "No tasks in this project"), t("先在「交接台」或项目里派一单。", "Dispatch work from the handover desk first."))];
+}
+
+function renderClassroom() {
+  // 教室视图（④ · 老师看学生）：形态 / 在岗 / 授权 / 能否自动执行 一屏可见 ✓
+  // 只用既有只读字段 ✓；**拿不到的一律写「未采集」** ✗（不猜 ✗ 不造 ✗）
+  const people = (state.data?.employees || []).filter(e => e.project_id === state.projectId || e.project_ids?.includes(state.projectId));
+  const rows = people.map(employee => el("tr", {},
+    el("td", {}, el("strong", {}, employee.name || employee.id.slice(-8))),
+    el("td", {}, employee.kind || "—"),
+    el("td", {}, employee.connection_type === "app" ? t("应用", "App") : t("命令行", "CLI")),
+    el("td", {}, employee.lifecycle === "active" ? t("在岗", "Active") : t("停用", "Inactive")),
+    el("td", {}, employee.auth_status && !["unknown", "not_checked"].includes(employee.auth_status)
+      ? employee.auth_status : t("未采集", "Not collected")),
+    el("td", {}, employee.execution_supported ? t("可自动执行", "Managed") : t("仅邮箱", "Mailbox only")),
+    el("td", {}, employee.execution_verified ? t("已验证", "Verified") : t("未验证", "Unverified"))));
+  return [heading(navLabels.classroom, t("看每位学生：形态、在岗、能否被自动执行。", "Form, duty status, and managed capability per member.")),
+    rows.length
+      ? el("table", { class: "classroom-table" },
+          el("thead", {}, el("tr", {},
+            el("th", { scope: "col" }, t("学生", "Member")), el("th", { scope: "col" }, t("类型", "Kind")),
+            el("th", { scope: "col" }, t("形态", "Form")), el("th", { scope: "col" }, t("在岗", "Duty")),
+            el("th", { scope: "col" }, t("授权", "Auth")), el("th", { scope: "col" }, t("执行", "Execution")),
+            el("th", { scope: "col" }, t("验证", "Verified")))),
+          el("tbody", {}, ...rows))
+      : empty(t("这个项目还没有学生", "No members in this project"),
+              t("先去「项目成员」把员工加进来。", "Add employees from Project members first."))];
+}
+
+// 第 10b 条（HS · 老板拍板）：**手工登记**表单 ✓ —— 扫描漏了也能加 ✓
+// 单一来源：选项由 `EMPLOYEE_KINDS` / `CONNECTION_TYPES` 生成 ✓（有同步测试钉住 ✗ 防漂移 ✓）
+function openManualEmployeeForm() {
+  const body = openForm(t("手工登记员工", "Register an employee manually"),
+    t("自动扫描漏了也能自己加 ✓ 入口必须是这台机器上**真实存在且可执行**的文件 ✓ 否则会被拒绝 ✗（这是防垃圾登记 ✓）",
+      "Add it yourself when the scan misses it. The entry point must be a real, executable file on this machine, otherwise it is rejected."));
+  if (!body) return;
+  const name = el("input", { id: "manual-employee-name", required: true, maxlength: 160, placeholder: t("例如：我的自研 Agent", "For example: My own agent") });
+  const kind = el("select", { id: "manual-employee-kind" },
+    el("option", { value: "aider" }, "aider"),
+    el("option", { value: "claude" }, "claude"),
+    el("option", { value: "codex" }, "codex"),
+    el("option", { value: "coze" }, "coze"),
+    el("option", { value: "cursor" }, "cursor"),
+    el("option", { value: "deepseek" }, "deepseek"),
+    el("option", { value: "doubao" }, "doubao"),
+    el("option", { value: "gemini" }, "gemini"),
+    el("option", { value: "hermes" }, "hermes"),
+    el("option", { value: "ima" }, "ima"),
+    el("option", { value: "kiro" }, "kiro"),
+    el("option", { value: "ollama" }, "ollama"),
+    el("option", { value: "opencode" }, "opencode"),
+    el("option", { value: "qoder" }, "qoder"),
+    el("option", { value: "qwen" }, "qwen"),
+    el("option", { value: "trae" }, "trae"),
+    el("option", { value: "windsurf" }, "windsurf"),
+    el("option", { value: "workbuddy" }, "workbuddy"),
+    el("option", { value: "zcode" }, "zcode"),);
+  const connection = el("select", { id: "manual-employee-connection" },
+    el("option", { value: "cli" }, "命令行 CLI"),
+    el("option", { value: "app" }, "应用 App"),);
+  const entry = el("input", { id: "manual-employee-entry", required: true, maxlength: 500, placeholder: "/usr/local/bin/my-agent" });
+  let joinProject;
+  const hasProject = Boolean(project());
+  const box = errorBox();
+  const end = footer(t("登记", "Register"));
+  const form = el("form", {});
+  form.append(
+    el("label", {}, t("名称", "Name"), name),
+    el("label", {}, t("类型", "Kind"), kind),
+    el("label", {}, t("连接方式", "Connection"), connection),
+    el("label", { class: "checkbox-row" },
+       (joinProject = el("input", { type: "checkbox", checked: hasProject })),
+       el("span", {}, t("登记后加入当前项目 ✓（当前无项目则跳过 ✗）", "Join the current project after registering"))),
+    el("label", {}, t("可执行入口（绝对路径）", "Executable entry point (absolute path)"), entry,
+       el("p", { class: "field-hint" }, t("必须真实存在且可执行 ✓ 扫描未发现不影响登记 ✓", "Must exist and be executable. Being undiscovered is fine."))),
+    box.node, end.node,
+  );
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault(); end.submit.disabled = true; box.node.hidden = true;
+    try {
+      await api.addEmployee({
+        name: name.value.trim(), kind: kind.value, connection_type: connection.value,
+        entrypoint: entry.value.trim(),
+        // 缺口 1 修复 ✓：勾了就**直接进当前项目** ✗（原来登记完不进项目 ⇒ 用户以为加好了却没有 ✓）
+        project_id: joinProject && joinProject.checked && state.projectId ? state.projectId : null,
+      });
+      formDialog.close(); showToast(t("已登记（未被自动发现 ⇒ 执行未验证 ✓）", "Registered (undiscovered, so execution is unverified).")); await load();
+    } catch (error) { formError(box, error); end.submit.disabled = false; }
+  });
+  body.append(form);
+}
+
+// 首次启动的**未签名提示**（HS 0.8.1 本体第 3 条 ✓）：
+// 用户是"解包双击"的人 ✓ 看不到 README ✗ ⇒ 必须在**界面内**说清两步绕过 ✓
+// 诚实原则 ✓：明说"我们没有签名/公证"✓（不是 bug ✗ 也不是你的错 ✓）
+function unsignedNotice() {
+  const KEY = "agent-mailbox.unsigned-notice.dismissed";
+  let dismissed = false;
+  try { dismissed = localStorage.getItem(KEY) === "1"; } catch { dismissed = false; }
+  if (dismissed) return null;
+  const close = button(t("我知道了", "Got it"), null, { class: "small" });
+  close.addEventListener("click", () => {
+    try { localStorage.setItem(KEY, "1"); } catch { /* 私密模式 ⇒ 每次显示 ✓ 也无妨 ✓ */ }
+    render();
+  });
+  return el("div", { class: "unsigned-notice", role: "note" },
+    icon("shield"),
+    el("div", {},
+      el("strong", {}, t("这个版本没有做签名与公证", "This build is not code-signed or notarized")),
+      el("p", {}, t("自己人用的版本 ✓ 无害 ✓ 只是系统第一次会拦一下 ✓ 两步就能过：", "A self-hosted build. Harmless; the OS just asks once. Two steps:")),
+      el("ul", {},
+        el("li", {}, t("macOS：系统设置 → 隐私与安全性 → 仍要打开 ✓ 或终端执行 `xattr -d com.apple.quarantine /Applications/Agent Mailbox.app`",
+                       "macOS: System Settings - Privacy & Security - Open Anyway, or `xattr -d com.apple.quarantine /Applications/Agent Mailbox.app`")),
+        el("li", {}, t("Windows：SmartScreen 提示里点「更多信息」→「仍要运行」✓", "Windows: on the SmartScreen prompt choose More info, then Run anyway."))),
+      el("p", { class: "field-hint" }, t("我们**不含任何内置智能体** ✓ 引擎由你自备 ✓", "No agent engines are bundled; bring your own."))),
+    close);
+}
+
 function renderEmployeeGrid() {
   const query = state.employeeQuery.trim().toLocaleLowerCase();
   const people = state.data.employees.filter(employee => {
@@ -601,8 +997,9 @@ function renderEmployees() {
   }
   const grid = el("div", { id: "employee-grid", class: "employee-grid" }, people.filter(employee => !state.employeeQuery || employee.name.toLocaleLowerCase().includes(state.employeeQuery.toLocaleLowerCase())).map(employee => employeeRow(employee)));
   queueMicrotask(renderEmployeeGrid);
-  return [heading(navLabels.employees, t("你的 AI 员工，在这里相识，在项目里协作。", "Meet your AI employees here. Collaborate in projects."), [button(t("发现员工", "Discover employees"), "discover", { class: "primary", icon: "plus" }), button(t("创建项目", "Create project"), "new-project", { icon: "folder" })]),
-    el("div", { class: "employee-directory-toolbar" }, el("label", { class: "employee-search" }, icon("search"), search), filters, el("span", { id: "employee-result-count", class: "muted small-text" }, t(`${people.length} 个入口`, `${people.length} entries`))),
+  const notice = unsignedNotice();
+  return [notice, heading(navLabels.employees, t("你的 AI 员工，在这里相识，在项目里协作。", "Meet your AI employees here. Collaborate in projects."), [button(t("发现员工", "Discover employees"), "discover", { class: "primary", icon: "plus" }), button(t("创建项目", "Create project"), "new-project", { icon: "folder" })]),
+    el("div", { class: "employee-directory-toolbar" }, el("label", { class: "employee-search" }, icon("search"), search),       filters, el("span", { id: "employee-result-count", class: "muted small-text employee-result-count" }, t(`${people.length} 个入口`, `${people.length} entries`)), button(t("手工登记", "Register manually"), null, { class: "small", "data-action": "manual-employee" })),
     people.length ? grid : empty(t("从你已有的员工开始", "Start with your existing employees"), t("发现并登记这台设备上的 AI 工具，无需先创建项目。", "Discover tools on this device before creating a project."), "discover", t("发现已有员工", "Discover existing employees"), "users"),
     el("p", { class: "directory-note" }, t("入口不等于独立账号；登录、执行支持和执行验证分别记录。可拖入左侧项目，或点“选择项目”。", "An entry is not a separate account. Sign-in, task support and verified execution are distinct. Drag into a project or Choose project."))];
 }
@@ -622,34 +1019,174 @@ function renderMailboxes() {
   const employee = employees.find(item => item.id === state.mailboxEmployeeId) || employees[0];
   if (!employee) return [heading(navLabels.mailboxes), empty(t("先登记一位员工", "Register an employee first"), t("登记后，这里可以查看它在项目中的收信与发信。", "Once registered, view its project correspondence here."), "discover", t("发现员工", "Discover employees"))];
   state.mailboxEmployeeId = employee.id;
-  const selector = el("select", { id: "mailbox-employee", "aria-label": t("选择员工信箱", "Choose employee mailbox") }, employees.map(item => el("option", { value: item.id }, item.name))); selector.value = employee.id;
-  selector.addEventListener("change", () => { state.mailboxEmployeeId = selector.value; render(); });
-  const memberships = new Set(employee.project_ids || []); if (employee.project_id) memberships.add(employee.project_id);
-  const relevant = (state.data.messages || []).filter(message => state.mailboxFolder === "sent" ? message.sender_id === employee.id : state.mailboxFolder === "group" ? !message.recipient_id && memberships.has(message.project_id) && message.sender_id !== employee.id : message.recipient_id === employee.id);
+  const membershipsOf = (person) => { const set = new Set(person.project_ids || []); if (person.project_id) set.add(person.project_id); return set; };
+  const folderMessages = (person, folder) => {
+    const memberships = membershipsOf(person);
+    return (state.data.messages || []).filter(message => folder === "sent" ? message.sender_id === person.id : folder === "group" ? !message.recipient_id && memberships.has(message.project_id) && message.sender_id !== person.id : message.recipient_id === person.id);
+  };
+  const relevant = folderMessages(employee, state.mailboxFolder);
   relevant.sort((a,b) => String(b.created_at).localeCompare(String(a.created_at)));
-  const folders = el("div", { class: "employee-filters", "aria-label": t("信箱分类", "Mailbox folders") });
-  for (const [value, label] of [["inbox",t("收件箱", "Inbox")],["sent",t("发件箱", "Sent")],["group",t("项目群消息", "Project broadcasts")]]) {
-    const control = button(label, null, { class: "small", attrs: { "aria-pressed": String(state.mailboxFolder === value) } });control.addEventListener("click", () => { state.mailboxFolder = value; render(); }); folders.append(control);
+  const selectedMessage = relevant.find(message => message.id === state.mailboxMessageId) || relevant[0] || null;
+  state.mailboxMessageId = selectedMessage ? selectedMessage.id : "";
+  const rail = el("nav", { class: "mailbox-rail", "aria-label": t("选择员工信箱", "Choose employee mailbox") },
+    employees.map(person => {
+      const inboxCount = folderMessages(person, "inbox").length;
+      const item = el("button", { type: "button", class: `mailbox-rail-item${person.id === employee.id ? " selected" : ""}`, "aria-pressed": String(person.id === employee.id) },
+        avatar(person.name),
+        el("span", { class: "mailbox-rail-identity" }, el("span", { class: "mailbox-rail-name" }, person.name), el("span", { class: "mailbox-rail-kind mono" }, person.kind || "")),
+        inboxCount ? el("span", { class: "mailbox-rail-count mono" }, inboxCount) : null);
+      item.addEventListener("click", () => { state.mailboxEmployeeId = person.id; state.mailboxMessageId = ""; render(); });
+      return item;
+    }));
+  const folders = el("div", { class: "mailbox-folders", role: "tablist", "aria-label": t("信箱分类", "Mailbox folders") });
+  for (const [value, label] of [["inbox",t("收件箱", "Inbox")],["sent",t("发件箱", "Sent")],["group",t("项目群", "Broadcasts")]]) {
+    const count = folderMessages(employee, value).length;
+    const tab = el("button", { type: "button", role: "tab", class: `mailbox-folder${state.mailboxFolder === value ? " selected" : ""}`, "aria-selected": String(state.mailboxFolder === value) }, label, el("span", { class: "mailbox-folder-count mono" }, count));
+    tab.addEventListener("click", () => { state.mailboxFolder = value; state.mailboxMessageId = ""; render(); });
+    folders.append(tab);
   }
-  const list = el("section", { class: "mailbox-list", "aria-label": t("员工信件", "Employee correspondence") });
-  if (!relevant.length) list.append(empty(t("这里还没有信件", "No messages here yet"), state.mailboxFolder === "group" ? t("显示该员工当前项目的全员消息；发给其他员工的定向消息不会混入。", "Shows broadcasts in current projects; direct messages to other employees are excluded.") : t("这是 v0.8 的项目通信记录，旧版 v0.7 信箱不会自动迁入。发送普通消息不会启动员工。", "This is v0.8 project correspondence. v0.7 mailboxes are not automatically imported. Ordinary messages do not start employees.")));
-  relevant.forEach(message => {
-    const item = state.data.projects.find(p => p.id === message.project_id);
-    const open = button(t("打开项目对话", "Open project conversation"), null, { class: "small" });
-    open.addEventListener("click", () => { selectProject(message.project_id); selectView("messages"); loadMessages(); });
-    list.append(el("article", { class: "message-row", "data-message-id": message.id }, el("div", { class: "message-meta" }, el("strong", {}, message.sender?.name || t("你 · Human", "You · Human")), el("span", {}, "→ ", message.recipient?.name || t("项目全员", "Everyone")), el("time", {}, formatDate(message.created_at,true))), el("h2", {}, message.title), el("p", { class: "message-body" }, message.body), el("div", { class: "message-actions" }, el("span", { class: "muted" }, icon("folder"), item?.name || t("历史项目", "Historical project")), open)));
-  });
+  const list = el("div", { class: "mailbox-messages", role: "listbox", "aria-label": t("员工信件", "Employee correspondence") });
+  if (!relevant.length) list.append(el("div", { class: "mailbox-empty" }, icon("folder"), el("p", {}, t("这里还没有信件", "No messages here yet")), el("p", { class: "muted" }, state.mailboxFolder === "group" ? t("显示该员工当前项目的全员消息；发给其他员工的定向消息不会混入。", "Shows broadcasts in current projects; direct messages to other employees are excluded.") : t("v0.8 项目通信记录；发送普通消息不会启动员工。", "v0.8 project correspondence. Ordinary messages do not start employees."))));
+  for (const message of relevant) {
+    const isSelected = Boolean(selectedMessage && message.id === selectedMessage.id);
+    const row = el("button", { type: "button", role: "option", class: `mailbox-message-row${isSelected ? " selected" : ""}`, "aria-selected": String(isSelected), "data-message-id": message.id },
+      el("span", { class: "mailbox-message-top" }, el("strong", {}, message.sender?.name || t("你 · Human", "You · Human")), el("time", { class: "mono" }, formatDate(message.created_at, true))),
+      el("span", { class: "mailbox-message-title" }, message.title),
+      el("span", { class: "mailbox-message-snippet" }, String(message.body || "").replace(/\s+/g, " ").slice(0, 90)));
+    row.addEventListener("click", () => { state.mailboxMessageId = message.id; render(); });
+    list.append(row);
+  }
+  const reading = el("article", { class: "mailbox-reading", "aria-label": t("信件内容", "Message content") });
+  if (!selectedMessage) {
+    reading.append(el("div", { class: "mailbox-reading-empty" }, icon("document"), el("p", {}, t("选择一封信开始阅读", "Choose a message to read"))));
+  } else {
+    const item = state.data.projects.find(p => p.id === selectedMessage.project_id);
+    const reply = button(t("回复", "Reply"), null, { class: "small primary" });
+    reply.addEventListener("click", () => {
+      selectProject(selectedMessage.project_id);
+      const draft = state.messageDrafts[selectedMessage.project_id] ||= { title: "", body: "", recipientId: "", replyTo: null, requestWork: false, requestId: null };
+      draft.replyTo = selectedMessage.id; draft.requestWork = false; draft.requestId = null;
+      selectView("messages"); loadMessages();
+    });
+    const open = button(t("打开项目对话", "Open conversation"), null, { class: "small" });
+    open.addEventListener("click", () => { selectProject(selectedMessage.project_id); selectView("messages"); loadMessages(); });
+    reading.append(
+      el("header", { class: "mailbox-reading-header" },
+        el("h2", {}, selectedMessage.title),
+        el("div", { class: "mailbox-reading-meta" },
+          el("span", {}, el("strong", {}, selectedMessage.sender?.name || t("你 · Human", "You · Human")), " → ", selectedMessage.recipient?.name || t("项目全员", "Everyone")),
+          el("time", { class: "mono" }, formatDate(selectedMessage.created_at, true)),
+          el("span", { class: "muted mailbox-reading-project" }, icon("folder"), item?.name || t("历史项目", "Historical project")))),
+      el("div", { class: "mailbox-reading-body" }, selectedMessage.body),
+      el("footer", { class: "mailbox-reading-actions" }, reply, open));
+  }
   return [heading(`${employee.name} · ${navLabels.mailboxes}`, t("管理员查看 · 显示该员工相关的项目通信，不代表登录或代替它发信。", "Administrator view · Project correspondence for this employee. This does not sign in or send as the employee.")),
-    el("div", { class: "mailbox-toolbar" }, selector, folders, el("span", { class: "muted small-text" }, t(`${relevant.length} 封信`, `${relevant.length} messages`))), list,
+    el("div", { class: "mailbox-layout" }, rail, el("section", { class: "mailbox-list-pane", "aria-label": t("信件列表", "Message list") }, folders, list), reading),
     el("p", { class: "directory-note" }, t("给员工发信：打开对应项目 → 项目消息 → 选择收件人。Agent 自己通过授权的项目工具读写；查看此页不标记已读或自动确认。", "To write: open the project → Messages → choose the recipient. Agents use authorized project tools. Viewing this page does not mark messages read or acknowledge them."))];
 }
 function renderMembers() {
   if (!project()) return [heading(navLabels.members), empty(t("为团队选择一个项目", "Choose a project for your team"), t("员工已在全局登记；创建项目后选择需要的成员。", "Employees are registered globally. Create a project and choose its members."), "new-project", t("创建项目", "Create project"), "users")];
   const people = projectEmployees();
   return [heading(navLabels.members, t("从已登记员工中选择成员。移出项目不会删除员工身份或历史。", "Choose from registered employees. Removing a member keeps their identity and history."), [button(t("选择已有员工", "Choose existing employees"), "add-member", { class: "primary", icon: "plus" }), button(t("发现更多员工", "Discover more employees"), "discover", { icon: "search" })]),
-    people.length ? el("div", { class: "employee-grid" }, people.map((employee) => employeeRow(employee, { membership: true }))) : empty(t("把已有员工加入团队", "Add existing employees to your team"), t("选择登记过的员工加入此项目，然后通过消息沟通或派发工作任务。", "Choose registered employees for this project, then send messages or assign work."), "add-member", t("选择已有员工", "Choose existing employees"), "users"),
+    people.length ? el("div", { class: "employee-grid" }, people.map((employee) => {
+      const row = employeeRow(employee, { membership: true });
+      attachKeyStatus(row, employee, state.projectId);   // 缺口 2 ✓
+      return row;
+    })) : empty(t("把已有员工加入团队", "Add existing employees to your team"), t("选择登记过的员工加入此项目，然后通过消息沟通或派发工作任务。", "Choose registered employees for this project, then send messages or assign work."), "add-member", t("选择已有员工", "Choose existing employees"), "users"),
     renderGovernancePanel()];
 }
+// 缺口 2 修复 ✓：成员行显示**钥匙状态** ✗ 并给一键签发 ✓
+// （后端与 API 本来就齐 ✓ `GET/POST /mailbox/sessions` ✓ —— 缺的只是这个入口 ✓
+//  用户加了人却收不到信 ✓ 就是因为**没人给他签钥匙** ✗ 而界面里当时没有这个按钮 ✓）
+function attachKeyStatus(row, employee, projectId) {
+  const box = el("span", { class: "key-status muted small-text" }, t("钥匙状态检查中…", "Checking mailbox key…"));
+  const actions = row.querySelector(".employee-actions") || row;
+  actions.append(box);
+  const issue = button(t("签发邮箱钥匙", "Issue mailbox key"), null, { class: "small" });
+  issue.hidden = true;
+  issue.addEventListener("click", () => submitAction(issue, box, () => api.createMailSession({
+    employee_id: employee.id, project_id: projectId,
+    label: `ui-${employee.name}-${projectId.slice(-6)}`,
+  }), async (result) => {
+    // 实测键名 ✓（`create_session` 返回 active/expires_at/id/label/… ✓ **没有路径字段** ✗）
+    // ⇒ 显示**到期时间** ✓ 并**绝不**读取或显示 token ✗（响应里带 token ✓ 这是已知暴露 ⇒ 已记待办 ✓）
+    const until = String(result?.expires_at || "").slice(0, 10);
+    box.textContent = until
+      ? t(`已签发 ✓（有效至 ${until}）`, `Issued ✓ until ${until}`)
+      : t("已签发 ✓", "Issued");
+    issue.hidden = true;
+    showToast(t("钥匙已签发 ✓ 交给该员工后，他就能收发信了 ✓（token 绝不显示 ✗）", "Key issued."));
+  }));
+  actions.append(issue);
+  api.mailSessions(employee.id, projectId)
+    .then((data) => {
+      const live = (data?.sessions || []).filter((item) => !item.revoked_at);
+      if (live.length) {
+        box.textContent = t(`已签发 ✓（${live.length} 把有效）`, `${live.length} active key(s)`);
+      } else {
+        // **显式标出"未签发"** ✗ —— 别让用户猜"为什么他收不到信" ✓
+        box.textContent = t("未签发钥匙 ✗（还不能收发信）", "No key ✗");
+        issue.hidden = false;
+      }
+    })
+    .catch(() => { box.textContent = t("钥匙状态未知", "Key status unknown"); issue.hidden = false; });
+}
+
+// 钥匙管理页（0.8.1 ✓ 老板判据"界面上的功能都要真能用"✓）
+// 回答三个问题 ✓：这个员工在**哪些项目** ✓ 各持**哪把钥匙** ✓ 什么时候**到期/撤销** ✓
+function renderKeys() {
+  if (!state.data) return [heading(navLabels.keys)];
+  const rows = [];
+  for (const employee of state.data.employees || []) {
+    const memberships = (state.data.memberships || []).filter((m) => m.employee_id === employee.id);
+    for (const membership of memberships) {
+      const project = (state.data.projects || []).find((item) => item.id === membership.project_id);
+      rows.push({ employee, project, projectId: membership.project_id });
+    }
+  }
+  const box = el("div", { class: "keys-table-wrap" });
+  if (!rows.length) {
+    return [heading(navLabels.keys, t("每位员工在每个项目持哪把钥匙，一屏看清。", "One row per employee and project.")),
+      empty(t("还没有成员关系", "No memberships yet"), t("先把员工加入项目，钥匙会自动签发。", "Add employees to a project and the key is issued automatically."), "discover", t("发现员工", "Discover employees"), "users")];
+  }
+  const table = el("table", { class: "board-table keys-table" },
+    el("thead", {}, el("tr", {},
+      el("th", { scope: "col" }, t("员工", "Employee")), el("th", { scope: "col" }, t("项目", "Project")),
+      el("th", { scope: "col" }, t("钥匙", "Key")), el("th", { scope: "col" }, t("到期", "Expires")),
+      el("th", { scope: "col" }, t("操作", "Action")))));
+  const body = el("tbody", {});
+  table.append(body);
+  box.append(table);
+  for (const row of rows) {
+    const cell = el("td", {}, el("span", { class: "muted small-text" }, t("检查中…", "Checking…")));
+    const action = el("td", {});
+    const expires = el("td", {}, "—");
+    body.append(el("tr", {},
+      el("td", {}, employeeName(row.employee.id)), el("td", {}, row.project ? row.project.name : row.projectId.slice(-6)),
+      cell, expires, action));
+    api.mailSessions(row.employee.id, row.projectId).then((data) => {
+      const live = (data?.sessions || []).filter((item) => !item.revoked_at);
+      if (!live.length) {
+        cell.textContent = t("未签发 ✗", "None ✗");
+        const issue = button(t("签发", "Issue"), null, { class: "small primary" });
+        issue.addEventListener("click", () => submitAction(issue, cell, () => api.createMailSession({
+          employee_id: row.employee.id, project_id: row.projectId,
+          label: `ui-${row.employee.name}-${row.projectId.slice(-6)}`,
+        }), async () => { showToast(t("已签发 ✓ 交给该员工即可 ✓（token 绝不显示 ✗）", "Issued.")); render(); }));
+        action.append(issue);
+        return;
+      }
+      cell.textContent = t(`有效 ✓（${live.length} 把）`, `${live.length} active`);
+      expires.textContent = String(live[0].expires_at || "").slice(0, 10) || "—";   // 直接写 ✓ 不再搞 DOM 替换 ✗
+      const revoke = button(t("撤销", "Revoke"), null, { class: "small" });
+      revoke.addEventListener("click", () => submitAction(revoke, cell, () => api.revokeMailSession(live[0].id),
+        async () => { showToast(t("已撤销 ✓ 该员工立刻失去本项目收发能力 ✓", "Revoked.")); render(); }));
+      action.append(revoke);
+    }).catch(() => { cell.textContent = t("未知", "Unknown"); });
+  }
+  return [heading(navLabels.keys, t("谁在哪个项目、持哪把钥匙、何时到期 —— 一屏看清 ✗（缺钥匙的行会显式标出 ✓）")), box];
+}
+
 function openMemberForm() {
   if (!project()) { openProjectForm(); return; }
   const projectId = state.projectId;
@@ -1136,7 +1673,7 @@ function renderUpdateSection() {
   const maintenance = state.data?.update_maintenance || data?.maintenance;
   const paused = maintenance?.paused;
   const section = el("section", { class: "about-section update-section", "aria-busy": String(busy) }, el("h2", {}, t("版本与升级", "Version & updates")),
-    el("p", {}, t("当前本地 Beta 尚未公开发布。只在你点击时检查 GitHub，不会自动下载、替换应用或恢复接单。", "This local Beta is not publicly released. GitHub is checked only when you click; the app does not automatically download, replace itself, or resume task claims.")));
+    el("p", {}, t("只在你点击时检查 GitHub 发行版，不会自动下载、替换应用或恢复接单。", "GitHub releases are checked only when you click; the app does not automatically download, replace itself, or resume task claims.")));
   if (state.updatesError) {
     const retry = button(t("重新读取更新设置", "Reload update settings"), null, { class: "small", disabled: busy });
     retry.addEventListener("click", () => loadUpdates({ force: true }));
@@ -1193,6 +1730,30 @@ function renderUpdateSection() {
   return section;
 }
 
+
+// AM-06 ✓：关于页显示**构建溯源** ✗（"你打开的到底是哪份代码" ✓）
+function buildInfoSection(section, el) {
+  const build = state.data?.build;
+  if (!build) return section(t("构建信息", "Build info"), el("p", { class: "field-hint" }, t("后端未提供构建信息。", "No build info from the backend.")));
+  const rows = [
+    // **三事实分开显示** ✓（Codex：形态由"实际加载的代码路径"判 ✓ 证据不足即「未确认」✗）
+    [t("运行形态", "Runtime mode"), build.mode === "packaged" ? t("成品 ✓（来自安装包）", "Packaged") : build.mode === "source" ? t("工作树 ✗（不是成品，改动会直接生效）", "Working tree") : t("未确认 ✗（判据不足，别当成成品）", "Unknown")],
+    [t("加载的代码", "Loaded code"), (build.runtime && build.runtime.code_path) || t("未提供", "not provided")],
+    [t("可执行文件", "Executable"), (build.runtime && build.runtime.executable) || t("未提供", "not provided")],
+    [t("版本", "Version"), build.version || "—"],
+    [t("源码 revision", "Source revision"), build.revision || t("未知（打包后应由 build-info.json 提供）", "unknown")],
+    [t("数据目录 home", "Data home"), build.home || "—"],
+    [t("库结构 schema", "Schema"), build.schema === null || build.schema === undefined ? "—" : String(build.schema)],
+  ];
+  const assets = Object.entries(build.assets || {}).map(([name, sha]) => `${name} = ${sha}`);
+  return section(
+    t("构建信息", "Build info"),
+    el("p", { class: "field-hint" }, t("修复若「看得到却改不动」，先核对这里：安装的东西是否与源码一致。", "Check here when a fix seems missing.")),
+    el("dl", { class: "definition-list" }, rows.flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, String(v))])),
+    assets.length ? el("pre", { class: "license-text", tabindex: "0" }, assets.join("\n")) : null,
+  );
+}
+
 function renderAbout() {
   const language = el("select", { id: "language-preference", "aria-label": t("界面语言", "Interface language") },
     el("option", { value: "auto" }, t("跟随浏览器", "Follow browser")),
@@ -1226,6 +1787,7 @@ function renderAbout() {
     return details;
   });
   return [heading(t("关于与更新", "About & updates"), "agent-mailbox · " + version), el("div", { class: "about-content" },
+    buildInfoSection(section, el),   // AM-06 ✓
     section(t("界面语言", "Interface language"), el("p", {}, t("支持简体中文与英文。偏好保存在当前浏览器；切换会重新加载界面，不会改变任务或项目资料的语言。", "Simplified Chinese and English are available. Preferences are stored in this browser. Switching reloads the interface and does not translate tasks or project content.")), language),
     renderUpdateSection(),
     section(t("开源与版权", "Open source & notices"), el("p", {}, "© 2026 NoFox · Apache-2.0"), el("p", {}, t("保留原有代码及第三方要求的版权声明。以下是随本版本发行的原始内容。", "Original and required third-party copyright notices are retained. The documents below ship with this version.")), ...licenses))];
@@ -1239,7 +1801,7 @@ function render() {
     root.setAttribute("aria-busy", "false");
     return;
   }
-  const renders = { overview: renderOverview, tasks: renderTasks, employees: renderEmployees, mailboxes: renderMailboxes, members: renderMembers, messages: renderMessages, resources: renderResources, activity: renderActivity, devices: renderDevices, about: renderAbout };
+  const renders = { keys: renderKeys, wall: renderWall, blackboard: renderBlackboard, classroom: renderClassroom, overview: renderOverview, tasks: renderTasks, employees: renderEmployees, mailboxes: renderMailboxes, members: renderMembers, messages: renderMessages, resources: renderResources, activity: renderActivity, devices: renderDevices, about: renderAbout };
   const content = state.data ? renders[state.view]() : renderDisconnected();
   root.replaceChildren(...content.flat(Infinity).filter((item) => item !== null && item !== undefined && item !== false));
   root.setAttribute("aria-busy", "false");
@@ -1263,13 +1825,24 @@ async function refresh({ silent = false } = {}) {
     document.getElementById("version-label").textContent = result.version ? `v${result.version.replace(/^v/, "")}` : "";
     state.error = null;
     if (!result.projects.some((item) => item.id === state.projectId)) state.projectId = result.projects[0]?.id || "";
+    if (!state.landed) {                       // 仅首次加载：别把用户手动停留的视图拽走
+      state.landed = true;
+      if (state.projectId && state.view === "employees") {
+        state.view = (result.tasks || []).some((task) => task.project_id === state.projectId && task.status !== "cancelled") ? "wall" : "overview";
+      }
+    }
     if (result.runtime?.installed || ["ready", "failed"].includes(result.runtime?.install?.status)) state.runtimeInstalling = false;
     state.taskFormUpdate?.();
     updateConnection(true);
     setNotice(null);
     const activeElement = document.activeElement;
     // Preserve ongoing searches and form input during background updates.
-    if (!silent || !root.contains(activeElement) || !["INPUT", "TEXTAREA", "SELECT"].includes(activeElement?.tagName)) render();
+    if (!silent || !root.contains(activeElement) || !["INPUT", "TEXTAREA", "SELECT"].includes(activeElement?.tagName)) {
+      const hadFocus = root.contains(document.activeElement) && document.activeElement !== document.body;
+      render();
+      // A2：整块 replaceChildren 会让键盘焦点掉回 body ⇒ 焦点移到页面标题，键盘用户不迷路
+      if (hadFocus || document.activeElement === document.body) root.querySelector("h1")?.focus?.();
+    }
     if (state.view === "members") loadGovernance();
     if (state.view === "about") loadUpdates();
   } catch (error) {
@@ -1550,7 +2123,7 @@ function openProjectForm() {
       const created = result.project || result;
       state.projectId = created.id || state.projectId;
       try { sessionStorage.setItem("agent-mailbox.workbench.project", state.projectId); } catch { /* optional */ }
-      state.view = "overview";
+      state.view = "overview";        // 新项目必然没有任务：先给首跑引导
       formDialog.close();
       showToast(t("项目已创建，接下来加入员工。", "Project created. Connect employees next."));
       await refresh();
@@ -1575,6 +2148,24 @@ async function openEmployeeForm() {
       if (!Array.isArray(result.employees)) throw new ApiError("invalid_response");
       state.discovered = result.employees; list.replaceChildren();
       if (!result.employees.length) { list.append(el("p", { class: "inline-empty" }, t("没有发现已安装的员工工具。安装你要使用的 AI 工具后重新检查。", "No installed employee tools were found. Install an AI tool and check again."))); return; }
+      // 第 10c 条（HS · 老板拍板）：**疑似提示但不自作主张** ✓ ——
+      // 只列出"检测到疑似 agent"✓ 是否添加**由用户点** ✓ 点了才打开手工登记表单 ✓（绝不自动登记 ✗）
+      const suspects = Array.isArray(result.suspects) ? result.suspects : [];
+      if (suspects.length) {
+        const box = el("div", { class: "suspect-list", role: "note" });
+        box.append(el("p", { class: "field-hint" }, t(
+          `检测到 ${suspects.length} 个**疑似** agent：是否添加由你决定 ✓ 点下方按钮再手工登记 ✓（不会自动登记 ✗）`,
+          `${suspects.length} suspect agent(s) detected: adding them is your call. Use the button to register manually.`)));
+        suspects.slice(0, 5).forEach((item) => box.append(el("div", { class: "suspect-row" },
+          el("code", {}, item.name), el("span", { class: "muted small-text" }, item.path),
+          button(t("去登记", "Register"), null, { class: "small", "data-action": "manual-employee" }))));
+        list.append(box);
+      }
+      // 第 10a 条（HS · 老板拍板）：结果必须**完整展示边界** ✓ ——
+      // "扫描只是加速器"✗；未发现的不会自动出现 ⇒ 用户必须知道有**手动登记**这条自救路径 ✓
+      list.append(el("p", { class: "field-hint", role: "note" }, t(
+        `发现 ${result.employees.length} 个：这是自动扫描的全部结果；**未发现的不会自动出现** ✓ 可在下方用「手工登记」自行添加 ✓（入口需真实存在且可执行 ✓）`,
+        `${result.employees.length} detected: this is everything the automatic scan found; anything not detected will not appear on its own. Use "Register manually" below to add it yourself (the entry point must exist and be executable).`)));
       result.employees.forEach((employee, index) => {
         const unavailable = ["missing", "not_installed", "unavailable"].includes(employee.status) || !employee.entrypoint;
         const connectionType = employee.connection_type || "cli";
@@ -1841,20 +2432,30 @@ function renderTaskDetail({ task, events, permissions, delivery, links = [] }) {
       t("授权截止", "Permission deadline"), " · ", el("time", { datetime: expires.toISOString() }, new Intl.DateTimeFormat(english ? "en" : "zh-CN", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", timeZoneName: "short" }).format(expires)),
       !expired ? el("span", {}, t(`读取时剩余约 ${remaining} 分钟，以截止时间为准。`, `About ${remaining} minutes remained when loaded. The deadline is authoritative.`)) : null) : null;
     const allow = button(t("仅允许这一次", "Allow once"), null, { class: "primary small", disabled: expired });
+    const offered = Array.isArray(permission.options) ? permission.options : [];
+    const runOffered = offered.some((option) => option && option.kind === "allow_run");
+    const allowRun = runOffered ? button(t("本任务内允许", "Allow for this task"), null, { class: "small", disabled: expired }) : null;
     const deny = button(t("拒绝", "Deny"), null, { class: "small" });
     allow.removeAttribute("data-action"); deny.removeAttribute("data-action");
+    if (allowRun) allowRun.removeAttribute("data-action");
     const decide = (control, decision) => submitAction(control, box, () => api.decidePermission(task.id, permission.request_id, { decision }), async () => {
-      showToast(decision === "allow_once" ? t("已授权这一次操作。", "This operation was allowed once.") : t("已拒绝这次操作。", "This operation was denied."));
+      showToast(decision === "allow_once" ? t("已授权这一次操作。", "This operation was allowed once.")
+        : decision === "allow_run" ? t("本任务内的后续请求将自动放行。", "Later requests in this task will be allowed automatically.")
+        : t("已拒绝这次操作。", "This operation was denied."));
       await loadTaskDetail(); await refresh({ silent: true });
     });
     allow.addEventListener("click", () => {
       if (hasExpired()) { allow.disabled = true; formError(box, new ApiError(t("授权请求已过期，不能继续允许。请让员工重新提出请求。", "This permission request expired and cannot be allowed. The employee must request permission again."))); return; }
       decide(allow, "allow_once");
     });
+    if (allowRun) allowRun.addEventListener("click", () => {
+      if (hasExpired()) { allowRun.disabled = true; formError(box, new ApiError(t("授权请求已过期，不能继续允许。请让员工重新提出请求。", "This permission request expired and cannot be allowed. The employee must request permission again."))); return; }
+      decide(allowRun, "allow_run");
+    });
     deny.addEventListener("click", () => decide(deny, "deny"));
     content.append(el("section", { class: "approval-panel" }, el("h3", {}, expired ? t("授权请求已过期", "Permission request expired") : t("员工需要你确认这次操作", "The employee needs permission for this operation")), el("p", { class: "prose" }, tool || t("操作细节未记录，请拒绝并检查任务记录。", "The operation details are missing. Deny it and check the task record.")), deadline, operationDetails,
       expired ? el("p", { class: "permission-expired" }, t("这次请求已失效，不能继续授权。需要员工重新提出请求。", "This request is no longer valid. The employee must request permission again.")) : null,
-      !expired ? el("div", { class: "approval-actions" }, allow, deny) : null));
+      !expired ? el("div", { class: "approval-actions" }, allow, allowRun, deny) : null));
   }
   content.append(el("section", { class: "detail-section" }, el("h3", {}, t("工作说明", "Instructions")), el("p", { class: "prose" }, task.prompt || t("没有工作说明。", "No instructions recorded."))));
   content.append(deliveryPanel(task, delivery, box));
@@ -1869,7 +2470,7 @@ function renderTaskDetail({ task, events, permissions, delivery, links = [] }) {
   if (task.status === "review") {
     const note = el("textarea", { id: "review-note", placeholder: t("可选：写下验收意见；退回时说明还需要完成什么。", "Optional review note. When returning work, explain what still needs to be done."), "aria-label": t("验收意见", "Review note") });
     const accept = button(t("通过验收", "Accept work"), null, { class: "primary", icon: "check" });
-    const reject = button(t("退回补充", "Return for follow-up"), null);
+    const reject = button(t("退回补充", "Return for follow-up"), null, { class: "return" });
     accept.removeAttribute("data-action"); reject.removeAttribute("data-action");
     const review = (control, decision) => submitAction(control, box, () => api.reviewTask(task.id, { decision, note: note.value.trim() }), async () => {
       showToast(decision === "accept" ? t("任务已通过验收。", "Task accepted.") : t("任务已退回，后续状态以任务记录为准。", "Task returned. Check the task record for its next status."));
@@ -1919,7 +2520,10 @@ async function installRuntime(control) {
 }
 const actions = {
   "new-project": openProjectForm, discover: openEmployeeForm, "add-member": openMemberForm,
-  "new-task": openTaskForm, "add-resource": openResourceForm,
+  // **AM-15 修复** ✗：委托是 `actions[...](target)` ⇒ 裸引用会把**被点按钮**当成第一个参数 ✓
+  // `openTaskForm(mode = "mailbox")` ⇒ mode 变成元素 ⇒ 误入**自动执行分支** ✗（实机：跳到项目成员 ✓）
+  // ⇒ **显式包一层** ✓ 让"点按钮"与"传参"彻底解耦 ✓
+  "new-task": () => openTaskForm("mailbox"), "add-resource": () => openResourceForm(),
   "add-memory": openMemoryForm, refresh: () => refresh(),
   "install-runtime": installRuntime,
   "fleet-start": openFleetStartForm, "fleet-invite": openFleetInviteForm,
@@ -2025,3 +2629,97 @@ formDialog.addEventListener("close", () => {
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") queueChanges(); });
 window.addEventListener("pagehide", () => stopChanges());
 window.addEventListener("pageshow", (event) => { if (event.persisted && !state.applicationStopped) { stopChanges = connectChanges(); queueChanges(); } });
+
+// ---- Status bar, density, system theme, command palette (v0.8 post-release UI) ----
+function updateStatusbar() {
+  const bar = document.getElementById("statusbar-project");
+  if (!bar) return;
+  bar.textContent = project()?.name || t("工作台", "Workbench");
+  // **AM-13** ✗：底栏是**当前项目名** ⇒ 计数必须按项目 ✗（原取全局 ⇒ 名实不符 ✓）
+  const scopeTasks = (state.data?.tasks || []).filter((task) => !state.projectId || task.project_id === state.projectId);
+  const scopeMessages = (state.data?.messages || []).filter((msg) => !state.projectId || msg.project_id === state.projectId);
+  const review = scopeTasks.filter((task) => task.status === "review").length;
+  const live = scopeTasks.filter((task) => liveStatuses.has(task.status)).length;
+  const mail = scopeMessages.length;
+  document.getElementById("statusbar-counts").textContent = state.data
+    ? t(`待验收 ${review} · 活跃 ${live} · 邮件 ${mail}`, `Review ${review} · Active ${live} · Mail ${mail}`)
+    : "";
+}
+let density = "comfortable";
+try { density = localStorage.getItem("agent-mailbox.workbench.density") || "comfortable"; } catch { /* optional */ }
+function applyDensity(value) {
+  density = value === "compact" ? "compact" : "comfortable";
+  document.documentElement.dataset.density = density;
+  try { localStorage.setItem("agent-mailbox.workbench.density", density); } catch { /* optional */ }
+}
+function toggleDensity() {
+  applyDensity(density === "compact" ? "comfortable" : "compact");
+  showToast(density === "compact" ? t("已切换为紧凑密度。", "Compact density on.") : t("已切换为舒适密度。", "Comfortable density on."));
+}
+applyDensity(density);
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (event) => {
+  let stored = null;
+  try { stored = localStorage.getItem("agent-mailbox.workbench.theme"); } catch { /* optional */ }
+  if (!stored) applyTheme(event.matches ? "dark" : "light");
+});
+const palette = { overlay: null, input: null, list: null, index: 0, items: [] };
+function paletteEntries() {
+  const entries = [];
+  const add = (label, hint, run) => entries.push({ label, hint, run });
+  for (const [view, label] of Object.entries(navLabels)) {
+    const needsProject = ["wall", "overview", "members", "messages", "tasks", "activity", "resources"].includes(view);
+    if (needsProject && !project()) continue;
+    add(`${t("前往", "Go to")} · ${label}`, t("视图", "View"), () => selectView(view));
+  }
+  for (const item of state.data?.projects || []) add(`${t("切换到项目", "Switch to project")} · ${item.name}`, t("项目", "Project"), () => selectProject(item.id));
+  for (const person of state.data?.employees || []) add(`${t("打开信箱", "Open mailbox")} · ${person.name}`, t("员工", "Employee"), () => { state.mailboxEmployeeId = person.id; state.mailboxFolder = "inbox"; state.mailboxMessageId = ""; selectView("mailboxes"); });
+  add(t("新建任务", "New task"), t("操作", "Action"), () => actions["new-task"]());
+  add(t("新建项目", "New project"), t("操作", "Action"), () => actions["new-project"]());
+  add(t("发现员工", "Discover employees"), t("操作", "Action"), () => actions.discover());
+  add(t("刷新工作台", "Refresh workbench"), t("操作", "Action"), () => actions.refresh());
+  add(t("切换外观", "Toggle theme"), t("操作", "Action"), () => document.getElementById("theme-button").click());
+  add(t("切换紧凑密度", "Toggle compact density"), t("操作", "Action"), () => toggleDensity());
+  return entries;
+}
+function renderPaletteList() {
+  const query = palette.input.value.trim().toLowerCase();
+  palette.items = paletteEntries().filter((entry) => !query || entry.label.toLowerCase().includes(query));
+  palette.index = Math.min(palette.index, Math.max(0, palette.items.length - 1));
+  palette.list.replaceChildren(...palette.items.map((entry, position) => {
+    const row = el("button", { type: "button", role: "option", class: `palette-row${position === palette.index ? " selected" : ""}`, "aria-selected": String(position === palette.index) },
+      el("span", { class: "palette-label" }, entry.label), el("span", { class: "palette-hint" }, entry.hint));
+    row.addEventListener("click", () => { closePalette(); entry.run(); });
+    row.addEventListener("mousemove", () => { if (palette.index !== position) { palette.index = position; renderPaletteList(); } });
+    return row;
+  }));
+  if (!palette.items.length) palette.list.append(el("p", { class: "palette-empty" }, t("没有匹配的命令。", "No matching commands.")));
+}
+function openPalette() {
+  if (palette.overlay) return;
+  palette.index = 0;
+  palette.input = el("input", { type: "search", class: "palette-input", placeholder: t("输入命令或搜索…", "Type a command or search…"), "aria-label": t("命令面板", "Command palette") });
+  palette.list = el("div", { class: "palette-list", role: "listbox" });
+  const panel = el("div", { class: "palette-panel", role: "dialog", "aria-modal": "true", "aria-label": t("命令面板", "Command palette") }, palette.input, palette.list);
+  palette.overlay = el("div", { class: "palette-overlay" }, panel);
+  palette.overlay.addEventListener("click", (event) => { if (event.target === palette.overlay) closePalette(); });
+  palette.input.addEventListener("input", () => { palette.index = 0; renderPaletteList(); });
+  palette.input.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") { event.preventDefault(); palette.index = Math.min(palette.index + 1, palette.items.length - 1); renderPaletteList(); }
+    else if (event.key === "ArrowUp") { event.preventDefault(); palette.index = Math.max(palette.index - 1, 0); renderPaletteList(); }
+    else if (event.key === "Enter") { event.preventDefault(); const entry = palette.items[palette.index]; if (entry) { closePalette(); entry.run(); } }
+    else if (event.key === "Escape") { event.preventDefault(); closePalette(); }
+  });
+  document.body.append(palette.overlay);
+  renderPaletteList();
+  palette.input.focus();
+}
+function closePalette() {
+  palette.overlay?.remove();
+  palette.overlay = null;
+}
+function togglePalette() { palette.overlay ? closePalette() : openPalette(); }
+document.addEventListener("keydown", (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); togglePalette(); }
+  else if (event.key === "Escape" && palette.overlay) closePalette();
+});
+document.getElementById("statusbar-hint")?.addEventListener("click", () => togglePalette());

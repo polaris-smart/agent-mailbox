@@ -10,7 +10,7 @@ def execution_project_context(store, project_id, employee_id, task_id="", run_id
         context["resource_manifest"]["scope"] = "task_run"
         context["resource_manifest"]["task_id"] = task_id
         context["resource_manifest"]["run_id"] = run_id
-        with store._connection() as db:
+        with store._transaction(readonly=True) as db:
             workspace = db.execute(
                 "SELECT path,base_commit FROM task_workspaces WHERE task_id=?", (task_id,)
             ).fetchone()

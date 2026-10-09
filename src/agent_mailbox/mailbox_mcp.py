@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -123,7 +124,7 @@ def build_server(session_file: str | Path) -> MCPServer:
 
     @server.tool()
     def project_message(
-        title: str, body: str, recipient_id: str = "", reply_to: str = "", request_id: str = ""
+        title: str, body: str, recipient_id: str, reply_to: str = "", request_id: str = ""
     ) -> dict:
         """Send or reply as this employee; request_id makes repeated sends identifiable."""
         return call(
@@ -141,6 +142,31 @@ def build_server(session_file: str | Path) -> MCPServer:
     def project_note(title: str, body: str) -> dict:
         """Submit a project note; it does not become a human decision."""
         return call("note", {"title": title, "body": body})
+
+    @server.tool()
+    def project_graft_ask(task: str) -> dict:
+        """只读：问仓库结构（graft ask）。**不触发受管执行**、不改任何状态。"""
+        return call("graft_ask", {"task": task})
+
+    @server.tool()
+    def project_graft_callers(symbol: str) -> dict:
+        """只读：谁调用/被谁调用（graft callers）。**不触发受管执行**。"""
+        return call("graft_callers", {"symbol": symbol})
+
+    @server.tool()
+    def project_aoci_doctor() -> dict:
+        """只读：认知层健康检查（aoci doctor）。**不触发受管执行**。"""
+        return call("aoci_doctor", {})
+
+    @server.tool()
+    def project_aoci_status() -> dict:
+        """只读：条目数/基线/漂移（aoci status）。**不触发受管执行**。"""
+        return call("aoci_status", {})
+
+    @server.tool()
+    def project_aoci_check() -> dict:
+        """只读：治理 findings 明细（aoci check）。**不触发受管执行**。"""
+        return call("aoci_check", {})
 
     @server.tool()
     def project_memory_search(query: str) -> dict:
@@ -197,7 +223,23 @@ def main(argv=None):
     )
     parser.add_argument("--session-file", type=Path, required=True)
     args = parser.parse_args(argv)
-    build_server(args.session_file).run()
+    # 规则 U5「错误自解释」：连不上时给"是什么 + 去哪修 + 一条命令"，不要抛裸 traceback。
+    # 2026-10-04 实测：无效/缺失会话文件时打印栈回溯，宿主只看到一坨 traceback。
+    try:
+        server = build_server(args.session_file)
+    except ToolError as exc:
+        print(f"agent-mailbox: {exc}", file=sys.stderr)
+        print(f"  · 会话文件：{args.session_file}", file=sys.stderr)
+        print(
+            "  · 它在哪来：工作台 → 员工详情 → 导出该员工的私有接入配置（会话 30 天有效）",
+            file=sys.stderr,
+        )
+        print(
+            "  · 自查命令：agent-mailbox mailbox-mcp --session-file <导出的文件>", file=sys.stderr
+        )
+        return 2
+    server.run()
+    return 0
 
 
 if __name__ == "__main__":

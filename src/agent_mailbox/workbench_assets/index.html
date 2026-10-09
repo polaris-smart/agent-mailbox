@@ -13,6 +13,8 @@
   <a class="skip-link" href="#main">跳到工作区</a>
   <div class="app-shell">
     <aside class="sidebar" id="sidebar" aria-label="项目与导航">
+      <!-- **侧栏中段**：唯一滚动区 ✓（底部区留在布局里 ✗ 不用 sticky 覆盖 ✓ Codex 建议 ✓） -->
+      <div class="sidebar-scroll">
       <a class="brand" href="#employees" aria-label="agent-mailbox 工作台">
         <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 28 28"><rect x="3" y="6" width="22" height="16" rx="4"/><path d="m4 8 10 7L24 8"/></svg></span>
         <span>agent-mailbox<small>团队工作台</small></span>
@@ -22,24 +24,29 @@
       <button type="button" class="nav-item" data-view="mailboxes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v14H3zM3 5l9 7 9-7"/></svg><span>员工信箱</span></button>
       </nav></div>
       <section class="sidebar-section project-workspace" aria-labelledby="project-nav-label">
-        <div class="sidebar-heading"><span id="project-nav-label">当前项目</span><button class="icon-button" type="button" data-action="new-project" aria-label="新建项目" title="新建项目"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>
-        <details class="project-switcher" id="project-switcher"><summary><span class="project-symbol" id="current-project-symbol" aria-hidden="true">P</span><span class="project-current"><strong id="current-project-name">选择项目</strong><small id="project-switch-hint">切换项目</small></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg></summary><div id="project-list" class="project-list" aria-label="项目列表"><div class="skeleton skeleton-project"></div></div></details>
+        <span id="project-nav-label" class="sr-only">当前项目</span>
+        <details class="project-switcher" id="project-switcher"><summary><span class="project-symbol" id="current-project-symbol" aria-hidden="true">P</span><span class="project-current"><strong id="current-project-name">选择项目</strong><small id="project-switch-hint">切换项目</small></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg><button class="icon-button" type="button" data-action="new-project" aria-label="新建项目" title="新建项目"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></summary><div id="project-list" class="project-list" aria-label="项目列表"><div class="skeleton skeleton-project"></div></div></details>
       <nav class="project-nav" aria-label="工作区">
-        <button type="button" class="nav-item" data-view="overview"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="6" height="7" rx="1.5"/><rect x="4" y="14" width="7" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/></svg><span>项目概览</span></button>
-        <button type="button" class="nav-item" data-view="members"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2m1-15a3 3 0 0 1 0 6m2 4a5 5 0 0 1 3 5"/></svg><span>项目成员</span></button>
-        <button type="button" class="nav-item" data-view="messages"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v12H9l-5 4zM8 8h8M8 12h5"/></svg><span>项目消息</span></button>
-        <button type="button" class="nav-item" data-view="tasks"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 7 2 2 3-4m-5 12 2 2 3-4M12 7h8M12 17h8"/></svg><span>任务</span><span class="nav-count" id="task-nav-count"></span></button>
-        <button type="button" class="nav-item" data-view="activity"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16H6zM9 8h6M9 12h6M9 16h4"/></svg><span>工作日志</span></button>
-        <button type="button" class="nav-item" data-view="resources"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h6l2 2h8v12H4zM4 6V4h6l2 2"/></svg><span>资料与记忆</span></button>
+        <button type="button" class="nav-item" data-view="wall"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H4zM8 20h8m-4-4v4"/></svg><span>交接台</span></button>
+          <button type="button" class="nav-item" data-view="tasks"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 7 2 2 3-4m-5 12 2 2 3-4M12 7h8M12 17h8"/></svg><span>任务</span><span class="nav-count" id="task-nav-count" aria-live="polite"></span></button>
+          <button type="button" class="nav-item" data-view="messages"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v12H9l-5 4zM8 8h8M8 12h5"/></svg><span>项目消息</span></button>
+          <button type="button" class="nav-item" data-view="members"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2m1-15a3 3 0 0 1 0 6m2 4a5 5 0 0 1 3 5"/></svg><span>项目成员</span></button>
+          <button type="button" class="nav-item" data-view="resources"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h6l2 2h8v12H4zM4 6V4h6l2 2"/></svg><span>资料与记忆</span></button>
+          <button type="button" class="nav-item" data-view="activity"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16H6zM9 8h6M9 12h6M9 16h4"/></svg><span>工作日志</span></button>
+          <button type="button" class="nav-item" data-view="overview"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="6" height="7" rx="1.5"/><rect x="4" y="14" width="7" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/></svg><span>项目概览</span></button>
       </nav>
       </section>
+      </div>
       <div class="sidebar-bottom"><h2 class="nav-group-label" id="manage-nav-label">管理</h2>
+        <button type="button" class="nav-item" data-view="classroom"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5m0 14h16M8 19V9m4 10V7m4 12v-7"/></svg><span>教室</span></button>
+        <button type="button" class="nav-item" data-view="blackboard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v12H4zM8 9h8M8 13h5"/></svg><span>任务黑板</span></button>
+        <button type="button" class="nav-item" data-view="keys"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 7a4 4 0 1 0-3.5 4H12l1 1 3-3 2 2 2-2-2-2z"/></svg><span>钥匙</span></button>
         <button type="button" class="nav-item" data-view="devices"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="14" height="11" rx="2"/><path d="M7 20h6m-3-5v5"/><rect x="18" y="12" width="4" height="8" rx="1"/></svg><span>设备</span></button>
         <button type="button" class="nav-item" data-view="about"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7v1"/></svg><span>关于与设置</span></button>
         <button type="button" class="nav-item quit-application-button" id="quit-application-button" data-action="quit-application"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m-5-7a8 8 0 1 0 10 0"/></svg><span>退出应用</span></button>
         <footer class="legal-footer">
           <div class="legal-identity"><span>© 2026 NoFox</span><button type="button" class="text-button version-label" id="version-label" data-view="about" aria-label="关于与更新">版本</button></div>
-          <div class="legal-links"><button type="button" class="text-button" data-view="about">Apache-2.0</button><a href="https://github.com/polaris-smart/agent-mailbox" target="_blank" rel="noopener noreferrer">GitHub ↗</a></div>
+          <div class="legal-links"><button type="button" class="text-button" data-view="about">Apache-2.0</button><a class="text-button" href="https://github.com/polaris-smart/agent-mailbox" target="_blank" rel="noopener noreferrer">GitHub</a></div>
         </footer>
       </div>
     </aside>
@@ -58,6 +65,12 @@
         <div id="global-notice" class="notice" role="status" hidden></div>
         <div id="view-root" aria-live="polite" aria-busy="true"><div class="loading-view"><div class="skeleton skeleton-heading"></div><div class="skeleton skeleton-text"></div><div class="loading-rows"><div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div><div class="skeleton skeleton-row"></div></div><p class="muted">正在读取项目与员工…</p></div></div>
       </main>
+      <footer class="statusbar" id="statusbar" aria-label="状态栏">
+        <span class="statusbar-item" id="statusbar-project">工作台</span>
+        <span class="statusbar-item mono" id="statusbar-counts"></span>
+        <span class="statusbar-spacer"></span>
+        <span class="statusbar-item mono" id="statusbar-hint">⌘K</span>
+      </footer>
     </div>
   </div>
   <dialog id="form-dialog" class="form-dialog" aria-labelledby="form-dialog-title"><div id="form-dialog-content"></div></dialog>

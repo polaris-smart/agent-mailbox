@@ -7,6 +7,7 @@ user, SYSTEM and Administrators instead; fail closed if ACL operations fail.
 from __future__ import annotations
 
 import os
+import stat
 from functools import lru_cache
 from pathlib import Path
 
@@ -92,7 +93,15 @@ def _windows():
 def private_mode(path, mode):
     path = Path(path)
     if os.name != "nt":
-        path.chmod(mode)
+        # 已经是对的模式就不要再 chmod：读路径不必改文件系统元数据。
+        # 注意：**放宽**的权限仍会被修回（含 setuid/setgid/sticky 位），安全性不因此削弱；
+        # 这里省掉的只是"本来就正确"时的无谓写。
+        try:
+            current = stat.S_IMODE(path.stat().st_mode)
+        except OSError:
+            current = None
+        if current != mode:
+            path.chmod(mode)
         return
     c, w, advapi, kernel, sid = _windows()
     directory = path.is_dir()

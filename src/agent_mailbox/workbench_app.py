@@ -15,7 +15,12 @@ def bundled_runtime() -> dict[str, str] | None:
     node = bundle / "runtime/bin" / ("node.exe" if os.name == "nt" else "node")
     dependencies = bundle / "runtime/deps"
     if not node.is_file() or not (dependencies / "node_modules/acpx/package.json").is_file():
-        raise RuntimeError("This application bundle is missing its managed execution runtime")
+        # **零引擎发行态** ✓（老板拍板 ✓ 包里不带任何 agent cli ✓）：依赖树不在包里是**正常**的 ✗
+        # ⇒ 这里**不得硬失败** ✗ —— 否则 App 直接起不来 ✓（2026-10-09 实测：装到 /Applications 后
+        #    启动器抛错 ⇒ 退出码 1 ⇒ 从不写 instance.json ✓）
+        # ⇒ 返回 None ⇒ 以**邮箱模式**启动 ✓；用户要用受管执行 ⇒ 走既有的「按需安装运行时」✓
+        #    （`runtime_bridge/install_runtime.py` ✓ CLI ✓ workbench API `install_runtime()` ✓）
+        return None
     os.environ["AGENT_MAIL_NODE_BIN"] = str(node)
     os.environ["AGENT_MAIL_RUNTIME_DIR"] = str(dependencies)
     return {"node_binary": str(node), "runtime_dir": str(dependencies)}
