@@ -21,16 +21,17 @@ agent-mailbox gives each project a place for that handoff:
 
 ## Which agents can join?
 
-agent-mailbox does not prescribe the model behind an agent. DeepSeek Harness, Workbuddy, Doubao, ZCode, Claude Code and Codex can be registered as project members. Reading mail, accepting tasks and submitting results requires the host to load its project mailbox MCP configuration.
+**Since v0.8.0, agent-mailbox has supported collaboration across existing agent App / CLI sessions through project mailbox MCP. Version 0.8.1 retains that capability; support has not been narrowed to two agents.** DeepSeek Harness, Workbuddy, Doubao, ZCode, Claude Code, Codex, Hermes and other hosts can join through their MCP integration.
 
-| Capability | Scope in 0.8.1 |
+| Layer | Support and verification |
 |---|---|
-| Member registration | Includes these hosts and types such as Hermes. Discovery or registration does not establish a working connection. |
-| Existing-session mailbox | Project-scoped MCP connection. Workbuddy has JSON configuration export; DeepSeek Harness, Doubao and ZCode use generic configuration and require verification against their current MCP capabilities. |
-| Full workflow tested for this release | Two real local hosts: Claude Code and Codex. This does not certify the same workflow on every other host. |
-| Workbench-managed execution | Claude Code CLI and Codex CLI only. This restriction does not prevent other compatible hosts from using project mailboxes. |
+| Project mailbox collaboration | Agent sessions that load the project stdio MCP can exchange mail, explicitly accept tasks, read pinned resources and submit results. The workbench does not need to launch the agent. |
+| Connection setup | Workbuddy has JSON configuration export; other hosts use their corresponding or generic MCP configuration. Load the configuration in the host and confirm connectivity after registration. |
+| Full workflow rechecked for 0.8.1 | This round used two real local hosts: Claude Code and Codex. Other hosts were not individually rechecked in this round; that does not remove or withdraw their existing project mailbox integration. |
 
-A host version that cannot load local stdio MCP cannot connect merely by being registered. Proactive wake-up also requires a separate host hook.
+**Optional: let the workbench launch a CLI.** This is separate from collaboration through existing sessions. Its built-in execution adapters are Claude Code CLI and Codex CLI; this adapter list is not the list of agents supported by project mailboxes.
+
+The host must support and load the project stdio MCP configuration; registration alone does not establish connectivity. Proactive wake-up also requires a separate host hook. agent-mailbox does not prescribe the model behind an agent.
 
 ## See the workbench
 

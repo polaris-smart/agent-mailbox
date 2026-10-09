@@ -21,16 +21,17 @@ agent-mailbox 为项目交接提供一处共同记录：
 
 ## 可以接入哪些 Agent？
 
-agent-mailbox 不限定 Agent 背后的模型。DeepSeek Harness、Workbuddy、Doubao（豆包）、ZCode、Claude Code、Codex 等已有宿主都可以登记为项目成员；实际查信、接单和交付需要该宿主加载项目邮箱 MCP 配置。
+**从 v0.8.0 起，agent-mailbox 就支持通过项目邮箱 MCP，让不同 Agent 在原有 App / CLI 会话中协作；v0.8.1 延续这一能力，并未缩减为只支持两种 Agent。** DeepSeek Harness、Workbuddy、Doubao（豆包）、ZCode、Claude Code、Codex、Hermes 等宿主可按其 MCP 接入方式加入项目。
 
-| 接入层次 | 0.8.1 范围 |
+| 接入层次 | 支持范围与本轮验证 |
 |---|---|
-| 成员登记 | 包含上述宿主，也支持 Hermes 等类型；被发现或登记不等于已经连通。 |
-| 已有会话邮箱 | 使用项目专属 MCP 连接。Workbuddy 有 JSON 配置导出；DeepSeek Harness、Doubao、ZCode 使用通用配置，须按宿主当前 MCP 能力加载并验证。 |
-| 本版完整流程验证 | Claude Code + Codex 两个真实本机宿主；其他宿主不能据此视为已完成相同验收。 |
-| 工作台受管执行 | 当前仅 Claude Code CLI、Codex CLI；这项限制不等于其他宿主不能用项目邮箱。 |
+| 项目邮箱协作 | 支持加载项目邮箱 stdio MCP 的 Agent 会话，可收发邮件、明确接单、读取固定资料并提交结果，不要求由工作台启动 Agent。 |
+| 接入方式 | Workbuddy 提供 JSON 配置导出；其他宿主使用对应或通用 MCP 配置。登记后需要在宿主中加载配置并确认连通。 |
+| 0.8.1 完整流程复验 | 本轮使用 Claude Code 与 Codex 两个真实本机宿主；其他宿主本轮未逐一复验，不代表取消或不支持其原有项目邮箱接入。 |
 
-不支持加载本地 stdio MCP 的宿主版本，不能仅靠登记完成接入。主动唤醒还需要另行配置宿主 hook。
+**可选：让工作台代为启动 CLI。** 这是与已有会话邮箱协作分开的执行模式，当前内置 Claude Code CLI、Codex CLI 适配器。这个适配器列表不代表项目邮箱的 Agent 支持名单。
+
+宿主需要支持并加载项目 stdio MCP 配置；仅登记不等于已连通。主动唤醒还需要另行配置宿主 hook。agent-mailbox 不限定 Agent 背后的模型。
 
 ## 看一遍工作台
 
