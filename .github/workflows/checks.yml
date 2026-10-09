@@ -1,6 +1,11 @@
 name: Independent v0.8 checks
 on:
   workflow_call:
+    inputs:
+      platforms:
+        description: Operating systems in this validation scope
+        type: string
+        default: '["macos-latest"]'
 permissions:
   contents: read
 jobs:
@@ -14,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(inputs.platforms) }}
         python: ["3.10", "3.13"]
     steps:
       - uses: actions/checkout@v4
@@ -70,7 +75,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(inputs.platforms) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

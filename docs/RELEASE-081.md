@@ -45,3 +45,7 @@ This does not cover every host, cross-machine mailbox operation, every crash poi
 5. Update the default branch README and GitHub release notes together. Public materials describe agent hosts and product behavior, not internal model selections, account identities or private logs.
 
 Public version strings do not by themselves prove that a release has been published.
+
+## Platform validation scope
+
+The release and PR regression gates target macOS (Python 3.10 and 3.13 plus native packaging), matching the 0.8.1 release scope. The manually dispatched Extended platform checks workflow retains Linux and Windows coverage for follow-up work. Preliminary runs built and exercised native packages on all three systems, but Linux regression tests still contain a launchctl assumption and a Windows indexing fixture is not portable. These results do not qualify Windows or Linux for this release.
