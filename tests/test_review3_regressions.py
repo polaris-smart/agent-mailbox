@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 import subprocess
+import sys
 
 import pytest
 
@@ -30,7 +31,7 @@ from agent_mailbox.workbench_store import (
 )
 
 REPO = __import__("pathlib").Path(__file__).resolve().parents[1]
-CLI = REPO / ".venv" / "bin" / "agent-mailbox"
+CLI = [sys.executable, "-m", "agent_mailbox"]
 
 
 @pytest.fixture
@@ -83,7 +84,7 @@ def test_rv3_2_unknown_project_rejected_on_every_read_path(scene):
         assert excinfo.value.code == "not_found", f"{name} 未校验项目存在"
     for command in (["policy"], ["search", "x"], ["watch", "--timeout", "0"]):
         result = subprocess.run(
-            [str(CLI), *command, "--project", "project_nope", "--home", str(store.root)],
+            [*CLI, *command, "--project", "project_nope", "--home", str(store.root)],
             capture_output=True,
             text=True,
             check=False,

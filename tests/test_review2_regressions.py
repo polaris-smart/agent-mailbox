@@ -20,7 +20,7 @@ from agent_mailbox.workbench_store import WorkbenchError, WorkbenchStore
 from agent_mailbox.workbench_workspaces import apply_delivery
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
-CLI = REPO / ".venv" / "bin" / "agent-mailbox"
+CLI = [sys.executable, "-m", "agent_mailbox"]
 
 
 @pytest.fixture
@@ -48,7 +48,7 @@ def test_rv2_2_cli_record_requires_a_real_verifier(scene, tmp_path):
     store, _project, _alice, bob, task, _artifact = scene
     home = store.root
     without = subprocess.run(
-        [str(CLI), "proof-verify", task["id"], "--record", "--home", str(home)],
+        [*CLI, "proof-verify", task["id"], "--record", "--home", str(home)],
         capture_output=True,
         text=True,
         check=False,
@@ -58,7 +58,7 @@ def test_rv2_2_cli_record_requires_a_real_verifier(scene, tmp_path):
 
     with_peer = subprocess.run(
         [
-            str(CLI),
+            *CLI,
             "proof-verify",
             task["id"],
             "--record",
@@ -118,7 +118,7 @@ def test_rv2_5_python_m_exit_code_parity(tmp_path, scene):
     store, _project, _alice, _bob, _task, _artifact = scene
     home = str(store.root)
     bad = ["policy", "--home", home, "--set", "peer_review=不是选项"]
-    script = subprocess.run([str(CLI), *bad], capture_output=True, text=True, check=False)
+    script = subprocess.run([*CLI, *bad], capture_output=True, text=True, check=False)
     module = subprocess.run(
         [sys.executable, "-m", "agent_mailbox", *bad],
         capture_output=True,
@@ -249,7 +249,7 @@ def test_rv2_10_unknown_project_is_rejected(scene, tmp_path):
             call()
         assert excinfo.value.code == "not_found"
     cli = subprocess.run(
-        [str(CLI), "ledger", "--project", "project_nope", "--home", str(store.root)],
+        [*CLI, "ledger", "--project", "project_nope", "--home", str(store.root)],
         capture_output=True,
         text=True,
         check=False,

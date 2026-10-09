@@ -339,6 +339,18 @@ def build(runtime_dir: Path, node: Path, output: Path, name: str) -> dict:
         )
     )
     content = spec.read_text()
+    # Hooks can re-collect editable metadata even when initial data is sanitized.
+    # Filter the final Analysis data before COLLECT/BUNDLE and signing.
+    marker = "pyz = PYZ(a.pure)"
+    if content.count(marker) != 1:
+        raise RuntimeError("PyInstaller generated an unexpected analysis specification")
+    content = content.replace(
+        marker,
+        "a.datas = [entry for entry in a.datas if "
+        "entry[0].replace(chr(92), '/').rsplit('/', 1)[-1] not in "
+        "{'direct_url.json', 'uv_build.json', 'uv_cache.json'}]\n" + marker,
+    )
+    spec.write_text(content)
     if sys.platform == "darwin":
         bundle_start = "app = BUNDLE(\n    coll,\n"
         if content.count(bundle_start) != 1:

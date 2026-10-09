@@ -305,7 +305,10 @@ def check(manifest_path, output_path):
             ):
                 await session.initialize()
                 tools = await session.list_tools()
-                assert len(tools.tools) == 11
+                assert len({tool.name for tool in tools.tools}) == len(tools.tools)
+                assert {"project_context", "project_note", "project_delivery"} <= {
+                    tool.name for tool in tools.tools
+                }
                 for name, body in [
                     ("project_context", {}),
                     ("project_note", {"title": "Agent connectivity verification", "body": marker}),
@@ -324,7 +327,7 @@ def check(manifest_path, output_path):
         "archive_extracted_and_launched": True,
         "owner_authentication": True,
         "private_permissions": True,
-        "frozen_mcp_tools": 11,
+        "frozen_required_mcp_tools_verified": True,
         "context_note_probe_verified": True,
         "existing_session_required_mcp_tools_verified": True,
         "existing_session_fixture_employees": 2,

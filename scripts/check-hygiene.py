@@ -97,7 +97,7 @@ def scan(root: Path, files: list[Path]) -> tuple[list[str], list[str]]:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        rel = str(path.relative_to(root))
+        rel = path.relative_to(root).as_posix()
         allowed_rules = FIXTURE_RULE_ALLOWLIST.get(rel, set())
         for label, rule in FAIL_RULES:
             if label in allowed_rules:

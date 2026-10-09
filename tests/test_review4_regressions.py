@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 import subprocess
+import sys
 
 import pytest
 
@@ -23,7 +24,7 @@ from agent_mailbox.workbench_mail_tasks import create_mail_task
 from agent_mailbox.workbench_store import WorkbenchStore
 
 REPO = __import__("pathlib").Path(__file__).resolve().parents[1]
-CLI = REPO / ".venv" / "bin" / "agent-mailbox"
+CLI = [sys.executable, "-m", "agent_mailbox"]
 
 
 @pytest.fixture
@@ -81,7 +82,7 @@ def test_rv4_1_read_paths_never_flip_the_journal_mode(scene, tmp_path):
 
     for command in (["artifact", "list"], ["proof", task["id"]]):
         result = subprocess.run(
-            [str(CLI), *command, "--home", str(store.root)],
+            [*CLI, *command, "--home", str(store.root)],
             capture_output=True,
             text=True,
             check=False,
@@ -116,7 +117,7 @@ def test_rv4_3_enrolled_and_bridge_validate_the_project(scene, tmp_path):
 
     cli = subprocess.run(
         [
-            str(CLI),
+            *CLI,
             "bridge",
             "project",
             "--project",

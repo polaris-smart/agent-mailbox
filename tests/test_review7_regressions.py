@@ -25,6 +25,7 @@ import os
 import pathlib
 import sqlite3
 import subprocess
+import sys
 
 import pytest
 
@@ -107,7 +108,9 @@ def test_rv7_3_mail_root_must_exist(scene):
 
     cli = subprocess.run(
         [
-            str(REPO / ".venv" / "bin" / "agent-mailbox"),
+            sys.executable,
+            "-m",
+            "agent_mailbox",
             "bridge",
             "scan",
             "--mail-root",
@@ -193,17 +196,17 @@ def test_rv7_7_ledger_limit_is_consistent_between_json_and_human(scene):
     store, project, alice, _bob, _tmp = scene
     for index in range(3):
         create_mail_task(store, project["id"], f"活{index}", "说明", alice["id"])
-    binary = str(REPO / ".venv" / "bin" / "agent-mailbox")
+    binary = [sys.executable, "-m", "agent_mailbox"]
 
     as_json = subprocess.run(
-        [binary, "ledger", "--json", "--limit", "0", "--home", str(store.root)],
+        [*binary, "ledger", "--json", "--limit", "0", "--home", str(store.root)],
         capture_output=True,
         text=True,
         check=False,
     )
     payload = json.loads(as_json.stdout)
     human = subprocess.run(
-        [binary, "ledger", "--limit", "0", "--home", str(store.root)],
+        [*binary, "ledger", "--limit", "0", "--home", str(store.root)],
         capture_output=True,
         text=True,
         check=False,
