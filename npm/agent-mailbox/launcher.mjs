@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { access, chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join, win32 } from 'node:path';
 import { spawn } from 'node:child_process';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -44,9 +44,14 @@ export function run(command, args, options = {}) {
   });
 }
 
+export function windowsTar(systemRoot = process.env.SystemRoot || 'C:\\Windows') {
+  if (!win32.isAbsolute(systemRoot)) throw new Error('Windows system directory must be absolute.');
+  return win32.join(systemRoot, 'System32', 'tar.exe');
+}
+
 export async function extract(archive, destination, platform) {
   if (platform === 'darwin') await run('/usr/bin/ditto', ['-x', '-k', archive, destination], { stdio: ['ignore', 'ignore', 'inherit'] });
-  else await run(platform === 'win32' ? 'tar.exe' : 'tar', ['-xf', archive, '-C', destination], { stdio: ['ignore', 'ignore', 'inherit'] });
+  else await run(platform === 'win32' ? windowsTar() : 'tar', ['-xf', archive, '-C', destination], { stdio: ['ignore', 'ignore', 'inherit'] });
 }
 
 export async function ensureInstalled(manifest, options = {}) {

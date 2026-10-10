@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm, readdir } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { selectTarget, ensureInstalled, downloadVerified, executableRelative } from './launcher.mjs';
+import { selectTarget, ensureInstalled, downloadVerified, executableRelative, windowsTar } from './launcher.mjs';
 const sum = createHash('sha256').update('fixture').digest('hex');
 const manifest = { version: '0.8.2', targets: Object.fromEntries(['darwin-arm64','darwin-x64','win32-x64','linux-x64'].map(key=>[key,{sha256:sum,url:`https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.2/Agent-Mailbox-0.8.2-${key}.zip`}])) };
 async function temporary(fn) {const dir=await mkdtemp(join(tmpdir(),'mailbox npm test '));try{await fn(dir);}finally{await rm(dir,{recursive:true,force:true});}}
@@ -43,3 +43,9 @@ test('concurrent preparations converge on one verified executable',()=>temporary
  const results=await Promise.all([ensureInstalled(manifest,opts),ensureInstalled(manifest,opts)]);
  assert.equal(results[0],results[1]);assert.equal((await readdir(root)).length,1);
 }));
+
+test('Windows extraction selects system tar, never Git PATH tar',()=>{
+ assert.equal(windowsTar('C:\\Windows'),'C:\\Windows\\System32\\tar.exe');
+ assert.equal(windowsTar('D:\\OS'),'D:\\OS\\System32\\tar.exe');
+ assert.throws(()=>windowsTar('relative'));
+});
