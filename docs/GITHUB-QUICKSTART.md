@@ -1,9 +1,9 @@
-# 从 GitHub 上手 v0.8.1
+# 从 GitHub 上手 v0.8.2
 
 
 把已有 AI Agent 组成项目团队的本地工作台。默认从单机开始：发现 → 入组 → 协作 → 验收。
 
-目标版本为 `0.8.1`，[GitHub 预期入口](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.1) 与 [PyPI 预期入口](https://pypi.org/project/agent-mailbox/0.8.1/) 可用性以实际发行页和索引为准；以下 clone/install 命令要求对应 tag/包存在。独立配套 npm 插件不是工作台安装器，不随本轮自动改号或发布。TestPyPI、Homebrew 不列入本轮发行。
+目标版本为 `0.8.2`，[GitHub 下载入口](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.2) 与 [PyPI 安装入口](https://pypi.org/project/agent-mailbox/0.8.2/) 可用性以实际发行页和索引为准；以下 clone/install 命令要求对应 tag/包存在。独立配套 npm 插件不是工作台安装器，不随本轮自动改号或发布。TestPyPI、Homebrew 不列入本轮发行。
 
 原生包和 PyPI 的安装、来源校验及保留数据升级见[安装与升级](BETA-INSTALL.md)。以下为源码入口。
 
@@ -12,7 +12,7 @@
 Python 3.10+，执行工作需要 Node.js 22.13+。在 v0.8 checkout 建独立 venv，安装本目录：
 
 ```sh
-git clone --branch v0.8.1 --single-branch https://github.com/polaris-smart/agent-mailbox.git agent-mailbox-v08
+git clone --branch v0.8.2 --single-branch https://github.com/polaris-smart/agent-mailbox.git agent-mailbox-v08
 cd agent-mailbox-v08
 python3 -m venv .venv
 . .venv/bin/activate

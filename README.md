@@ -1,12 +1,17 @@
 # agent-mailbox
 
+
 **Give your existing AI agents a shared project. Keep the final decision yours.**
 
 Working across DeepSeek Harness, Workbuddy, Doubao, ZCode, Claude Code or Codex? agent-mailbox brings their messages, tasks, approved documents, and submitted results into one local workbench. Keep working in the agent tools you already use, with a clear record of who accepted the work and what still needs your review.
 
 **Assign → accept → work from approved versions → submit → Human review.**
 
-[中文](README.zh-CN.md) · [Download for Mac](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.1) · [Local Web](#local-web) · [Quick start](docs/GITHUB-QUICKSTART.md)
+[中文](README.zh-CN.md) · [Downloads and platform scope](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.2) · [Local Web](#local-web) · [Quick start](docs/GITHUB-QUICKSTART.md)
+
+[![Watch the introduction](docs/media/v082/cover.png)](https://polaris-smart.github.io/agent-mailbox/#demo)
+
+[Watch the 60-second portrait introduction (Mandarin narration and captions; synthetic demo data)](https://polaris-smart.github.io/agent-mailbox/#demo)
 
 ## Stop carrying context between conversations
 
@@ -21,7 +26,7 @@ agent-mailbox gives each project a place for that handoff:
 
 ## Which agents can join?
 
-**Since v0.8.0, agent-mailbox has supported collaboration across existing agent App / CLI sessions through project mailbox MCP. Version 0.8.1 retains that capability; support has not been narrowed to two agents.** DeepSeek Harness, Workbuddy, Doubao, ZCode, Claude Code, Codex, Hermes and other hosts can join through their MCP integration.
+**Since v0.8.0, agent-mailbox has supported collaboration across existing agent App / CLI sessions through project mailbox MCP. Later versions retain that capability; support has not been narrowed to two agents.** DeepSeek Harness, Workbuddy, Doubao, ZCode, Claude Code, Codex, Hermes and other hosts can join through their MCP integration.
 
 | Layer | Support and verification |
 |---|---|
@@ -43,13 +48,25 @@ These screenshots show a **synthetic demonstration project in the 0.8.1 local We
 
 ![Project members · 项目成员](https://raw.githubusercontent.com/polaris-smart/agent-mailbox/v0.8.1/docs/media/v081/members.png)
 
-[Watch the 30-second interface overview (silent MP4, synthetic demo data)](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.1/agent-mailbox-0.8.1-overview.mp4)
 
-## Start on macOS
+The video uses magnified excerpts from the released 0.8.1 interface. It explains the product workflow; it is not a recording of live agent execution or evidence of 0.8.2 platform acceptance.
 
-**0.8.1 ships a macOS Apple Silicon App and a local browser workbench.** Windows and Linux native packages are not part of this release. Windows packaging and broader platform validation are planned for a later release.
+## Choose the correct package
 
-1. Download **`Agent-Mailbox-0.8.1-darwin-arm64.zip`** and **`SHA256SUMS`** from the [0.8.1 release page](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.1). Check the archive's SHA-256 against the published list.
+0.8.2 provides separate builds for each platform and chip. **macOS Apple Silicon is the established App distribution; Intel, Windows and Linux are additional preview platforms.**
+
+| Platform | Interface | Current validation boundary |
+|---|---|---|
+| macOS Apple Silicon / arm64 | Native App with an embedded workbench, plus local Web | Native regression and extracted-package HTTP/MCP checks; upgrade and embedded UI checked locally before publication. |
+| macOS Intel / x86_64 | Separately built native App, plus local Web | Preview: built and launched on a real Intel runner. Full user installation and GUI acceptance are not established. |
+| Windows x64 | Packaged local service and browser workbench | Preview: native regression, locking, PowerShell hooks and HTTP/MCP startup checked; not the macOS embedded App shell. Optional CodeGraph is unsupported. |
+| Linux x64 | Packaged local service and browser workbench | Preview: native regression and HTTP/MCP startup checked; not the macOS embedded App shell. |
+
+These checks do not establish feature parity across all optional managed CLI integrations. Choose the archive matching your operating system and architecture. Preview packages have not received full GUI, original-release upgrade or real-agent acceptance on those platforms. See [0.8.2 scope](docs/RELEASE-082.md).
+
+### macOS App
+
+1. Download the macOS archive matching your chip and **`SHA256SUMS`** from the [0.8.2 release page](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.2). Check the archive's SHA-256 against the published list.
 2. Quit an older Agent Mailbox instance before replacing its App. Extract the ZIP, move **Agent Mailbox.app** into Applications, then open it.
 3. Create a project, register your agents, and add them as members.
 4. Export a separate project mailbox MCP configuration for each agent and load it in that host. Ask it to call `project_context` and check its mailbox to verify the connection.
@@ -78,21 +95,21 @@ The workbench distinguishes pending notification from successful host delivery, 
 
 ## Local Web
 
-The Web interface runs on your own machine; it is not a hosted cloud service. The 0.8.1 release validation covers macOS. Python installation on other operating systems is not a claim of equivalent platform validation.
+The Web interface runs on your own machine; it is not a hosted cloud service. Choose a platform from the verified release scope above; a successful Python installation alone does not prove all optional integrations work on that platform.
 
-With Python 3.10+ installed:
+On macOS or Linux, with Python 3.10+ installed:
 
 ```sh
 python3 -m venv ~/.venvs/agent-mailbox
 . ~/.venvs/agent-mailbox/bin/activate
-python -m pip install 'agent-mailbox==0.8.1'
+python -m pip install 'agent-mailbox==0.8.2'
 agent-mailbox --version
 AGENT_MAILBOX_BROWSER=1 agent-mailbox --home ~/.agent-mailbox
 ```
 
 The environment flag requests a browser window. Keep the terminal running, and keep the local access URL private. Use the same `--home` on subsequent launches. If you already use a different data directory, keep that path instead.
 
-The Python command becomes available when the matching package is published on [PyPI](https://pypi.org/project/agent-mailbox/0.8.1/). Native App downloads and Python packages are separate artifacts of the same release.
+The Python package is distributed on [PyPI](https://pypi.org/project/agent-mailbox/0.8.2/). Native App downloads and Python packages are separate artifacts of the same release.
 
 ## Optional managed CLI execution
 
@@ -112,7 +129,7 @@ The 0.8.1 candidate was checked with two real local agent hosts, explicit accept
 
 ## Documentation and feedback
 
-[Quick start](docs/GITHUB-QUICKSTART.md) · [Install and upgrade](docs/BETA-INSTALL.md) · [0.8.1 release scope](docs/RELEASE-081.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
+[Quick start](docs/GITHUB-QUICKSTART.md) · [Install and upgrade](docs/BETA-INSTALL.md) · [0.8.2 release scope](docs/RELEASE-082.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
 
 If a handoff fails, [open an issue](https://github.com/polaris-smart/agent-mailbox/issues) with the app version, operating system, agent host, and failing step. Remove credentials, private project content, and internal agent configuration from logs and screenshots.
 

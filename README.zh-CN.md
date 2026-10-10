@@ -1,12 +1,17 @@
 # agent-mailbox
 
+
 **让你已有的 AI Agent 围绕同一个项目协作，由你做最终验收。**
 
 同时用 DeepSeek Harness、Workbuddy、Doubao（豆包）、ZCode、Claude Code 或 Codex 做项目？agent-mailbox 把它们的消息、任务、已批准的资料和交付结果放进一个本地工作台。Agent 继续使用原来的工具，你能看清谁接了任务、依据哪版资料工作，以及哪些结果还在等你决定。
 
 **交办 → 明确接单 → 读取批准版本 → 提交结果 → Human 验收。**
 
-[English](README.md) · [下载 Mac 版](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.1) · [本地 Web](#本地-web) · [上手指南](docs/GITHUB-QUICKSTART.md)
+[English](README.md) · [下载与平台范围](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.2) · [本地 Web](#本地-web) · [上手指南](docs/GITHUB-QUICKSTART.md)
+
+[![观看介绍短片](docs/media/v082/cover.png)](https://polaris-smart.github.io/agent-mailbox/#demo)
+
+[观看 60 秒竖版功能讲解（中文讲解、字幕，合成演示数据）](https://polaris-smart.github.io/agent-mailbox/#demo)
 
 ## 少在几个对话之间搬运资料
 
@@ -21,7 +26,7 @@ agent-mailbox 为项目交接提供一处共同记录：
 
 ## 可以接入哪些 Agent？
 
-**从 v0.8.0 起，agent-mailbox 就支持通过项目邮箱 MCP，让不同 Agent 在原有 App / CLI 会话中协作；v0.8.1 延续这一能力，并未缩减为只支持两种 Agent。** DeepSeek Harness、Workbuddy、Doubao（豆包）、ZCode、Claude Code、Codex、Hermes 等宿主可按其 MCP 接入方式加入项目。
+**从 v0.8.0 起，agent-mailbox 就支持通过项目邮箱 MCP，让不同 Agent 在原有 App / CLI 会话中协作；后续版本延续这一能力，并未缩减为只支持两种 Agent。** DeepSeek Harness、Workbuddy、Doubao（豆包）、ZCode、Claude Code、Codex、Hermes 等宿主可按其 MCP 接入方式加入项目。
 
 | 接入层次 | 支持范围与本轮验证 |
 |---|---|
@@ -43,13 +48,25 @@ agent-mailbox 为项目交接提供一处共同记录：
 
 ![Project members · 项目成员](https://raw.githubusercontent.com/polaris-smart/agent-mailbox/v0.8.1/docs/media/v081/members.png)
 
-[观看约 30 秒界面介绍（无声 MP4，合成演示数据）](https://github.com/polaris-smart/agent-mailbox/releases/download/v0.8.1/agent-mailbox-0.8.1-overview.mp4)
 
-## 从 macOS App 开始
+短片使用已发布 0.8.1 界面的局部放大截图，解释产品流程；它不是 Agent 实时执行录屏，也不作为 0.8.2 新平台验收证据。
 
-**0.8.1 提供 macOS Apple Silicon App 和本地浏览器工作台。** 本次不发行 Windows 或 Linux 原生安装包；Windows 打包及更广的平台验证留待后续版本。
+## 先选对系统与芯片
 
-1. 从 [0.8.1 发行页](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.1)下载 **`Agent-Mailbox-0.8.1-darwin-arm64.zip`** 和 **`SHA256SUMS`**，核对压缩包的 SHA-256。
+0.8.2 按系统和芯片分别提供构建。**macOS Apple Silicon 延续正式 App 发行；Intel、Windows、Linux 为新增预览平台。**
+
+| 平台 | 界面形态 | 当前验证边界 |
+|---|---|---|
+| macOS Apple Silicon / arm64 | 内嵌工作台的原生 App，同时提供本地 Web | 原生回归、成品解包 HTTP/MCP 检查；发布前在本机复验升级与内嵌 UI。 |
+| macOS Intel / x86_64 | 独立 Intel 原生 App，同时提供本地 Web | 预览：真 Intel runner 构建与启动已过；未完成完整用户安装与 GUI 验收。 |
+| Windows x64 | 本地可执行服务 + 浏览器工作台 | 预览：原生 CI、锁、PowerShell hook、HTTP/MCP 启动已过；不是 macOS 同款内嵌外壳。可选 CodeGraph 不支持。 |
+| Linux x64 | 本地可执行服务 + 浏览器工作台 | 预览：原生 CI 与成品 HTTP/MCP 启动已过；不是 macOS 同款内嵌外壳。 |
+
+这些结果不代表所有可选受管 CLI 集成已具备跨平台同等覆盖。按系统与架构选择下载包。预览平台尚未完成全部 GUI、原发行件升级和双真实 Agent 验收，详见 [0.8.2 范围说明](docs/RELEASE-082.md)。
+
+### macOS App
+
+1. 从 [0.8.2 发行页](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.2)下载与你芯片相符的 macOS 压缩包和 **`SHA256SUMS`**，核对压缩包的 SHA-256。
 2. 替换 App 前先退出旧版。解压 ZIP，把 **Agent Mailbox.app** 移到“应用程序”，然后打开。
 3. 创建项目，登记已有 Agent，将它们加入项目组。
 4. 为每名成员分别导出项目邮箱 MCP 配置，加载到相应宿主；让它先调用 `project_context`、再检查邮箱，确认接入成功。
@@ -78,21 +95,21 @@ App 自带 Python 运行环境，这条安装路径不需要另装 Python。已�
 
 ## 本地 Web
 
-Web 界面运行在自己的电脑上，不是托管云服务。0.8.1 的发行验证范围为 macOS；其他系统能安装 Python 包，不等于已经通过相同的平台验收。
+Web 界面运行在自己的电脑上，不是托管云服务。请按上表及正式 Release 选择已验收的平台。能安装 Python 包，不等于所有可选集成都已通过对应平台验收。
 
-准备 Python 3.10+，运行：
+macOS / Linux 准备 Python 3.10+，运行：
 
 ```sh
 python3 -m venv ~/.venvs/agent-mailbox
 . ~/.venvs/agent-mailbox/bin/activate
-python -m pip install 'agent-mailbox==0.8.1'
+python -m pip install 'agent-mailbox==0.8.2'
 agent-mailbox --version
 AGENT_MAILBOX_BROWSER=1 agent-mailbox --home ~/.agent-mailbox
 ```
 
 环境变量用于主动打开浏览器。保持终端运行，不要分享带访问凭据的本地 URL；以后启动继续使用相同的 `--home`。如果已有数据使用别的目录，沿用原路径。
 
-上述安装命令在对应包发布到 [PyPI](https://pypi.org/project/agent-mailbox/0.8.1/) 后可用。原生 App 和 Python 包是同一版本的不同发行物。
+上述安装命令在对应包发布到 [PyPI](https://pypi.org/project/agent-mailbox/0.8.2/) 后可用。原生 App 和 Python 包是同一版本的不同发行物。
 
 ## 可选的受管 CLI 执行
 
@@ -112,7 +129,7 @@ AGENT_MAILBOX_BROWSER=1 agent-mailbox --home ~/.agent-mailbox
 
 ## 文档与反馈
 
-[上手指南](docs/GITHUB-QUICKSTART.md) · [安装与升级](docs/BETA-INSTALL.md) · [0.8.1 发行范围](docs/RELEASE-081.md) · [安全说明](SECURITY.md) · [更新记录](CHANGELOG.md)
+[上手指南](docs/GITHUB-QUICKSTART.md) · [安装与升级](docs/BETA-INSTALL.md) · [0.8.2 发行范围](docs/RELEASE-082.md) · [安全说明](SECURITY.md) · [更新记录](CHANGELOG.md)
 
 遇到交接问题，请[提交 Issue](https://github.com/polaris-smart/agent-mailbox/issues)，附上应用版本、操作系统、Agent 宿主和失败步骤。提交日志或截图前，移除凭据、私有项目内容及内部 Agent 配置。
 

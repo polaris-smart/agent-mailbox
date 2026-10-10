@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.2 — 2026-10-10
+
+- Add native CI and extracted-package HTTP/MCP checks for macOS arm64, macOS Intel, Windows x64 and Linux x64 on Python 3.10 and 3.13. Additional platforms are preview support; see [scope and limits](docs/RELEASE-082.md).
+- Fix Windows wake delivery locking, process-exit recovery, private ACLs, PowerShell hooks, binary reads and path handling.
+- Avoid unsupported service removal commands on Linux and unsupported optional CodeGraph execution on Windows.
+- Statically link cryptography OpenSSL in Intel macOS builds to prevent bundled library conflicts.
+- Preserve mailbox-task acceptance, pinned resources and separate Human review. No new agent-host restriction.
+- Align App/Web/package versions at 0.8.2 and refresh bilingual onboarding and the narrated 60-second introduction.
+
 ## 0.8.1 — 2026-10-10
 
 This release targets **macOS Apple Silicon App + local Web on macOS**. Windows and Linux native packages are not included. The project owner confirmed Human acceptance on 2026-10-10. Release artifacts are checked against the tagged source.
