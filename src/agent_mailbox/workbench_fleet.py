@@ -790,6 +790,11 @@ class FleetCoordinator:
             # Hold the condition lock through the first DB claim. notify cannot
             # be lost between observing an empty queue and registering the wait.
             with self.condition:
+                # Revocation may have happened after the route's initial authentication.
+                # Revalidate under the same lock that protects revocation and claiming.
+                device = self._authenticate(headers)
+                self._scope(device, project_id)
+                self._compatible_claim(device)
                 task = self.store.claim_task(device["device_id"], project_ids=[project_id])
                 if task is None and wait and self.server is not None:
                     self.condition.wait(timeout=wait)

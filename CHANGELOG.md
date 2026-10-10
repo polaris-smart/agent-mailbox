@@ -3,6 +3,7 @@
 ## 0.8.2 — 2026-10-10
 
 - Add native CI and extracted-package HTTP/MCP checks for macOS arm64, macOS Intel, Windows x64 and Linux x64 on Python 3.10 and 3.13. Additional platforms are preview support; see [scope and limits](docs/RELEASE-082.md).
+- Revalidate device authorization under the task-claim lock so revocation cannot race the initial claim.
 - Fix Windows wake delivery locking, process-exit recovery, private ACLs, PowerShell hooks, binary reads and path handling.
 - Avoid unsupported service removal commands on Linux and unsupported optional CodeGraph execution on Windows.
 - Statically link cryptography OpenSSL in Intel macOS builds to prevent bundled library conflicts.

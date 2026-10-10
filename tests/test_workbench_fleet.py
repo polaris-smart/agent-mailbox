@@ -262,17 +262,57 @@ def test_permission_rejects_outside_project_and_retired_employee(fleet, tmp_path
     assert owner.get_permission(own["id"], "write")["status"] == "expired"
 
 
-def test_device_revoked_during_blocking_claim_cannot_receive_new_task(fleet, tmp_path):
+def test_device_revoked_during_blocking_claim_cannot_receive_new_task(fleet, tmp_path, monkeypatch):
     owner, project, _, coordinator = fleet
     client = mapped(fleet, tmp_path)
     employee = client.register_employee(project["id"], "Remote", "codex")
+    waiting = threading.Event()
+    original_wait = coordinator.condition.wait
+
+    def entered_wait(*args, **kwargs):
+        waiting.set()
+        return original_wait(*args, **kwargs)
+
+    monkeypatch.setattr(coordinator.condition, "wait", entered_wait)
     with ThreadPoolExecutor() as pool:
         future = pool.submit(client.claim, project["id"], 5)
-        time.sleep(0.1)
-        task = owner.create_task(project["id"], "Next", "Report", employee["id"])
-        coordinator.revoke_device(client.credentials["device_id"])
+        assert waiting.wait(timeout=5)
+        with coordinator.condition:
+            task = owner.create_task(project["id"], "Next", "Report", employee["id"])
+            coordinator.revoke_device(client.credentials["device_id"])
         with pytest.raises(WorkbenchError):
-            future.result(timeout=1)
+            future.result(timeout=5)
+    assert owner.get_task(task["id"])["status"] == "queued"
+
+
+def test_device_revoked_after_authentication_cannot_claim_queued_task(fleet, tmp_path, monkeypatch):
+    owner, project, _, coordinator = fleet
+    client = mapped(fleet, tmp_path)
+    employee = client.register_employee(project["id"], "Remote", "codex")
+    task = owner.create_task(project["id"], "Next", "Report", employee["id"])
+    authenticated = threading.Event()
+    proceed = threading.Event()
+    original_authenticate = coordinator._authenticate
+
+    def pause_after_authentication(headers):
+        device = original_authenticate(headers)
+        if not authenticated.is_set():
+            authenticated.set()
+            assert proceed.wait(timeout=5)
+        return device
+
+    monkeypatch.setattr(coordinator, "_authenticate", pause_after_authentication)
+    with ThreadPoolExecutor() as pool:
+        future = pool.submit(
+            client._request, "POST", "/v1/tasks/claim", {"project_id": project["id"], "wait": 0}
+        )
+        try:
+            assert authenticated.wait(timeout=5)
+            coordinator.revoke_device(client.credentials["device_id"])
+        finally:
+            proceed.set()
+        with pytest.raises(WorkbenchError):
+            future.result(timeout=5)
     assert owner.get_task(task["id"])["status"] == "queued"
 
 

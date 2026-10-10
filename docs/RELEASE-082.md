@@ -21,6 +21,7 @@ macOS downloads are not Developer ID signed or notarized. Do not disable system 
 ## What changed
 
 - Native OS/CPU checks and four separate bundles; Python 3.10/3.13 regression on all four targets.
+- Revalidate device authorization under the task-claim lock so revocation cannot race the initial claim.
 - Windows-safe wake locking, process-exit recovery, protected wake directories, actual PowerShell hook tests, binary reads and path handling.
 - No macOS-only service removal command on Linux. Optional CodeGraph explicitly unsupported on Windows.
 - Intel macOS cryptography builds link OpenSSL statically to avoid conflicting bundled libraries.
