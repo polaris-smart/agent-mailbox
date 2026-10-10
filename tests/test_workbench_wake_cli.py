@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
+from agent_mailbox import workbench_wake as wk
 from agent_mailbox.workbench_wake import PLIST_LABEL, cli_main, load_state
 
 
@@ -16,14 +19,47 @@ def test_status_and_toggle_only_touch_our_own_state(tmp_path):
     assert load_state(tmp_path)["enabled"] is True
 
 
-def test_install_and_uninstall_are_opt_in_and_idempotent(tmp_path):
+def test_install_and_uninstall_are_opt_in_and_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setattr(wk.sys, "platform", "darwin")
+    monkeypatch.setattr(wk.os, "getuid", lambda: 501, raising=False)
+    calls = []
+
+    def bootout(cmd, **kwargs):
+        calls.append(cmd)
+        assert cmd == ["launchctl", "bootout", f"gui/501/{PLIST_LABEL}"]
+        return wk.subprocess.CompletedProcess(cmd, 3, "", "not loaded")
+
+    monkeypatch.setattr(wk.subprocess, "run", bootout)
     agents = tmp_path / "agents"
     assert cli_main(["--install", "--plist-dir", str(agents)], home=tmp_path) == 0
+    assert calls == [], "install must not load a service"
     unit = agents / f"{PLIST_LABEL}.plist"
     assert unit.is_file(), "install must write the launchd unit"
     assert cli_main(["--uninstall", "--plist-dir", str(agents)], home=tmp_path) == 0
     assert not unit.exists(), "uninstall must remove it"
     assert cli_main(["--uninstall", "--plist-dir", str(agents)], home=tmp_path) == 0, "idempotent"
+    assert len(calls) == 2, "macOS must attempt bootout even when the unit is already absent"
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_uninstall_removes_unit_without_launchd_on_other_platforms(
+    tmp_path, monkeypatch, capsys, platform
+):
+    monkeypatch.setattr(wk.sys, "platform", platform)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("non-macOS uninstall must not invoke launchctl or getuid")
+
+    monkeypatch.setattr(wk.subprocess, "run", forbidden)
+    monkeypatch.setattr(wk.os, "getuid", forbidden, raising=False)
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    unit = agents / f"{PLIST_LABEL}.plist"
+    unit.write_text("<plist/>", encoding="utf-8")
+    assert cli_main(["--uninstall", "--plist-dir", str(agents)], home=tmp_path) == 0
+    assert not unit.exists()
+    assert cli_main(["--uninstall", "--plist-dir", str(agents)], home=tmp_path) == 0
+    assert "launchctl" not in capsys.readouterr().out
 
 
 def test_usage_is_printed_when_no_action_is_given(tmp_path, capsys):

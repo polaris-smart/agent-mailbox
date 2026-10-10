@@ -3,23 +3,14 @@
 from __future__ import annotations
 
 import os
-import stat
-import sys
 
 import pytest
 
 from agent_mailbox import workbench_cli_query as cq
 
 
-def _fake_cli(tmp_path, body: str, name: str = "fake"):
-    script = tmp_path / name
-    script.write_text(f"#!{sys.executable}\n{body}\n", encoding="utf-8")
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
-    return script
-
-
-def test_env_override_wins(tmp_path, monkeypatch):
-    script = _fake_cli(tmp_path, "print('{}')")
+def test_env_override_wins(tmp_path, monkeypatch, python_cli):
+    script = python_cli("print('{}')")
     monkeypatch.setenv("AGENT_MAIL_GRAFT_BIN", str(script))
     assert cq.resolve_binary("graft") == str(script)
 
@@ -40,8 +31,8 @@ def test_missing_binary_degrades_not_crashes(tmp_path, monkeypatch):
     assert out["ok"] is False and out["error"]["code"] == "CLI_MISSING"
 
 
-def test_successful_query_carries_provenance(tmp_path, monkeypatch):
-    script = _fake_cli(tmp_path, "import json;print(json.dumps({'files':['a.py']}))")
+def test_successful_query_carries_provenance(tmp_path, monkeypatch, python_cli):
+    script = python_cli("import json;print(json.dumps({'files':['a.py']}))")
     monkeypatch.setenv("AGENT_MAIL_GRAFT_BIN", str(script))
     out = cq.run("graft", ["ask", "who calls X"], cwd=tmp_path)
     assert out["ok"] is True and out["data"] == {"files": ["a.py"]}
@@ -51,8 +42,8 @@ def test_successful_query_carries_provenance(tmp_path, monkeypatch):
     assert "staleness" in prov and prov["staleness"]["index_path"] is None
 
 
-def test_bad_output_and_empty_output_are_coded(tmp_path, monkeypatch):
-    bad = _fake_cli(tmp_path, "print('not json')", name="bad")
+def test_bad_output_and_empty_output_are_coded(tmp_path, monkeypatch, python_cli):
+    bad = python_cli("print('not json')", name="bad")
     monkeypatch.setenv("AGENT_MAIL_CODE_FAKE", "1")
     monkeypatch.setitem(
         cq.PROVIDERS,
@@ -63,7 +54,7 @@ def test_bad_output_and_empty_output_are_coded(tmp_path, monkeypatch):
     out = cq.run("fakebad", [], cwd=tmp_path)
     assert out["ok"] is False and out["error"]["code"] == "CLI_BAD_OUTPUT"
 
-    empty = _fake_cli(tmp_path, "pass", name="empty")
+    empty = python_cli("pass", name="empty")
     monkeypatch.setitem(
         cq.PROVIDERS,
         "fakeempty",
@@ -74,8 +65,8 @@ def test_bad_output_and_empty_output_are_coded(tmp_path, monkeypatch):
     assert out2["ok"] is False and out2["error"]["code"] == "CLI_FAILED"
 
 
-def test_timeout_is_coded(tmp_path, monkeypatch):
-    slow = _fake_cli(tmp_path, "import time;time.sleep(3);print('{}')", name="slow")
+def test_timeout_is_coded(tmp_path, monkeypatch, python_cli):
+    slow = python_cli("import time;time.sleep(3);print('{}')", name="slow")
     monkeypatch.setitem(
         cq.PROVIDERS,
         "fakeslow",

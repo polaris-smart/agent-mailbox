@@ -15,6 +15,8 @@ import contextlib
 import json
 import os
 import subprocess
+import sys
+import threading
 import time
 from collections.abc import Iterable
 from pathlib import Path
@@ -53,14 +55,53 @@ class WakeLockBusy(RuntimeError):
 
 
 _THREAD_LOCKS: dict[str, object] = {}
-_THREAD_LOCKS_GUARD = None
+_THREAD_LOCKS_GUARD = threading.Lock()
+
+
+@contextlib.contextmanager
+def _windows_directory_lock(base: Path, deadline: float):
+    """An exclusive, non-inheritable directory handle is the Windows lock anchor."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel32.CreateFileW
+    create.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create.restype = wintypes.HANDLE
+    close = kernel32.CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    invalid = ctypes.c_void_p(-1).value
+    while True:
+        # GENERIC_READ, no sharing, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS.
+        handle = create(str(base), 0x80000000, 0, None, 3, 0x02000000, None)
+        if handle != invalid:
+            break
+        error = ctypes.get_last_error()
+        if error != 32:  # ERROR_SHARING_VIOLATION is the only retryable contention.
+            raise WakeLockBusy(f"锁目录打不开（Windows error {error}）⇒ 放弃本轮：{base}")
+        if time.monotonic() >= deadline:
+            raise WakeLockBusy("等锁超过 45s ⇒ 放弃本轮（下轮补叫，绝不在锁外重复叫）")
+        time.sleep(0.1)
+    try:
+        yield None
+    finally:
+        close(handle)
 
 
 @contextlib.contextmanager
 def state_lock(home: Path):
     """一轮轮询的**排他锁** ✓（A1：`load->decide->deliver->save` 原是无锁读改写 ✗）。
 
-    **锁锚 = `wake/` 目录自身的 fd** ✗ 不是 `wake.lock` 文件 ✓
+    **锁锚 = `wake/` 目录自身**（POSIX fd / Windows 排他 HANDLE）✗ 不是 `wake.lock` 文件 ✓
     （flow-product 三轮证明：拿文件当锚时，持锁期 `rm wake.lock` ⇒ 另一进程在新 inode 上
      再拿一把锁 ✓ 且"事后比对 inode"**永远通过**（新锁自己 == 自己）✗
      —— flock 的互斥锚在「路径可达的 inode」上，路径被 unlink 后任何事后校验都救不回来 ✓）
@@ -70,21 +111,25 @@ def state_lock(home: Path):
     （绝不在锁外重复叫 ✓）· `threading.Lock` 那层经 flow-product 变异验证为**冗余** ✓
     保留作双保险 ✓ **不算独立防线** ✗
     """
-    import fcntl
-    import threading
-
-    global _THREAD_LOCKS_GUARD
-
     base = state_dir(Path(home))
-    base.mkdir(parents=True, exist_ok=True)
-    if _THREAD_LOCKS_GUARD is None:
-        _THREAD_LOCKS_GUARD = threading.Lock()
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        base = base.resolve()
+    except OSError as exc:
+        raise WakeLockBusy(f"锁目录不可用（{exc}）⇒ 放弃本轮：{base}") from exc
     with _THREAD_LOCKS_GUARD:
-        thread_lock = _THREAD_LOCKS.setdefault(str(base), threading.Lock())
-    thread_lock.acquire()
-    deadline = time.time() + 45.0
+        thread_lock = _THREAD_LOCKS.setdefault(os.path.normcase(str(base)), threading.Lock())
+    deadline = time.monotonic() + 45.0
+    if not thread_lock.acquire(timeout=45.0):
+        raise WakeLockBusy("等线程锁超过 45s ⇒ 放弃本轮")
     dir_fd = None
     try:
+        if sys.platform == "win32":
+            with _windows_directory_lock(base, deadline):
+                yield None
+            return
+        import fcntl
+
         while True:
             try:
                 dir_fd = os.open(base, os.O_RDONLY)
@@ -105,7 +150,7 @@ def state_lock(home: Path):
                 fcntl.flock(dir_fd, fcntl.LOCK_UN)
             os.close(dir_fd)
             dir_fd = None
-            if time.time() >= deadline:
+            if time.monotonic() >= deadline:
                 raise WakeLockBusy("等锁超过 45s ⇒ 放弃本轮 ✓（下轮补叫 ✓ 绝不在锁外重复叫 ✗）")
             time.sleep(0.1)
         yield None
@@ -752,17 +797,17 @@ def cli_main(argv: list[str], *, home: Path, store: Any = None) -> int:
         return 0
     if uninstall:
         # **先 bootout 再删文件** ✗（ux-ia 实测：先删再 unload ⇒ Unload failed 5 ⇒ 任务仍在跑 ✓ 违背"卸载零残留"✓）
-        plist_dir / (PLIST_LABEL + ".plist")
-        boot = subprocess.run(
-            ["launchctl", "bootout", f"gui/{os.getuid()}/{PLIST_LABEL}"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        print(
-            f"已尝试卸载：launchctl bootout gui/{os.getuid()}/{PLIST_LABEL}"
-            f"（返回码 {boot.returncode} ✓ 未加载时非 0 属正常 ✓）"
-        )
+        if sys.platform == "darwin":
+            boot = subprocess.run(
+                ["launchctl", "bootout", f"gui/{os.getuid()}/{PLIST_LABEL}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            print(
+                f"已尝试卸载：launchctl bootout gui/{os.getuid()}/{PLIST_LABEL}"
+                f"（返回码 {boot.returncode} ✓ 未加载时非 0 属正常 ✓）"
+            )
         removed = uninstall_plist(plist_dir)
         print("已删单元 ✓" if removed else "没有单元可删 ✓（幂等 ✓）")
         return 0

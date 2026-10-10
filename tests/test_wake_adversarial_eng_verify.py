@@ -291,17 +291,19 @@ def test_multiprocess_concurrent_wake_once_wakes_exactly_once(tmp_path):
 
     (home / wk.WAKE_DIRNAME).mkdir(parents=True, exist_ok=True)
     log = tmp_path / "hook.log"
-    hook = home / wk.WAKE_DIRNAME / wk.HOOK_FILENAME
-    hook.write_text(
-        f'#!/bin/bash\necho "$(date +%s.%N) $$" >> {log}\nsleep 0.4\n', encoding="utf-8"
+    command = _cli(home, "wake", "--once")
+    command[2] = (
+        "import time; from agent_mailbox import workbench_wake as wk\n"
+        "def deliver(employee_id, decision):\n"
+        f"    with open({str(log)!r}, 'a', encoding='utf-8') as stream:\n"
+        "        stream.write(employee_id + '\\n')\n"
+        "    time.sleep(0.4)\n"
+        "    return True\n"
+        "wk.hook_deliver = lambda home: deliver\n" + command[2]
     )
-    hook.chmod(0o755)
 
     procs = [
-        subprocess.Popen(
-            _cli(home, "wake", "--once"), stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        for _ in range(5)
+        subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(5)
     ]
     outs = [p.communicate()[0].decode() for p in procs]
     assert all(p.returncode == 0 for p in procs), outs
@@ -378,14 +380,23 @@ def test_uninstall_is_idempotent_and_leaves_no_residue(tmp_path):
     plist_dir.mkdir()
     unit = plist_dir / f"{wk.PLIST_LABEL}.plist"
     unit.write_text("<plist/>", encoding="utf-8")
+    command = _cli(tmp_path / "home", "wake", "--uninstall", "--plist-dir", str(plist_dir))
+    # Run the real CLI in its own process, but never boot out the developer's service.
+    command[2] = (
+        "import subprocess; from agent_mailbox import workbench_wake as wk; "
+        "real_run = subprocess.run; "
+        "wk.subprocess.run = lambda cmd, *a, **kw: "
+        "subprocess.CompletedProcess(cmd, 3, '', 'not loaded') "
+        "if cmd[0] == 'launchctl' else real_run(cmd, *a, **kw); " + command[2]
+    )
     first = subprocess.run(
-        _cli(tmp_path / "home", "wake", "--uninstall", "--plist-dir", str(plist_dir)),
+        command,
         capture_output=True,
         text=True,
         check=False,
     )
     second = subprocess.run(
-        _cli(tmp_path / "home", "wake", "--uninstall", "--plist-dir", str(plist_dir)),
+        command,
         capture_output=True,
         text=True,
         check=False,
@@ -397,6 +408,8 @@ def test_uninstall_is_idempotent_and_leaves_no_residue(tmp_path):
 
 def test_uninstall_boots_out_before_deleting_the_file(tmp_path, monkeypatch):
     """`--uninstall` 必须先 `launchctl bootout gui/<uid>/<label>` 再删文件（顺序用调用序验证）。"""
+    monkeypatch.setattr(wk.sys, "platform", "darwin")
+    monkeypatch.setattr(wk.os, "getuid", lambda: 501, raising=False)
     plist_dir = tmp_path / "LaunchAgents"
     plist_dir.mkdir()
     unit = plist_dir / f"{wk.PLIST_LABEL}.plist"
@@ -439,7 +452,7 @@ def test_installed_plist_executable_must_be_absolute_and_exist(tmp_path):
     target = wk.install_plist(plist_dir, tmp_path / "home")  # ← CLI 正是这样调（不传 executable）
     data = plistlib.loads(target.read_bytes())
     executable = data["ProgramArguments"][0]
-    assert executable.startswith("/"), f"不是绝对路径：{executable!r}"
+    assert pathlib.Path(executable).is_absolute(), f"不是绝对路径：{executable!r}"
     assert pathlib.Path(executable).exists(), f"路径不存在：{executable!r}"
 
 

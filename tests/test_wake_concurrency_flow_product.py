@@ -52,8 +52,21 @@ def _ready_store(home: pathlib.Path) -> tuple[WorkbenchStore, dict]:
     return store, {"project": project, "employee": employee}
 
 
-def _cli(home: pathlib.Path) -> list[str]:
-    return [sys.executable, "-m", "agent_mailbox", "wake", "--once", "--home", str(home)]
+def _cli(home: pathlib.Path, log: pathlib.Path | None = None) -> list[str]:
+    code = ""
+    if log is not None:
+        # The real CLI still runs; only the host hook becomes a portable test delivery.
+        code = (
+            "import time; from agent_mailbox import workbench_wake as wk\n"
+            "def deliver(employee_id, decision):\n"
+            f"    with open({str(log)!r}, 'a', encoding='utf-8') as stream:\n"
+            "        stream.write(employee_id + '\\n')\n"
+            "    time.sleep(0.5)\n"
+            "    return True\n"
+            "wk.hook_deliver = lambda home: deliver\n"
+        )
+    code += "from agent_mailbox.cli import main; raise SystemExit(main())"
+    return [sys.executable, "-c", code, "wake", "--once", "--home", str(home)]
 
 
 def _total_wakes(home: pathlib.Path) -> int:
@@ -73,13 +86,8 @@ def test_multiprocess_concurrent_wake_once_wakes_exactly_once(tmp_path):
 
     (home / wk.WAKE_DIRNAME).mkdir(parents=True, exist_ok=True)
     log = tmp_path / "hook.log"
-    hook = home / wk.WAKE_DIRNAME / wk.HOOK_FILENAME
-    # sleep 拉长临界区 ⇒ 没有整轮锁时 5 个进程必然都进来（"无锁即红"）。
-    hook.write_text(f'#!/bin/sh\necho "$1" >> {log}\nsleep 0.5\n', encoding="utf-8")
-    hook.chmod(0o755)
-
     procs = [
-        subprocess.Popen(_cli(home), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        subprocess.Popen(_cli(home, log), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         for _ in range(CONCURRENCY)
     ]
     for proc in procs:
