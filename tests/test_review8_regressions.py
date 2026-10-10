@@ -167,13 +167,14 @@ def test_rv8_6_schema_is_splittable():
     # 逐条执行必须与 executescript 产出**完全一致**的对象集合
     import sqlite3 as _sqlite3
     import tempfile as _tempfile
+    from contextlib import closing
 
     with _tempfile.TemporaryDirectory() as root:
-        one = _sqlite3.connect(f"{root}/one.db")
-        one.executescript(SCHEMA)
-        by_one = {row[0] for row in one.execute("SELECT name FROM sqlite_master")}
-        two = _sqlite3.connect(f"{root}/two.db")
-        for statement in statements:
-            two.execute(statement)
-        by_two = {row[0] for row in two.execute("SELECT name FROM sqlite_master")}
+        with closing(_sqlite3.connect(f"{root}/one.db")) as one:
+            one.executescript(SCHEMA)
+            by_one = {row[0] for row in one.execute("SELECT name FROM sqlite_master")}
+        with closing(_sqlite3.connect(f"{root}/two.db")) as two:
+            for statement in statements:
+                two.execute(statement)
+            by_two = {row[0] for row in two.execute("SELECT name FROM sqlite_master")}
     assert by_one == by_two, "逐条执行与 executescript 不等价 ⇒ 拆分不安全"

@@ -262,7 +262,7 @@ def test_cli_reports_missing_session_file_without_traceback(tmp_path, capsys):
     assert "Traceback" not in err
 
 
-def test_read_only_knowledge_tools_are_actually_callable(tmp_path, monkeypatch):
+def test_read_only_knowledge_tools_are_actually_callable(tmp_path, monkeypatch, python_cli):
     """行为测试（缺它才让"双面挂载"假绿 ✗）：5 个只读诊断必须**真能调到**且返回 ok ✓。
 
     历史 bug：只读分支与后面的 if/elif 链是**两条独立语句** ✗ ⇒ 算完 result 继续落到最后
@@ -272,9 +272,7 @@ def test_read_only_knowledge_tools_are_actually_callable(tmp_path, monkeypatch):
     """
     import json
     import pathlib
-    import stat
     import subprocess
-    import sys
 
     from agent_mailbox import workbench_enroll as enroll_mod
     from agent_mailbox import workbench_mail_sessions as ms
@@ -286,14 +284,8 @@ def test_read_only_knowledge_tools_are_actually_callable(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "-q"], cwd=repo, check=False)
     project = store.create_project("P", repo)
 
-    graft = tmp_path / "graft"
-    graft.write_text(
-        f'#!{sys.executable}\nprint(\'{{"references": ["a.py"]}}\')\n', encoding="utf-8"
-    )
-    graft.chmod(graft.stat().st_mode | stat.S_IEXEC)
-    aoci = tmp_path / "aoci"
-    aoci.write_text(f"#!{sys.executable}\nprint('AOCI Doctor')\n", encoding="utf-8")
-    aoci.chmod(aoci.stat().st_mode | stat.S_IEXEC)
+    graft = python_cli('print(\'{"references": ["a.py"]}\')', name="graft")
+    aoci = python_cli("print('AOCI Doctor')", name="aoci")
     monkeypatch.setenv("AGENT_MAIL_GRAFT_BIN", str(graft))
     monkeypatch.setenv("AGENT_MAIL_AOCI_BIN", str(aoci))
 

@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import os
-import stat
 import subprocess
-import sys
 import time
+from pathlib import Path
 
 from agent_mailbox import workbench_aoci as a
 from agent_mailbox import workbench_cli_query as cq
@@ -54,7 +53,7 @@ def test_finds_standard_locations(tmp_path):
     assert cq.default_index_path("codegraph", root).name == "codegraph.db"
 
 
-def test_aoci_wrapper_now_reports_staleness(tmp_path, monkeypatch):
+def test_aoci_wrapper_now_reports_staleness(tmp_path, monkeypatch, python_cli):
     """集成：接上默认索引路径后，provenance 的陈旧门**不再恒 None** ✓。"""
     repo = _repo(tmp_path)
     index = repo / ".aoci" / "baseline.json"
@@ -62,13 +61,11 @@ def test_aoci_wrapper_now_reports_staleness(tmp_path, monkeypatch):
     index.write_text("{}")
     old = time.time() - 3 * 86400
     os.utime(index, (old, old))  # 索引比 HEAD 旧 3 天 ✓
-    fake = tmp_path / "aoci"
-    fake.write_text(f"#!{sys.executable}\nprint('AOCI Doctor')\n", encoding="utf-8")
-    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    fake = python_cli("print('AOCI Doctor')", name="aoci")
     monkeypatch.setenv("AGENT_MAIL_AOCI_BIN", str(fake))
 
     out = a.aoci_doctor(repo)
     staleness = out["provenance"]["staleness"]
     assert staleness["index_path"] is not None, "陈旧门必须有源路径 ✗"
-    assert staleness["index_path"].endswith(".aoci/baseline.json")
+    assert Path(staleness["index_path"]) == index
     assert isinstance(staleness["stale_days"], (int, float)) and staleness["stale_days"] >= 2.5

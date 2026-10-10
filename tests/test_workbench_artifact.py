@@ -9,6 +9,25 @@ from agent_mailbox import workbench_proof as wp
 from agent_mailbox.workbench_store import WorkbenchStore
 
 
+def test_fd_reads_keep_crlf_and_ctrl_z_bytes(tmp_path):
+    import hashlib
+    import os
+
+    path = tmp_path / "report.bin"
+    payload = "第一行\r\n第二行".encode() + b"\x1aafter-control-z\r\n"
+    path.write_bytes(payload)
+    opened = wa._open_regular(str(path))
+    assert isinstance(opened, tuple), opened
+    fd, size = opened
+    try:
+        assert size == len(payload)
+        assert wa._hash_fd(fd) == hashlib.sha256(payload).hexdigest()
+        assert wa._read_window(fd, 0, size) == payload
+        assert wa._read_window(fd, 5, 7) == payload[5:12]
+    finally:
+        os.close(fd)
+
+
 @pytest.fixture
 def scene(tmp_path):
     store = WorkbenchStore(tmp_path / "data")

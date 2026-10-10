@@ -6,6 +6,8 @@ import importlib.util
 import pathlib
 import sys
 
+from agent_mailbox import __version__
+
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "build-workbench.py"
 
 
@@ -22,7 +24,7 @@ def test_default_output_lives_in_the_dev_area(tmp_path):
     module = _module()
     out = module.default_output_dir(tmp_path)
     assert out == tmp_path / ".agent-mailbox-dev" / "build" / module.app_version(), out
-    assert out.name == "0.8.1", "版本作子目录 ✓（不写进活库名 ✗）"
+    assert out.name == __version__, "版本作子目录 ✓（不写进活库名 ✗）"
 
 
 def test_purge_intermediates_keeps_dist(tmp_path):

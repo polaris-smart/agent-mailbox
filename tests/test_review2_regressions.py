@@ -119,13 +119,15 @@ def test_rv2_5_python_m_exit_code_parity(tmp_path, scene):
     home = str(store.root)
     bad = ["policy", "--home", home, "--set", "peer_review=不是选项"]
     script = subprocess.run([*CLI, *bad], capture_output=True, text=True, check=False)
+    import os
+
     module = subprocess.run(
         [sys.executable, "-m", "agent_mailbox", *bad],
         capture_output=True,
         text=True,
         check=False,
         cwd=str(REPO),
-        env={"PYTHONPATH": str(REPO / "src"), "PATH": "/usr/bin:/bin"},
+        env={**os.environ, "PYTHONPATH": str(REPO / "src")},
     )
     assert script.returncode == module.returncode == 2, (script.returncode, module.returncode)
 
@@ -154,7 +156,9 @@ def test_rv2_6_project_message_requires_a_recipient(scene):
         ),
         encoding="utf-8",
     )
-    session_file.chmod(0o600)
+    from agent_mailbox.workbench_private import private_mode
+
+    private_mode(session_file, 0o600)
     server = mailbox_mcp.build_server(session_file)
     tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
     schema = tools["project_message"].input_schema or tools["project_message"].inputSchema

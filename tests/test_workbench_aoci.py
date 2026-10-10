@@ -2,21 +2,15 @@
 
 from __future__ import annotations
 
-import stat
-import sys
-
 from agent_mailbox import workbench_aoci as a
 
 
-def _fake_aoci(tmp_path, body: str = "AOCI Doctor —— 环境与接入诊断\n[✓] 仓库根定位\n"):
-    script = tmp_path / "aoci"
-    script.write_text(f"#!{sys.executable}\nprint({body!r})\n", encoding="utf-8")
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
-    return script
+def _fake_aoci(python_cli, body: str = "AOCI Doctor —— 环境与接入诊断\n[✓] 仓库根定位\n"):
+    return python_cli(f"print({body!r})", name="aoci")
 
 
-def test_doctor_returns_text_and_marks_unstructured(tmp_path, monkeypatch):
-    script = _fake_aoci(tmp_path)
+def test_doctor_returns_text_and_marks_unstructured(tmp_path, monkeypatch, python_cli):
+    script = _fake_aoci(python_cli)
     monkeypatch.setenv("AGENT_MAIL_AOCI_BIN", str(script))
     out = a.aoci_doctor(_repo(tmp_path))
     assert out["ok"] is True
@@ -25,8 +19,8 @@ def test_doctor_returns_text_and_marks_unstructured(tmp_path, monkeypatch):
     assert out["provenance"]["provider"] == "aoci" and "staleness" in out["provenance"]
 
 
-def test_status_and_check_share_the_same_shape(tmp_path, monkeypatch):
-    script = _fake_aoci(tmp_path, "条目 0 · 基线 .aoci/baseline.json\n")
+def test_status_and_check_share_the_same_shape(tmp_path, monkeypatch, python_cli):
+    script = _fake_aoci(python_cli, "条目 0 · 基线 .aoci/baseline.json\n")
     monkeypatch.setenv("AGENT_MAIL_AOCI_BIN", str(script))
     for fn in (a.aoci_status, a.aoci_check):
         out = fn(_repo(tmp_path))
@@ -61,13 +55,13 @@ def test_non_repo_path_is_refused_with_structured_error(tmp_path):
     assert ".git" in out["error"]["message"]
 
 
-def test_repo_path_passes_the_guard(tmp_path, monkeypatch):
+def test_repo_path_passes_the_guard(tmp_path, monkeypatch, python_cli):
     import subprocess
 
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=False)
-    monkeypatch.setenv("AGENT_MAIL_AOCI_BIN", str(_fake_aoci(tmp_path)))
+    monkeypatch.setenv("AGENT_MAIL_AOCI_BIN", str(_fake_aoci(python_cli)))
     out = a.aoci_status(repo)
     assert out["ok"] is True and out["structured"] is False
 

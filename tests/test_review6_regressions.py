@@ -144,6 +144,7 @@ def test_rv6_5_json_keys_reports_that_offset_is_ignored(scene):
     assert zero["offset_ignored"] is False
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX filesystem FIFO is unavailable")
 def test_rv6_6_fifo_candidate_does_not_hang(scene, tmp_path):
     """RV6-高：路径在取窗口前变成 FIFO 会永久挂起（O_NONBLOCK + fstat 复核后不会）。"""
     store, project, alice, _root = scene

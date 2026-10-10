@@ -197,7 +197,12 @@ def enroll(
             ),
         )
     session_path = store.root / SESSION_DIR / f"{session['id']}.json"
+    from .workbench_private import private_mode
+
     session_path.parent.mkdir(parents=True, exist_ok=True)
+    private_mode(session_path.parent, 0o700)
+    session_path.touch(exist_ok=True)
+    private_mode(session_path, 0o600)
     session_path.write_text(
         json.dumps(
             {
@@ -212,7 +217,6 @@ def enroll(
         ),
         encoding="utf-8",
     )
-    session_path.chmod(0o600)
     binary = binary or default_binary()
     return {
         "employee": {"id": employee["id"], "name": employee["name"], "kind": kind},

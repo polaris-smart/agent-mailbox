@@ -98,7 +98,9 @@ def test_enrol_is_idempotent_and_issues_a_private_session(scene, tmp_path):
     from pathlib import Path
 
     path = Path(first["session_file"])
-    assert path.exists() and (path.stat().st_mode & 0o777) == 0o600
+    from agent_mailbox.workbench_private import private_access
+
+    assert path.exists() and private_access(path, 0o600)
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["employee_id"] == first["employee"]["id"]
     assert payload["project_id"] == project["id"] and payload["token"]

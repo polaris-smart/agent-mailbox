@@ -2,25 +2,17 @@
 
 from __future__ import annotations
 
-import stat
-import sys
-
 import pytest
 
 from agent_mailbox import workbench_graft as g
 
 
-def _fake_graft(tmp_path, payload: dict):
-    script = tmp_path / "graft"
-    script.write_text(
-        f"#!{sys.executable}\nimport json,sys\nprint(json.dumps({payload!r}))\n", encoding="utf-8"
-    )
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
-    return script
+def _fake_graft(python_cli, payload: dict):
+    return python_cli(f"import json\nprint(json.dumps({payload!r}))", name="graft")
 
 
-def test_ask_normalizes_and_carries_provenance(tmp_path, monkeypatch):
-    script = _fake_graft(tmp_path, {"references": [{"file": "a.py", "line": 3}]})
+def test_ask_normalizes_and_carries_provenance(tmp_path, monkeypatch, python_cli):
+    script = _fake_graft(python_cli, {"references": [{"file": "a.py", "line": 3}]})
     monkeypatch.setenv("AGENT_MAIL_GRAFT_BIN", str(script))
     out = g.graft_ask(_repo(tmp_path), "谁调用 _dispatch_guard")
     assert out["ok"] is True
@@ -30,8 +22,8 @@ def test_ask_normalizes_and_carries_provenance(tmp_path, monkeypatch):
     assert "staleness" in out["provenance"]
 
 
-def test_callers_passes_symbol_through(tmp_path, monkeypatch):
-    script = _fake_graft(tmp_path, {"files": ["x.py"]})
+def test_callers_passes_symbol_through(tmp_path, monkeypatch, python_cli):
+    script = _fake_graft(python_cli, {"files": ["x.py"]})
     monkeypatch.setenv("AGENT_MAIL_GRAFT_BIN", str(script))
     out = g.graft_callers(_repo(tmp_path), "create_task")
     assert (
@@ -62,17 +54,15 @@ def test_write_operations_are_not_exposed():
     assert '"build"' not in source and "'build'" not in source
 
 
-def test_non_repo_path_is_refused_before_calling_the_cli(tmp_path, monkeypatch):
+def test_non_repo_path_is_refused_before_calling_the_cli(tmp_path, monkeypatch, python_cli):
     """路径约束：非仓库路径**不调 CLI**，直接拒绝。"""
     from agent_mailbox import workbench_cli_query as cq
 
     called = tmp_path / "called.marker"
-    script = tmp_path / "graft"
-    script.write_text(
-        f"#!{sys.executable}\nimport pathlib\npathlib.Path({str(called)!r}).touch()\nprint('{{}}')\n",
-        encoding="utf-8",
+    script = python_cli(
+        f"import pathlib\npathlib.Path({str(called)!r}).touch()\nprint('{{}}')\n",
+        name="graft",
     )
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("AGENT_MAIL_GRAFT_BIN", str(script))
     plain = tmp_path / "plain"
     plain.mkdir()
@@ -81,13 +71,13 @@ def test_non_repo_path_is_refused_before_calling_the_cli(tmp_path, monkeypatch):
     assert not called.exists()
 
 
-def test_repo_path_passes_the_guard(tmp_path, monkeypatch):
+def test_repo_path_passes_the_guard(tmp_path, monkeypatch, python_cli):
     import subprocess
 
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=False)
-    script = _fake_graft(tmp_path, {"references": ["ok.py"]})
+    script = _fake_graft(python_cli, {"references": ["ok.py"]})
     monkeypatch.setenv("AGENT_MAIL_GRAFT_BIN", str(script))
     out = g.graft_callers(repo, "symbol")
     assert out["ok"] is True and out["references"] == ["ok.py"]

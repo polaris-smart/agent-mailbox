@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import stat
 from types import SimpleNamespace
+
+import pytest
 
 from agent_mailbox.workbench_wake import (
     PLIST_LABEL,
@@ -22,20 +23,49 @@ def test_marker_is_written_even_without_a_hook(tmp_path):
     assert "m1" in markers[0].read_text(encoding="utf-8")
 
 
-def test_host_hook_runs_and_its_failure_is_reported(tmp_path):
+@pytest.mark.parametrize("denied", ["claims", "wake-outbox", "marker"])
+def test_private_delivery_paths_fail_closed_before_payload(
+    tmp_path, wake_hook, monkeypatch, denied
+):
+    from agent_mailbox import workbench_wake as wk
+
+    wake_hook(tmp_path)
+    calls = []
+    original = wk.private_mode
+
+    def protect(path, mode):
+        if path.name == denied or (denied == "marker" and path.suffix == ".json"):
+            raise PermissionError("test ACL denial")
+        original(path, mode)
+
+    monkeypatch.setattr(wk, "private_mode", protect)
+    deliver = wk.hook_deliver(tmp_path, runner=lambda *a, **k: calls.append(a))
+    assert deliver("e1", {"reason": "new_mail", "fresh": ["m1"]}) is False
+    assert calls == []
+    assert not (tmp_path / "wake" / "claims" / "m1").exists()
+    for marker in (tmp_path / "wake" / "wake-outbox").glob("*.json"):
+        assert marker.read_bytes() == b"", "no payload before the private ACL is established"
+
+
+def test_delivery_subdirectories_are_individually_private(tmp_path):
+    from agent_mailbox.workbench_private import private_access
+
+    assert hook_deliver(tmp_path)("e1", {"fresh": ["m1"]}) is False
+    for name in ("claims", "wake-outbox"):
+        assert private_access(tmp_path / "wake" / name, 0o700)
+
+
+def test_host_hook_runs_and_its_failure_is_reported(tmp_path, wake_hook):
     calls = []
 
     def ok(args, **_kwargs):
         calls.append(args)
         return SimpleNamespace(returncode=0)
 
-    hook = tmp_path / "wake" / "wake-hook.sh"
-    hook.parent.mkdir(parents=True, exist_ok=True)
-    hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    hook.chmod(hook.stat().st_mode | stat.S_IEXEC)
+    wake_hook(tmp_path)
     deliver = hook_deliver(tmp_path, runner=ok)
     assert deliver("e1", {"reason": "new_mail", "fresh": ["m1"], "unread": 1}) is True
-    assert calls and calls[0][1] == "e1", "the hook must receive the employee id"
+    assert calls and calls[0][-2] == "e1", "the hook must receive the employee id"
 
     def bad(args, **_kwargs):
         return SimpleNamespace(returncode=1)
@@ -61,19 +91,15 @@ def test_plist_install_and_uninstall(tmp_path):
     assert PLIST_LABEL in plist_text(tmp_path)
 
 
-def test_failed_hook_releases_the_claim_so_next_round_retries(tmp_path):
+def test_failed_hook_releases_the_claim_so_next_round_retries(tmp_path, wake_hook):
     """变异判据 ✓（flow-product 建议 ✓）：hook **失败** ⇒ 释放认领 ⇒ **下一轮必须再调** ✓。
 
     这正是它 slipped 的原因 ✗：全 `tests/` 当时没有任何用例覆盖"失败后下轮补叫" ✓
     （原来失败不释放 ⇒ 下一轮把"有 claim 无 .ok"当成"别人已叫过" ⇒ `return True`
      ⇒ **没投递却推进水位线** ⇒ 这封信**永久被吞** ✗ 还被记成"已叫" ✓）
     """
-    import os
 
-    hook = tmp_path / "wake" / "wake-hook.sh"
-    hook.parent.mkdir(parents=True, exist_ok=True)
-    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
-    os.chmod(hook, 0o755)
+    wake_hook(tmp_path, returncode=1)
     calls: list[int] = []
 
     def runner(_cmd, **_kw):
@@ -101,14 +127,10 @@ def test_claims_path_as_file_abandons_the_round_without_traceback(tmp_path):
     assert deliver("e1", {"reason": "new_mail", "unread": 1, "fresh": ["m1"]}) is False
 
 
-def test_same_fresh_twice_delivers_once(tmp_path):
+def test_same_fresh_twice_delivers_once(tmp_path, wake_hook):
     """同 `fresh` 连投两次 ⇒ **只留一个标记** ✓ 且第二次不调 hook ✓（幂等 ✓ flow-product 建议 ✓）。"""
-    import os
 
-    hook = tmp_path / "wake" / "wake-hook.sh"
-    hook.parent.mkdir(parents=True, exist_ok=True)
-    hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    os.chmod(hook, 0o755)
+    wake_hook(tmp_path)
     calls: list[int] = []
 
     def runner(_cmd, **_kw):
@@ -137,7 +159,7 @@ def test_no_hook_records_pending_and_never_claims_delivered(tmp_path):
     assert (claims / "m1.pending").exists(), "必须留下**待办**标记 ✓"
 
 
-def test_stale_claim_without_receipt_is_unknown_not_retried(tmp_path):
+def test_stale_claim_without_receipt_is_unknown_not_retried(tmp_path, wake_hook):
     """AM-02 contract change: an expired lease with NO receipt must never be retried.
 
     This test used to assert re-delivery; Codex showed that retrying an unknown
@@ -151,9 +173,7 @@ def test_stale_claim_without_receipt_is_unknown_not_retried(tmp_path):
 
     claims = tmp_path / "wake" / "claims"
     claims.mkdir(parents=True)
-    hook = tmp_path / "wake" / "wake-hook.sh"
-    hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    os.chmod(hook, 0o755)
+    wake_hook(tmp_path)
     claim = claims / "m2"
     claim.write_text("", encoding="utf-8")
     os.utime(claim, (time.time() - WAKE_LEASE_SECONDS - 10,) * 2)
@@ -166,16 +186,13 @@ def test_stale_claim_without_receipt_is_unknown_not_retried(tmp_path):
     assert (claims / "m2.unknown").is_file(), "应标 .unknown ✓"
 
 
-def test_fresh_claim_yields_to_the_other_round(tmp_path):
+def test_fresh_claim_yields_to_the_other_round(tmp_path, wake_hook):
     """租约**内**的认领 ⇒ 让路 ✓（不抢别人的活 ✓ 避免重复启动工作 ✗）。"""
-    import os
 
     claims = tmp_path / "wake" / "claims"
     claims.mkdir(parents=True)
     (claims / "m3").write_text("", encoding="utf-8")
-    hook = tmp_path / "wake" / "wake-hook.sh"
-    hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    os.chmod(hook, 0o755)
+    wake_hook(tmp_path)
     calls: list[int] = []
     deliver = hook_deliver(
         tmp_path, runner=lambda _c, **_k: (calls.append(1), type("D", (), {"returncode": 0})())[1]
@@ -184,14 +201,13 @@ def test_fresh_claim_yields_to_the_other_round(tmp_path):
     assert calls == [], "不得重复启动工作 ✗"
 
 
-def test_pending_is_redelivered_once_a_hook_appears(tmp_path):
+def test_pending_is_redelivered_once_a_hook_appears(tmp_path, wake_hook):
     """AM-01 recovery (Codex repro): no hook at first, then a hook appears.
 
     The watermark was already advanced for that letter, so `fresh` is empty on the
     second round -- recovery must NOT depend on `fresh`, or the notification is lost
     forever. Acceptance: host called exactly once, then never again.
     """
-    import os
 
     from agent_mailbox.workbench_wake import hook_deliver
 
@@ -207,9 +223,7 @@ def test_pending_is_redelivered_once_a_hook_appears(tmp_path):
     assert pending.is_file(), "未接通必须留待办 ✓"
     assert pending.read_text(encoding="utf-8").strip() == "employee_demo", "待办必须记下归属员工 ✓"
 
-    hook = tmp_path / "wake" / "wake-hook.sh"
-    hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    os.chmod(hook, 0o755)
+    wake_hook(tmp_path)
     calls: list[int] = []
     deliver_with_hook = hook_deliver(
         tmp_path, runner=lambda _c, **_k: (calls.append(1), type("D", (), {"returncode": 0})())[1]
@@ -227,7 +241,7 @@ def test_pending_is_redelivered_once_a_hook_appears(tmp_path):
     assert calls == [], "同一封信不得重复补投 ✓"
 
 
-def test_unknown_delivery_is_not_retried(tmp_path):
+def test_unknown_delivery_is_not_retried(tmp_path, wake_hook):
     """AM-02 regression (Codex repro): a crashed receipt must not cause a second effect.
 
     Codex measured TWO simulated external effects: the host had received the wake but
@@ -242,9 +256,7 @@ def test_unknown_delivery_is_not_retried(tmp_path):
 
     claims = tmp_path / "wake" / "claims"
     claims.mkdir(parents=True)
-    hook = tmp_path / "wake" / "wake-hook.sh"
-    hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    os.chmod(hook, 0o755)
+    wake_hook(tmp_path)
     claim = claims / "m-delta"
     claim.write_text("", encoding="utf-8")
     (claims / "m-delta.pending").write_text("employee_demo", encoding="utf-8")
@@ -260,14 +272,10 @@ def test_unknown_delivery_is_not_retried(tmp_path):
     assert not (claims / "m-delta.ok").exists(), "未知交付不得记已交付 ✗"
 
 
-def test_hook_receives_a_delivery_id(tmp_path):
+def test_hook_receives_a_delivery_id(tmp_path, wake_hook):
     """The host must receive a delivery id so it can write a receipt (AM-02 protocol)."""
-    import os
 
-    hook = tmp_path / "wake" / "wake-hook.sh"
-    hook.parent.mkdir(parents=True, exist_ok=True)
-    hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    os.chmod(hook, 0o755)
+    wake_hook(tmp_path)
     seen: list[list[str]] = []
     deliver = hook_deliver(
         tmp_path, runner=lambda c, **_k: (seen.append(c), type("D", (), {"returncode": 0})())[1]
@@ -275,11 +283,13 @@ def test_hook_receives_a_delivery_id(tmp_path):
     assert (
         deliver("employee_demo", {"reason": "new_mail", "unread": 1, "fresh": ["m-zeta"]}) is True
     )
-    assert seen and len(seen[0]) == 3, f"必须传 投递 id 作为第三个参数 ✓（实测 {seen}）"
-    assert seen[0][2].startswith("wake-employee_demo-"), "投递 id 应能对上 outbox 标记 ✓"
+    assert seen and seen[0][-2] == "employee_demo", (
+        f"必须传 投递 id 作为第三个参数 ✓（实测 {seen}）"
+    )
+    assert seen[0][-1].startswith("wake-employee_demo-"), "投递 id 应能对上 outbox 标记 ✓"
 
 
-def test_receipt_written_by_delivery_id_confirms_delivery(tmp_path):
+def test_receipt_written_by_delivery_id_confirms_delivery(tmp_path, wake_hook):
     """Codex gap 1: the host writes the receipt under the id it RECEIVED (the delivery id).
 
     I looked it up by message id, so a real receipt was never found and the delivery was
@@ -291,13 +301,10 @@ def test_receipt_written_by_delivery_id_confirms_delivery(tmp_path):
 
     from agent_mailbox.workbench_wake import WAKE_LEASE_SECONDS
 
-    hook = tmp_path / "wake" / "wake-hook.sh"
-    hook.parent.mkdir(parents=True, exist_ok=True)
-    hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    os.chmod(hook, 0o755)
+    wake_hook(tmp_path)
     seen: list[str] = []
     hook_deliver(
-        tmp_path, runner=lambda c, **_k: (seen.append(c[2]), type("D", (), {"returncode": 0})())[1]
+        tmp_path, runner=lambda c, **_k: (seen.append(c[-1]), type("D", (), {"returncode": 0})())[1]
     )("e1", {"reason": "new_mail", "unread": 1, "fresh": ["m-r"]})
     (tmp_path / "wake" / "receipts").mkdir()
     (tmp_path / "wake" / "receipts" / seen[0]).write_text("ok", encoding="utf-8")
@@ -315,18 +322,14 @@ def test_receipt_written_by_delivery_id_confirms_delivery(tmp_path):
     assert (claims / "m-r.ok").is_file(), "确认已交付 ⇒ 必须写 .ok ✓"
 
 
-def test_unknown_is_terminal_even_when_letter_is_fresh(tmp_path):
+def test_unknown_is_terminal_even_when_letter_is_fresh(tmp_path, wake_hook):
     """Codex gap 2: the unknown letter may still be `fresh`; the round must not count as a wake.
 
     blocked_unknown is computed BEFORE the loop, otherwise `if not claimed: return True`
     reports a wake that never happened (status said "叫过 1 次" while nothing was called).
     """
-    import os
 
-    hook = tmp_path / "wake" / "wake-hook.sh"
-    hook.parent.mkdir(parents=True, exist_ok=True)
-    hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    os.chmod(hook, 0o755)
+    wake_hook(tmp_path)
     deliver = hook_deliver(tmp_path, runner=lambda _c, **_k: type("D", (), {"returncode": 0})())
     assert deliver("e1", {"reason": "new_mail", "unread": 1, "fresh": ["m-x"]}) is True
     (tmp_path / "wake" / "claims" / "m-x").replace(tmp_path / "wake" / "claims" / "m-x.unknown")

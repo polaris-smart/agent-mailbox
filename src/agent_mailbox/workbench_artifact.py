@@ -164,7 +164,7 @@ def _open_regular(path: str) -> tuple[int, int] | str:
     import stat as _stat
 
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
     except OSError as exc:
         return f"unreadable:{type(exc).__name__}"
     try:

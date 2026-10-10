@@ -34,14 +34,12 @@ def project(tmp_path):
 
 
 @pytest.fixture
-def cli(tmp_path, monkeypatch):
-    path = tmp_path / "fake-codegraph"
+def cli(tmp_path, monkeypatch, python_cli):
     log = tmp_path / "calls.jsonl"
 
     def install(body=""):
-        path.write_text(
-            f"#!{sys.executable}\n"
-            + f"""
+        path = python_cli(
+            f"""
 import json, os, pathlib, sys, time
 args = sys.argv[1:]
 with open({str(log)!r}, 'a') as out:
@@ -59,9 +57,9 @@ assert not (root / 'src').exists()
 assert not (root / '.git').exists()
 print(json.dumps([{{'node': {{'name': 'Example', 'kind': 'class', 'filePath': 'src/example.py', 'startLine': 1,
                               'signature': 'secret literal must not return'}}}}]))
-"""
+""",
+            name="fake-codegraph",
         )
-        path.chmod(0o700)
         monkeypatch.setenv("AGENT_MAIL_CODEGRAPH_BIN", str(path))
         return path, log
 

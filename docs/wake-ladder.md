@@ -33,3 +33,26 @@ agent-mailbox brief --employee <employee_id> --project <project_id> --budget 120
 - **有预算**：`render()` 先给截断提示留位置再截内容（否则"截断后反而超预算"）；
 - **去噪**：只给计数与前几条标题，不给消息流水；且会把
   **被折叠/被抑制**的信号顶上来（**安静不等于无事**）。
+
+## 可选宿主叫醒 hook
+
+`wake --once` 只在宿主明确接入后交付叫醒请求。macOS/Linux 继续读取
+`<store home>/wake/wake-hook.sh`，要求文件可执行；Windows 读取同一目录的
+`wake-hook.ps1`，使用 Windows 系统目录中的 WindowsPowerShell，以
+`-NoProfile -NonInteractive -File` 启动。两种 hook 都收到两个独立字符串参数：
+员工 ID 和投递 ID。投递 ID 对应 `wake-outbox/<投递 ID>.json`，不把消息正文拼入命令。
+hook 与 outbox 始终钉在 store home；`--state-dir` 不改变宿主入口。
+
+Windows 遵守机器现有执行策略，不传 ExecutionPolicy 覆盖参数、不修改系统策略。
+在 Restricted 策略下，PS1 会被拒绝；AllSigned 要求受信任的签名，RemoteSigned
+仍可能拒绝带互联网来源标记的未签名脚本。被拒绝或返回非零都不计成功叫醒、不写
+`.ok`；缺脚本或解释器则保留待办。[微软执行策略说明](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_execution_policies?view=powershell-5.1)
+
+PS1 宿主 hook 应先声明参数并设置 `$ErrorActionPreference = 'Stop'`，只有实际宿主接口
+确认接收请求后才 `exit 0`。若调用原生宿主程序，检查并传播 `$LASTEXITCODE`；出错时
+返回非零。PowerShell 非终止错误可能不影响退出码，不能只打印错误后正常结束。
+退出码 0 只表示 hook 报告宿主已接收，不能证明员工已开始处理或人类已接受结果。
+[微软 PowerShell 启动与退出码说明](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_powershell_exe?view=powershell-5.1)
+
+`wake --install` 仅在 macOS 写 launchd 单元，仍需用户显式加载。Linux/Windows
+返回不支持且不创建 plist；`--once` 可由宿主已有调度器调用，此处不安装其它系统服务。

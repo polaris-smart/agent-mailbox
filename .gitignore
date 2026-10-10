@@ -47,3 +47,7 @@ src/agent_mailbox/workbench_assets/build-info.json
 
 # Also ignore local virtualenv symlinks.
 /.venv
+
+# Release-specific npm pins are generated from verified final artifacts.
+/npm/agent-mailbox/releases.json
+/npm/agent-mailbox/*.tgz

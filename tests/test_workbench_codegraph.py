@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import stat
 import subprocess
-import sys
 
 from agent_mailbox import workbench_codegraph as cg
 
@@ -16,36 +14,33 @@ def _repo(base):
     return d
 
 
-def _fake_codegraph(tmp_path, marker: str, body: str = "indexed 42 files"):
-    script = tmp_path / "codegraph"
-    script.write_text(
-        f"#!{sys.executable}\nimport pathlib\npathlib.Path({marker!r}).touch()\nprint({body!r})\n",
-        encoding="utf-8",
+def _fake_codegraph(python_cli, marker: str, body: str = "indexed 42 files"):
+    return python_cli(
+        f"import pathlib\npathlib.Path({marker!r}).touch()\nprint({body!r})\n",
+        name="codegraph",
     )
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
-    return script
 
 
-def test_unconfirmed_write_never_calls_the_cli(tmp_path, monkeypatch):
+def test_unconfirmed_write_never_calls_the_cli(tmp_path, monkeypatch, python_cli):
     marker = tmp_path / "called.marker"
-    monkeypatch.setenv("AGENT_MAIL_CODEGRAPH_BIN", str(_fake_codegraph(tmp_path, str(marker))))
+    monkeypatch.setenv("AGENT_MAIL_CODEGRAPH_BIN", str(_fake_codegraph(python_cli, str(marker))))
     out = cg.reindex(_repo(tmp_path), confirmed=False)
     assert out["ok"] is False and out["error"]["code"] == "CONFIRM_REQUIRED"
     assert not marker.exists(), "未确认的写操作不得真的去调 CLI ✗"
 
 
-def test_confirmed_write_runs_and_reports(tmp_path, monkeypatch):
+def test_confirmed_write_runs_and_reports(tmp_path, monkeypatch, python_cli):
     marker = tmp_path / "called.marker"
-    monkeypatch.setenv("AGENT_MAIL_CODEGRAPH_BIN", str(_fake_codegraph(tmp_path, str(marker))))
+    monkeypatch.setenv("AGENT_MAIL_CODEGRAPH_BIN", str(_fake_codegraph(python_cli, str(marker))))
     out = cg.reindex(_repo(tmp_path), confirmed=True)
     assert out["ok"] is True and marker.exists()
     assert "indexed" in (out["text"] or "")
     assert out["provenance"]["provider"] == "codegraph"
 
 
-def test_non_repo_path_is_refused_even_when_confirmed(tmp_path, monkeypatch):
+def test_non_repo_path_is_refused_even_when_confirmed(tmp_path, monkeypatch, python_cli):
     marker = tmp_path / "called.marker"
-    monkeypatch.setenv("AGENT_MAIL_CODEGRAPH_BIN", str(_fake_codegraph(tmp_path, str(marker))))
+    monkeypatch.setenv("AGENT_MAIL_CODEGRAPH_BIN", str(_fake_codegraph(python_cli, str(marker))))
     plain = tmp_path / "plain"
     plain.mkdir()
     out = cg.reindex(plain, confirmed=True)

@@ -7,6 +7,7 @@ Each case below locks one finding.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import subprocess
 import sys
@@ -243,6 +244,7 @@ def test_rv3_7_candidate_fallback_skips_unusable_candidates(scene, tmp_path, mon
     assert any(item["reason"] == "too_large" for item in result["skipped"]), result["skipped"]
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX filesystem FIFO is unavailable")
 def test_rv3_8_fifo_artifact_does_not_hang(tmp_path):
     """RV3-低6：把具名管道当产出物记录会让 artifact_ref 永久挂死。"""
     import os
