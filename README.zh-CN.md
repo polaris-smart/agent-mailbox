@@ -9,7 +9,7 @@
 
 [English](README.md) · [下载与平台范围](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.2) · [本地 Web](#本地-web) · [上手指南](docs/GITHUB-QUICKSTART.md)
 
-[![观看介绍短片](docs/media/v082/cover.png)](https://polaris-smart.github.io/agent-mailbox/#demo)
+<a href="https://polaris-smart.github.io/agent-mailbox/#demo"><img src="https://raw.githubusercontent.com/polaris-smart/agent-mailbox/v0.8.2/docs/media/v082/cover.png" alt="观看介绍短片" width="280"></a>
 
 [观看 60 秒竖版功能讲解（中文讲解、字幕，合成演示数据）](https://polaris-smart.github.io/agent-mailbox/#demo)
 
@@ -109,7 +109,7 @@ AGENT_MAILBOX_BROWSER=1 agent-mailbox --home ~/.agent-mailbox
 
 环境变量用于主动打开浏览器。保持终端运行，不要分享带访问凭据的本地 URL；以后启动继续使用相同的 `--home`。如果已有数据使用别的目录，沿用原路径。
 
-上述安装命令在对应包发布到 [PyPI](https://pypi.org/project/agent-mailbox/0.8.2/) 后可用。原生 App 和 Python 包是同一版本的不同发行物。
+Python 包通过 [PyPI](https://pypi.org/project/agent-mailbox/0.8.2/) 分发。原生 App 和 Python 包是同一版本的不同发行物。
 
 ## 可选的受管 CLI 执行
 

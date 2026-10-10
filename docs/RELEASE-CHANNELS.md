@@ -1,6 +1,6 @@
 # agent-mailbox 统一发行渠道与发布门槛
 
-> **2026-10-10 当前范围更新：** 0.8.1 目标为 macOS Apple Silicon App + macOS 本地 Web；版本正在本地对齐，尚未公开发布。Windows/Linux 原生包不随本次发行，独立 npm 插件不因工作台改版而自动改号。当前准备与门禁见 [0.8.1 说明](RELEASE-081.md)。以下 0.8.0 / Beta 内容为历史记录，不能作为本次多平台通过证据。
+> **2026-10-10 当前范围：** 0.8.2 延续 macOS Apple Silicon App 与本地 Web，新增 Intel/Windows/Linux 预览包。GitHub 与 PyPI 使用工作台版本 0.8.2；独立 npm 插件不自动改号，新 scoped 工作台启动器以实际 npm 发布为准。当前范围、验证与局限见 [0.8.2 说明](RELEASE-082.md)。以下 0.8.0 / Beta 内容为历史记录，不代表当前版本号或本次验收。
 
 2026-10-01。Human 已决定：**v0.8 统一替代 v0.7；各平台、各发行渠道保持同一产品版本，发布前逐项测试通过。** 产品、仓库、Python 包与 CLI 均保持 `agent-mailbox`，不另设 workbench 发行名。正式版目标范围为 **GitHub + PyPI 工作台，以及独立 npm 配套插件**。
 

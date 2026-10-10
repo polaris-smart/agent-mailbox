@@ -9,7 +9,7 @@ Working across DeepSeek Harness, Workbuddy, Doubao, ZCode, Claude Code or Codex?
 
 [中文](README.zh-CN.md) · [Downloads and platform scope](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.2) · [Local Web](#local-web) · [Quick start](docs/GITHUB-QUICKSTART.md)
 
-[![Watch the introduction](docs/media/v082/cover.png)](https://polaris-smart.github.io/agent-mailbox/#demo)
+<a href="https://polaris-smart.github.io/agent-mailbox/#demo"><img src="https://raw.githubusercontent.com/polaris-smart/agent-mailbox/v0.8.2/docs/media/v082/cover.png" alt="Watch the introduction" width="280"></a>
 
 [Watch the 60-second portrait introduction (Mandarin narration and captions; synthetic demo data)](https://polaris-smart.github.io/agent-mailbox/#demo)
 
