@@ -204,20 +204,32 @@ def test_unread_provider_must_not_silently_drop_backlog(tmp_path):
     store.claim_task(store.local_node()["id"])
     store.set_status(task["id"], "running")
     total = 230
-    for i in range(total):
-        store.send_message(
-            project["id"],
-            f"信 {i}",
-            "正文",
-            recipient_id=employee["id"],
-            sender_id=employee["id"],
-            source_task_id=task["id"],
+    message = store.send_message(
+        project["id"],
+        "积压信",
+        "正文",
+        recipient_id=employee["id"],
+        sender_id=employee["id"],
+        source_task_id=task["id"],
+    )
+    # One validated message supplies the real row shape. Seed the pagination
+    # fixture in one transaction, avoiding 230 independent fsync/ACL cycles.
+    extra_ids = [f"message_backlog_{i}" for i in range(total - 1)]
+    with store._transaction() as db:
+        db.executemany(
+            "INSERT INTO messages "
+            "(id,project_id,title,body,sender_id,recipient_id,thread_id,request_work,"
+            "source_task_id,request_digest,created_at) "
+            "SELECT ?,project_id,title,body,sender_id,recipient_id,?,request_work,"
+            "source_task_id,request_digest,created_at FROM messages WHERE id=?",
+            [(message_id, message_id, message["id"]) for message_id in extra_ids],
         )
 
     ids = wk.unread_ids_for_employee(store, employee["id"])
     assert len(ids) == total, (
         f"积压 {total} 封但 provider 只给了 {len(ids)} 封（LIMIT 静默截断 ⇒ 水位线漏掉最早的一批）"
     )
+    assert set(ids) == {message["id"], *extra_ids}, "跨页查询必须恰好返回每封信，不能重复或漏信"
 
 
 # ── 第五轮补测（task-8 对抗面）：A1 并发 · 锁健壮性 · 卸载 · plist 绝对路径 · worktree ──

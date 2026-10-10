@@ -100,3 +100,21 @@ skips before the final directory-permission hardening. The added permission
 denial tests are targeted checks; the next full four-platform workflow must
 validate the resulting commit. No Windows or Intel fix is declared accepted
 solely from these local results.
+
+## Second expanded run
+
+[Run 38016075780](https://github.com/polaris-smart/agent-mailbox/actions/runs/38016075780)
+checks branch head `f1d4961`, using GitHub's merge-test commit `2a17b47` (parents
+`9cf139f` and `f1d4961`). All four extracted-package checks passed, including
+Intel startup with static OpenSSL. Both Linux and all four macOS regressions
+passed, as did Windows Python 3.13. Windows Python 3.10 hit the unchanged
+30-second per-test limit while creating 230 separate database transactions for
+a pagination fixture. That fixture now batches its synthetic rows in one real
+transaction and asserts the exact set of all 230 returned message IDs.
+
+Two older migration checks also depended on a developer's real home and were
+skipped on CI. They now create only synthetic projects, tasks, active/revoked
+keys and wake watermarks, exercise the schema migration branch, and check data
+preservation, key validity/revocation and future-schema refusal. They never read
+a real home. These checks still do not substitute for an original released-app
+upgrade test. A final workflow will verify the test-only changes.
