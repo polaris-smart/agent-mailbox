@@ -86,7 +86,7 @@ def build_info(store) -> dict:
     info["home"] = str(store.root)
     # **AM-06 运行来源（三事实 ✓ Codex 口径）** ✗：`build-info.json` **只说明构建来源** ✓
     # 绝不单独拿它决定"运行形态" ✗（它进了源码树后，"文件存在"就没有区分力了 ✓）
-    code_path = str(pathlib.Path(__file__).resolve())
+    code_path = pathlib.Path(__file__).resolve().as_posix()
     info["runtime"] = {
         "executable": sys.executable,
         "argv": list(sys.argv),

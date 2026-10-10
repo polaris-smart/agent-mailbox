@@ -22,6 +22,8 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from .workbench_private import private_mode
+
 DEFAULT_COOLDOWN_SECONDS = 900  # 同员工 15 分钟内不重复叫 ✓
 MAX_WAKES_PER_HOUR = 4  # 每小时最多 1 次 ✓（老板要"立刻"✗ 但不要"风暴"✗）
 STATE_FILENAME = "wake-state.json"
@@ -189,15 +191,14 @@ def save_state(home: Path, state: dict[str, Any]) -> None:
     """写状态 ✓ 并**盖指纹** ✓（`--disable` 这类合法改动也被正确签名 ✓ 与篡改区分 ✓）。"""
     path = state_dir(home) / STATE_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
+    private_mode(path.parent, 0o700)
+    path.touch(exist_ok=True)
+    private_mode(path, 0o600)
     payload = {k: v for k, v in state.items() if k != "checksum"}
     payload["checksum"] = _checksum(payload)
     path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=1, sort_keys=True), encoding="utf-8"
     )
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
 
 
 def _entry(state: dict[str, Any], employee_id: str) -> dict[str, Any]:
@@ -377,14 +378,12 @@ def _run_once_locked(
         # **AM-01 入口层修复** ✗（Codex：外层"没有新信"就直接跳过 ⇒ 进不到内层补投 ✓）
         # 水位线已推进 ⇒ decide 认为无新信 ✓ ⇒ 但**有本员工的未接通待办且 hook 可执行**时，
         # 必须把补投当作**本轮要投递** ✓（否则"接通后补发"永远走不到 ✓）
-        _hook = state_dir(Path(home)) / HOOK_FILENAME
         _recover = _pending_for(Path(home), employee_id)
         if (
             decision is None
             and _recover
             and _gates_allow(state, employee_id, now)  # **闸门复用** ✓ 不再绕 ✗
-            and _hook.is_file()
-            and os.access(_hook, os.X_OK)
+            and hook_command(home) is not None
         ):
             decision = dict(decision or {})  # decide 返回 None（无新信）也要能补投 ✓
             decision.update({"wake": True, "reason": "recover_pending", "fresh": _recover})
@@ -408,6 +407,46 @@ def _run_once_locked(
 
 
 HOOK_FILENAME = "wake-hook.sh"
+WINDOWS_HOOK_FILENAME = "wake-hook.ps1"
+
+
+def _windows_powershell() -> str | None:
+    """Resolve WindowsPowerShell from the OS system directory, never PATH or CWD."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    system_directory = kernel32.GetSystemDirectoryW
+    system_directory.argtypes = [wintypes.LPWSTR, wintypes.UINT]
+    system_directory.restype = wintypes.UINT
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = system_directory(buffer, len(buffer))
+    if not length or length >= len(buffer):
+        return None
+    binary = Path(buffer.value) / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    return str(binary) if binary.is_absolute() and binary.is_file() else None
+
+
+def hook_command(home: Path) -> list[str] | None:
+    """Resolve the host hook; availability never promises execution-policy approval."""
+    base = state_dir(Path(home))
+    try:
+        if sys.platform == "win32":
+            hook = base / WINDOWS_HOOK_FILENAME
+            if not hook.is_file():
+                return None
+            powershell = _windows_powershell()
+            if powershell is None:
+                return None
+            return [powershell, "-NoProfile", "-NonInteractive", "-File", str(hook.resolve())]
+        hook = base / HOOK_FILENAME
+        if hook.is_file() and os.access(hook, os.X_OK):
+            return [str(hook)]
+    except OSError:
+        return None
+    return None
+
+
 RECEIPT_DIRNAME = "receipts"  # 宿主回执目录 ✓（AM-02：证明"上次真的执行了" ✓）
 OUTBOX_DIRNAME = "wake-outbox"
 PLIST_LABEL = "com.polaris-smart.agent-mailbox-wake"
@@ -549,11 +588,14 @@ def hook_deliver(home: Path, *, runner: Any = None, timeout: int = 30) -> Any:
         claims = base / "claims"
         try:
             claims.mkdir(parents=True, exist_ok=True)
+            private_mode(base, 0o700)
+            private_mode(claims, 0o700)
         except OSError as exc:
             print(f"⚠ 认领目录不可用（{exc}）⇒ 放弃本轮 ✓ 水位线不动 ✓ 下轮补叫 ✓：{claims}")
             return False
-        hook = base / HOOK_FILENAME
-        hook_ready = bool(hook.is_file() and hook.stat().st_mode & 0o111)  # 先算 ✓ 后面复用 ✓
+        command = hook_command(home)
+        hook = base / (WINDOWS_HOOK_FILENAME if sys.platform == "win32" else HOOK_FILENAME)
+        hook_ready = command is not None
         claimed: list[Path] = []
         # **AM-02 三轮** ✗：`.unknown` 是终态；它可能**不在本轮 work 里**（被 _pending_for 排除 ✓）
         # ⇒ 必须**循环之前**就算出"本员工有未知交付" ✓ 否则会 return True ⇒ 被记成"叫过"✗
@@ -623,27 +665,31 @@ def hook_deliver(home: Path, *, runner: Any = None, timeout: int = 30) -> Any:
                 not blocked_unknown and not blocked_pending
             )  # 全是待办/未知 ⇒ **没叫** ✗ 不记"叫过" ✓
         outbox = base / OUTBOX_DIRNAME
-        outbox.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%dT%H%M%S")
         marker = outbox / f"wake-{employee_id}-{stamp}-{time.time_ns() % 1000000:06d}.json"
-        marker.write_text(
-            _json.dumps(
-                {
-                    "employee_id": employee_id,
-                    "reason": decision.get("reason"),
-                    "unread": decision.get("unread"),
-                    "fresh": [path.name for path in claimed],
-                    "at": stamp,
-                },
-                ensure_ascii=False,
-                indent=1,
-            ),
-            encoding="utf-8",
-        )
         try:
-            marker.chmod(0o600)  # 与 state 一致 ✓（eng-verify C2：原来 0644 ✗）
+            outbox.mkdir(parents=True, exist_ok=True)
+            private_mode(outbox, 0o700)
+            marker.touch(exist_ok=False)
+            private_mode(marker, 0o600)
+            marker.write_text(
+                _json.dumps(
+                    {
+                        "employee_id": employee_id,
+                        "reason": decision.get("reason"),
+                        "unread": decision.get("unread"),
+                        "fresh": [path.name for path in claimed],
+                        "at": stamp,
+                    },
+                    ensure_ascii=False,
+                    indent=1,
+                ),
+                encoding="utf-8",
+            )
         except OSError:
-            pass
+            for path in claimed:
+                _release_claim(path)
+            return False
         if not hook_ready:
             # Recording pending mail is not a host delivery. The caller may
             # advance its seen watermark only for successfully persisted pending IDs.
@@ -655,11 +701,10 @@ def hook_deliver(home: Path, *, runner: Any = None, timeout: int = 30) -> Any:
         run = runner or _subprocess.run
         try:
             done = run(
-                [str(hook), employee_id, marker.stem],
+                [*command, employee_id, marker.stem],
                 capture_output=True,
-                text=True,
                 timeout=timeout,
-            )  # 第 3 参=投递 id ✓
+            )  # 最后一参=投递 id ✓（hook 的第二个数据参数）
         except _subprocess.TimeoutExpired:
             print(f"⚠ hook 超时（{timeout}s）：{hook} ⇒ 本轮**不推进水位线** ✓ 下轮会补叫 ✓")
             print("  若持续出现 ⇒ 检查该 hook 是否卡住 ✓（原则：宁可补叫 ✓ 不可漏叫 ✓）")
@@ -675,7 +720,9 @@ def hook_deliver(home: Path, *, runner: Any = None, timeout: int = 30) -> Any:
             for path in claimed:
                 _release_claim(path)
             return False
-        if getattr(done, "returncode", 1) != 0:
+        returncode = getattr(done, "returncode", 1)
+        if returncode != 0:
+            print(f"⚠ 宿主 hook 返回非 0（{returncode}）：{hook} ⇒ 未确认接收，本轮未交付")
             for path in claimed:  # 非 0 ⇒ 未交付 ⇒ 释放 ✓ 下轮补叫 ✓
                 _release_claim(path)
             return False
@@ -791,6 +838,9 @@ def cli_main(argv: list[str], *, home: Path, store: Any = None) -> int:
         print("唤醒已" + ("开启 ✓" if state["enabled"] else "关闭 ✓（判定只读 ✓ 信不会丢 ✓）"))
         return 0
     if install:
+        if sys.platform != "darwin":
+            print("launchd 安装仅支持 macOS；本平台未创建单元文件")
+            return 2
         target = install_plist(plist_dir, home)
         print(f"已写单元：{target} ✓")
         print("未自动加载 ✗ —— 需要你显式执行：launchctl load -w " + str(target))

@@ -42,6 +42,18 @@ def test_install_and_uninstall_are_opt_in_and_idempotent(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_install_rejects_non_macos_without_creating_a_plist(
+    tmp_path, monkeypatch, capsys, platform
+):
+    monkeypatch.setattr(wk.sys, "platform", platform)
+    agents = tmp_path / "agents"
+    assert cli_main(["--install", "--plist-dir", str(agents)], home=tmp_path) == 2
+    assert not agents.exists()
+    assert not (tmp_path / "wake").exists()
+    assert "macOS" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
 def test_uninstall_removes_unit_without_launchd_on_other_platforms(
     tmp_path, monkeypatch, capsys, platform
 ):

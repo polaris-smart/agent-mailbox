@@ -46,3 +46,57 @@ real project messages are part of these checks.
 
 Version numbers and release materials will be synchronized when candidate scope
 and artifacts are frozen. This change does not publish a new version.
+
+## First expanded run
+
+[Run 38014683187](https://github.com/polaris-smart/agent-mailbox/actions/runs/38014683187)
+checks commit `4c35131`. A frozen local macOS arm64 run passed 927 tests with four
+skipped. Windows, Linux and macOS arm64 extracted-package checks passed before
+the full matrix completed; this is package smoke evidence, not GUI acceptance.
+
+Linux's full regression exposed the frontend syntax gate passing the entire
+JavaScript bundle as one `node --eval` argument. That exceeds the Linux
+per-argument limit (`E2BIG`) and can exceed Windows command-line limits. The
+gate now sends source through stdin to `node --input-type=module --check`, checks
+the exit status, and has explicit extra-parenthesis/unescaped-quote rejection
+cases. It parses as a module without executing DOM operations.
+
+The completed first run had four successful macOS regression jobs, three
+successful package jobs, two Linux regression failures caused by the command
+size limit, two Windows regression failures (39 failed assertions in each), and
+one Intel package startup failure. Windows' seven new lock tests passed on both
+Python versions. Its failures included POSIX-only fixtures and actual runtime
+assumptions: text-mode file descriptors changed artifact bytes, session and wake
+files used chmod instead of native private ACLs, and source-mode path detection
+assumed forward slashes. These are addressed without weakening ACL checks or
+removing delivery assertions. Two filesystem FIFO cases explicitly require
+POSIX; they cannot be created with os.mkfifo on Windows.
+
+Windows Python 3.10 took 589 seconds for the first complete run, near the former
+600-second process cap. The process cap is now 900 seconds, with the individual
+30-second test timeout unchanged and a 20-minute job cap.
+
+The Intel package mixed a dynamically linked cryptography extension with
+incompatible bundled OpenSSL libraries (`_SSL_get0_group_name` was missing).
+Intel CI rebuilds cryptography with static OpenSSL using the
+[upstream build procedure](https://cryptography.io/en/50.0.2/installation/#building-cryptography-on-macos),
+without downgrading it. The public builder rejects dynamic OpenSSL dependencies
+in the extension before and after packaging. Upstream cryptography dropped
+macOS x86_64 support in
+[49.0.0](https://cryptography.io/en/50.0.2/changelog/#v49-0-0);
+this is a project-maintained source-build validation path, not an upstream
+supported Intel wheel. Native package startup still has to pass after this fix.
+
+Windows hooks now use a fixed `wake-hook.ps1` with the system PowerShell path,
+separate arguments, and the machine's existing execution policy. Tests execute
+real PowerShell on Windows and cover success, failure, Unicode paths and binary
+output. An exit-zero hook receipt is not task completion or Human acceptance.
+Wake claims/outbox directories receive their own private ACLs, including when
+they already exist; state, session and marker files are protected before writing
+payloads. Permission failures prevent hook execution and release owned claims.
+
+The second-round local macOS arm64 suite passed 939 tests with six platform
+skips before the final directory-permission hardening. The added permission
+denial tests are targeted checks; the next full four-platform workflow must
+validate the resulting commit. No Windows or Intel fix is declared accepted
+solely from these local results.

@@ -64,7 +64,12 @@ def _enroll(ctx: dict) -> str:
     store, project, employee = ctx["store"], ctx["project"], ctx["employee"]
     session = create_session(store, employee["id"], project["id"], "自检会话")
     session_file = store.root / "workbench/mail-sessions" / f"{session['id']}.json"
+    from .workbench_private import private_access, private_mode
+
     session_file.parent.mkdir(parents=True, exist_ok=True)
+    private_mode(session_file.parent, 0o700)
+    session_file.touch(exist_ok=True)
+    private_mode(session_file, 0o600)
     session_file.write_text(
         json.dumps(
             {
@@ -78,11 +83,9 @@ def _enroll(ctx: dict) -> str:
         ),
         encoding="utf-8",
     )
-    session_file.chmod(0o600)
     ctx["token"] = session["token"]
-    mode = session_file.stat().st_mode & 0o777
-    assert mode == 0o600, f"会话文件权限应为 600，实际 {oct(mode)}"
-    return f"会话 {session['id'][:18]}… · 文件权限 600"
+    assert private_access(session_file, 0o600), "会话文件必须使用平台私有访问权限"
+    return f"会话 {session['id'][:18]}… · 私有文件权限已验证"
 
 
 @step("派单（mailbox 任务）")

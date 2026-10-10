@@ -7,7 +7,7 @@ from agent_mailbox.workbench_wake import run_once
 STEP = 901
 
 
-def test_pending_mail_is_seen_without_counting_a_wake_then_recovers_once(tmp_path):
+def test_pending_mail_is_seen_without_counting_a_wake_then_recovers_once(tmp_path, wake_hook):
     from types import SimpleNamespace
 
     from agent_mailbox.workbench_wake import hook_deliver, load_state
@@ -35,9 +35,7 @@ def test_pending_mail_is_seen_without_counting_a_wake_then_recovers_once(tmp_pat
     assert not (tmp_path / "wake/claims/new-mail.ok").exists()
     assert poll(1001)["woke"] == []
     assert len(list((tmp_path / "wake/wake-outbox").glob("*.json"))) == 1
-    hook = tmp_path / "wake/wake-hook.sh"
-    hook.write_text("#!/bin/sh\nexit 0\n")
-    hook.chmod(0o700)
+    wake_hook(tmp_path)
     assert poll(1002)["woke"] == ["e1"]
     assert poll(1003 + STEP)["woke"] == []
     assert calls == [1]
@@ -45,15 +43,12 @@ def test_pending_mail_is_seen_without_counting_a_wake_then_recovers_once(tmp_pat
     assert not (tmp_path / "wake/claims/new-mail.pending").exists()
 
 
-def test_failed_host_does_not_mark_new_mail_seen_or_count_a_wake(tmp_path):
+def test_failed_host_does_not_mark_new_mail_seen_or_count_a_wake(tmp_path, wake_hook):
     from types import SimpleNamespace
 
     from agent_mailbox.workbench_wake import hook_deliver, load_state
 
-    hook = tmp_path / "wake/wake-hook.sh"
-    hook.parent.mkdir()
-    hook.write_text("#!/bin/sh\nexit 1\n")
-    hook.chmod(0o700)
+    wake_hook(tmp_path, returncode=1)
     calls = []
     deliver = hook_deliver(
         tmp_path, runner=lambda *_a, **_k: calls.append(1) or SimpleNamespace(returncode=1)
@@ -73,7 +68,7 @@ def test_failed_host_does_not_mark_new_mail_seen_or_count_a_wake(tmp_path):
     assert calls == [1, 1]
 
 
-def test_recovery_keeps_new_mail_and_receipt_names_all_delivered_ids(tmp_path):
+def test_recovery_keeps_new_mail_and_receipt_names_all_delivered_ids(tmp_path, wake_hook):
     import json
     from types import SimpleNamespace
 
@@ -83,7 +78,7 @@ def test_recovery_keeps_new_mail_and_receipt_names_all_delivered_ids(tmp_path):
     payloads = []
 
     def host(command, **_):
-        marker = tmp_path / "wake/wake-outbox" / (command[2] + ".json")
+        marker = tmp_path / "wake/wake-outbox" / (command[-1] + ".json")
         payloads.append(json.loads(marker.read_text()))
         return SimpleNamespace(returncode=0)
 
@@ -99,9 +94,7 @@ def test_recovery_keeps_new_mail_and_receipt_names_all_delivered_ids(tmp_path):
         )
 
     assert poll(1000)["woke"] == []
-    hook = tmp_path / "wake/wake-hook.sh"
-    hook.write_text("#!/bin/sh\nexit 0\n")
-    hook.chmod(0o700)
+    wake_hook(tmp_path)
     inbox.append("new-mail")
     assert poll(1001)["woke"] == ["e1"]
     assert set(payloads[0]["fresh"]) == set(inbox)
@@ -299,14 +292,13 @@ def test_empty_state_first_round_zeroes_before_waking(tmp_path):
     assert result["cold"] is True, "首启这一轮本身就是冷启动 ✓"
 
 
-def test_entry_point_redelivers_pending(tmp_path):
+def test_entry_point_redelivers_pending(tmp_path, wake_hook):
     """AM-01 at the ENTRY level (Codex: my unit test bypassed the real entry point).
 
     Real polling asks `decide()` first; with the watermark already advanced it returns
     None ("no new mail"), so the round was skipped and the new recovery code never ran.
     Acceptance: provider returns NOTHING, yet the host is still called once.
     """
-    import os
 
     from agent_mailbox.workbench_wake import hook_deliver, load_state, save_state
 
@@ -321,9 +313,7 @@ def test_entry_point_redelivers_pending(tmp_path):
     state.setdefault("employees", {}).setdefault(employee, {"seen": ["m-one"], "wakes": []})
     state["cold_done"] = True
     save_state(home, state)
-    hook = home / "wake" / "wake-hook.sh"
-    hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    os.chmod(hook, 0o755)
+    wake_hook(home)
 
     calls: list[int] = []
     result = run_once(
@@ -341,7 +331,7 @@ def test_entry_point_redelivers_pending(tmp_path):
     assert len(calls) == 1, f"接通后必须补投 1 次 ✓（Codex 实测 0 次 ✗，实测 {len(calls)}）"
 
 
-def test_entry_point_does_not_retry_unknown_delivery(tmp_path):
+def test_entry_point_does_not_retry_unknown_delivery(tmp_path, wake_hook):
     """AM-02 at the entry level: a stale claim without a receipt must not re-invoke the host."""
     import os
     import time
@@ -351,9 +341,7 @@ def test_entry_point_does_not_retry_unknown_delivery(tmp_path):
     home = tmp_path / "home"
     claims = home / "wake" / "claims"
     claims.mkdir(parents=True)
-    hook = home / "wake" / "wake-hook.sh"
-    hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    os.chmod(hook, 0o755)
+    wake_hook(home)
     claim = claims / "m-stale"
     claim.write_text("", encoding="utf-8")
     (claims / "m-stale.pending").write_text("employee_demo", encoding="utf-8")
@@ -374,8 +362,7 @@ def test_entry_point_does_not_retry_unknown_delivery(tmp_path):
     assert (claims / "m-stale.unknown").is_file(), "入口层也必须标 .unknown ✓"
 
 
-def _scene(tmp_path, *, disabled=False, cooldown=False):
-    import os
+def _scene(tmp_path, wake_hook, *, disabled=False, cooldown=False):
     import time
 
     from agent_mailbox.workbench_wake import hook_deliver, load_state, save_state
@@ -395,9 +382,7 @@ def _scene(tmp_path, *, disabled=False, cooldown=False):
     if cooldown:
         state["employees"][employee]["wakes"] = [time.time() - 10]
     save_state(home, state)
-    hook = home / "wake" / "wake-hook.sh"
-    hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    os.chmod(hook, 0o755)
+    wake_hook(home)
     return home, employee
 
 
@@ -418,17 +403,17 @@ def _run(home, employee):
     return len(calls)
 
 
-def test_recovery_respects_gates(tmp_path):
+def test_recovery_respects_gates(tmp_path, wake_hook):
     """Codex boundary: recovery must NOT bypass disable, cooldown or the hourly cap."""
-    home, employee = _scene(tmp_path / "disabled", disabled=True)
+    home, employee = _scene(tmp_path / "disabled", wake_hook, disabled=True)
     assert _run(home, employee) == 0, "唤醒已关闭时补投也不得叫 ✗"
-    home, employee = _scene(tmp_path / "cooldown", cooldown=True)
+    home, employee = _scene(tmp_path / "cooldown", wake_hook, cooldown=True)
     assert _run(home, employee) == 0, "冷却中补投也不得叫 ✗"
-    home, employee = _scene(tmp_path / "clear")
+    home, employee = _scene(tmp_path / "clear", wake_hook)
     assert _run(home, employee) == 1, "闸门允许时补投仍应生效 ✓"
 
 
-def test_unknown_is_terminal(tmp_path):
+def test_unknown_is_terminal(tmp_path, wake_hook):
     """Codex boundary: .unknown must block EVERY later round, not just the first."""
     import os
     import time
@@ -438,9 +423,7 @@ def test_unknown_is_terminal(tmp_path):
     home = tmp_path / "home"
     claims = home / "wake" / "claims"
     claims.mkdir(parents=True)
-    hook = home / "wake" / "wake-hook.sh"
-    hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    os.chmod(hook, 0o755)
+    wake_hook(home)
     claim = claims / "m-unknown"
     claim.write_text("", encoding="utf-8")
     (claims / "m-unknown.pending").write_text("employee_demo", encoding="utf-8")

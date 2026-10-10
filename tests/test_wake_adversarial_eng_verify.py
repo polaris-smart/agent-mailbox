@@ -149,12 +149,10 @@ def test_forged_state_disable_must_be_detected(tmp_path):
 # ── ③ 权限 / 越界 ────────────────────────────────────────────────────────
 
 
-def test_hook_must_be_pinned_to_store_home(tmp_path):
+def test_hook_must_be_pinned_to_store_home(tmp_path, wake_hook):
     store_home = tmp_path / "store"
     evil = tmp_path / "evil"
-    (evil / wk.WAKE_DIRNAME).mkdir(parents=True)
-    (evil / wk.WAKE_DIRNAME / wk.HOOK_FILENAME).write_text("#!/bin/bash\ntrue\n", encoding="utf-8")
-    (evil / wk.WAKE_DIRNAME / wk.HOOK_FILENAME).chmod(0o755)
+    hook = wake_hook(evil)
 
     calls: list[list[str]] = []
 
@@ -169,7 +167,7 @@ def test_hook_must_be_pinned_to_store_home(tmp_path):
     deliver("e1", {"reason": "new_mail", "unread": 1, "fresh": ["m1"]})
 
     assert calls == [], "hook 不得从 --state-dir 指向的目录加载（应钉死 store home）"
-    assert not (store_home / wk.WAKE_DIRNAME / wk.HOOK_FILENAME).exists()
+    assert not (store_home / wk.WAKE_DIRNAME / hook.name).exists()
 
 
 def test_outbox_marker_is_unique_and_private(tmp_path):
@@ -186,7 +184,9 @@ def test_outbox_marker_is_unique_and_private(tmp_path):
     markers = sorted(outbox.iterdir())
     assert len(markers) == 2, f"同秒两次投递只留了 {len(markers)} 个标记（会吞审计）"
     for marker in markers:
-        assert (marker.stat().st_mode & 0o777) == 0o600, "标记含 employee_id/fresh，必须 0600"
+        from agent_mailbox.workbench_private import private_access
+
+        assert private_access(marker, 0o600), "标记含 employee_id/fresh，必须使用平台私有权限"
 
 
 # ── ① 风暴 ──────────────────────────────────────────────────────────────

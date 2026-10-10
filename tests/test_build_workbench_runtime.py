@@ -112,3 +112,35 @@ def test_desktop_shell_guard_is_skipped_off_macos(monkeypatch):
 
     monkeypatch.setattr(module.importlib, "import_module", always_fail)
     module.require_desktop_shell()  # 非 darwin 不要求 pyobjc
+
+
+@pytest.mark.parametrize("library", ["@rpath/libssl.3.dylib", "/opt/openssl/lib/libcrypto.3.dylib"])
+def test_macos_crypto_guard_rejects_dynamic_openssl(monkeypatch, tmp_path, library):
+    from types import SimpleNamespace
+
+    module = _module()
+    monkeypatch.setattr(module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_a, **_k: SimpleNamespace(
+            stdout=f"_rust.abi3.so:\n\t{library} (compatibility version 3.0.0)\n"
+        ),
+    )
+    with pytest.raises(RuntimeError, match="OPENSSL_STATIC=1"):
+        module.require_static_macos_crypto(tmp_path / "_rust.abi3.so")
+
+
+def test_macos_crypto_guard_accepts_static_extension_system_dependencies(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    module = _module()
+    monkeypatch.setattr(module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_a, **_k: SimpleNamespace(
+            stdout="_rust.abi3.so:\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)\n"
+        ),
+    )
+    module.require_static_macos_crypto(tmp_path / "_rust.abi3.so")

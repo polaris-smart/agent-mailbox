@@ -11,7 +11,7 @@ permissions:
 jobs:
   test:
     runs-on: ${{ matrix.target.runner }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: utf-8
@@ -53,11 +53,11 @@ jobs:
           log = pathlib.Path(os.environ["RUNNER_TEMP"]) / "pytest.log"
           try:
               with log.open("wb") as target:
-                  result = subprocess.run([sys.executable, "-m", "pytest", "-o", "addopts=--timeout=30", "-vv", "--tb=short"], stdout=target, stderr=subprocess.STDOUT, timeout=600)
+                  result = subprocess.run([sys.executable, "-m", "pytest", "-o", "addopts=--timeout=30", "-vv", "--tb=short"], stdout=target, stderr=subprocess.STDOUT, timeout=900)
               code = result.returncode
           except subprocess.TimeoutExpired:
               code = 124
-              print("Regression process exceeded the 10-minute hard deadline.")
+              print("Regression process exceeded the 15-minute hard deadline.")
           print(log.read_text(encoding="utf-8", errors="replace"))
           sys.exit(code)
           PYTHON
@@ -93,6 +93,11 @@ jobs:
         run: python scripts/check-ci-platform.py --platform ${{ matrix.target.platform }} --arch ${{ matrix.target.arch }} --output "${{ runner.temp }}/platform.json"
       - name: Generate source build provenance
         run: python -c "import runpy; runpy.run_path('scripts/build-workbench.py')['write_build_info']()"
+      - name: Statically link OpenSSL for the Intel macOS package
+        if: matrix.target.platform == 'darwin' && matrix.target.arch == 'x64'
+        shell: bash
+        run: |
+          OPENSSL_STATIC=1 OPENSSL_DIR="$(brew --prefix openssl@3)" python -m pip install --force-reinstall --no-cache-dir --no-binary=cryptography "cryptography>=46,<51"
       - name: Install package builder
         run: python -m pip install ".[desktop]" pyinstaller==6.22.0
       - name: Install pinned runtime

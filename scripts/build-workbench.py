@@ -62,6 +62,33 @@ def require_desktop_shell() -> None:
         )
 
 
+def require_static_macos_crypto(binary: Path | None = None) -> None:
+    """Do not freeze conflicting Python and cryptography OpenSSL libraries together."""
+    if sys.platform != "darwin":
+        return
+    if binary is None:
+        spec = importlib.util.find_spec("cryptography.hazmat.bindings._rust")
+        if spec is None or not spec.origin:
+            raise RuntimeError("Cannot locate the cryptography extension for package validation")
+        binary = Path(spec.origin)
+    dependencies = subprocess.run(
+        ["otool", "-L", str(binary)], capture_output=True, text=True, check=True
+    ).stdout
+    linked = [
+        line.strip().split(" (", 1)[0]
+        for line in dependencies.splitlines()[1:]
+        if re.search(r"(?:^|/)(?:libssl|libcrypto)[^/]*\.dylib(?:\s|$)", line.strip())
+    ]
+    if linked:
+        raise RuntimeError(
+            "cryptography dynamically links OpenSSL; freezing it can mix incompatible "
+            "Python and cryptography libraries. Rebuild cryptography in the isolated build "
+            "environment with OPENSSL_STATIC=1, OPENSSL_DIR set to the chosen OpenSSL, "
+            "and pip --force-reinstall --no-cache-dir --no-binary=cryptography. "
+            f"Extension: {binary}; dependencies: {linked}"
+        )
+
+
 def runtime_binaries(runtime_dir: Path) -> list[tuple[str, str]]:
     """Native executables inside the pinned runtime that must ship with the bundle.
 
@@ -240,6 +267,7 @@ def build(runtime_dir: Path, node: Path, output: Path, name: str) -> dict:
         raise RuntimeError("Install PyInstaller in the selected isolated Python environment first")
     runtime_dir, node, output = runtime_dir.resolve(), node.resolve(), output.resolve()
     require_desktop_shell()
+    require_static_macos_crypto()
     # Git Bash which omits PATHEXT; Windows can execute that name but PyInstaller
     # requires the actual on-disk executable, including its .exe suffix.
     if sys.platform == "win32" and not node.is_file() and node.with_suffix(".exe").is_file():
@@ -381,6 +409,16 @@ def build(runtime_dir: Path, node: Path, output: Path, name: str) -> dict:
     # 误报"被打包器丢了" ✗（同一 app 两处都有 runtime ✓ 大头在 Frameworks ✓）
     # ⇒ 对整个产物根做 rglob ✓ 两种布局（.app / onedir）都对 ✓
     resources = app
+    if sys.platform == "darwin":
+        extensions = {
+            path.resolve()
+            for path in app.rglob("_rust*.so")
+            if "cryptography" in path.parts and path.is_file()
+        }
+        if not extensions:
+            raise RuntimeError("The macOS bundle is missing the cryptography extension")
+        for extension in extensions:
+            require_static_macos_crypto(extension)
     entries = runtime_binaries(runtime_dir)
     if not entries and INCLUDE_ENGINES:
         raise RuntimeError(

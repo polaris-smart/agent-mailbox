@@ -1,9 +1,8 @@
 """Frontend syntax gate (Codex AM-08: a broken bundle must never ship again).
 
-Why this test exists: two node parsers disagreed on this file, and a plain
-`node --check` said OK while a module parse failed. The oracle that works --
-and the one used by reviewers -- is `node --input-type=module --eval <source>`,
-which reports a SyntaxError WITH a line number. That is exactly what this test runs.
+Use Node's module parser explicitly, without executing browser-only code.
+Source goes through stdin: the full bundle exceeds Linux's per-argument limit
+and Windows' command-line length limit when passed to --eval.
 
 The page could not initialise at all while this was broken, yet every Python gate
 was green: a frontend syntax gate is simply missing from the six gates.
@@ -76,15 +75,33 @@ def test_css_gate_rejects_the_actual_release_regressions(broken):
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not available on this machine")
 def test_workbench_js_has_no_syntax_error():
     """Parse the shipped frontend the way a browser/reviewer does; fail on any SyntaxError."""
+    result = _parse_module(_JS.read_text(encoding="utf-8"))
+    assert result.returncode == 0, result.stderr
+
+
+def _parse_module(source):
     result = subprocess.run(
-        ["node", "--input-type=module", "--eval", _JS.read_text(encoding="utf-8")],
+        ["node", "--input-type=module", "--check"],
+        input=source,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
-        check=False,  # 语法错由下面的 stderr 判定 ✓（不是靠退出码 ✗）
+        check=False,
     )
-    stderr = result.stderr
-    if "SyntaxError" in stderr:
-        first = [line for line in stderr.splitlines() if "SyntaxError" in line][:1]
-        location = [line for line in stderr.splitlines() if "[eval1]:" in line][:1]
-        pytest.fail(f"前端脚本有语法错 ⇒ 页面无法初始化: {location} {first}")
+    return result
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available on this machine")
+@pytest.mark.parametrize(
+    "broken", ['document.querySelector("#app"));', 'const label = "use "quotes"";']
+)
+def test_module_gate_rejects_extra_parenthesis_and_unescaped_quotes(broken):
+    result = _parse_module(broken)
+    assert result.returncode != 0
+    assert "SyntaxError" in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available on this machine")
+def test_module_gate_parses_without_executing_dom_or_top_level_await():
+    assert _parse_module("await document.querySelector('#app');").returncode == 0

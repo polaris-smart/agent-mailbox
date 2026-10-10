@@ -34,7 +34,9 @@ def scene(tmp_path):
         ),
         encoding="utf-8",
     )
-    session_file.chmod(0o600)  # _private_json 要求 0600 的私有文件
+    from agent_mailbox.workbench_private import private_mode
+
+    private_mode(session_file, 0o600)
     with store._transaction() as db:  # workspace 面用的是"员工×项目"的 membership token
         membership_token = db.execute(
             "SELECT secret_token FROM memberships WHERE employee_id=? AND project_id=?",
