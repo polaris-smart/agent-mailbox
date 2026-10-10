@@ -1,0 +1,14 @@
+{
+  "name": "@polaris-smart/agent-mailbox",
+  "version": "0.8.2",
+  "description": "Verified native launcher for the local-first agent-mailbox workbench",
+  "type": "module",
+  "bin": {"agent-mailbox": "cli.mjs"},
+  "engines": {"node": ">=22.13.0"},
+  "files": ["cli.mjs", "launcher.mjs", "releases.json", "README.md", "LICENSE", "NOTICE"],
+  "license": "Apache-2.0",
+  "repository": {"type": "git", "url": "https://github.com/polaris-smart/agent-mailbox.git", "directory": "npm/agent-mailbox"},
+  "homepage": "https://polaris-smart.github.io/agent-mailbox/",
+  "publishConfig": {"access": "public", "registry": "https://registry.npmjs.org"},
+  "scripts": {"test": "node --test launcher.test.mjs"}
+}

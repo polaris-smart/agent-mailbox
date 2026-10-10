@@ -1,0 +1,14 @@
+agent-mailbox v0.8
+Copyright 2026 NoFox and contributors
+
+This v0.8 distribution is licensed under Apache License, Version 2.0.
+The original project includes code copyright 2026 polaris-smart contributors,
+available under the MIT License. Its copyright and permission notice are
+preserved in LICENSES/MIT-Legacy.txt (also bundled as MIT-Legacy.txt).
+Earlier MIT releases retain their original license.
+
+Third-party components retain their own licenses. The bundled Node runtime
+includes its LICENSE; JavaScript dependency packages include their original
+license files. See the build manifest and runtime package-lock.json for the
+exact dependency versions. NoFox attribution does not claim ownership of
+third-party components.

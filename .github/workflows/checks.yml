@@ -112,6 +112,11 @@ jobs:
         run: |
           python scripts/check-ci-platform.py --platform ${{ matrix.target.platform }} --arch ${{ matrix.target.arch }} --manifest "$RUNNER_TEMP/native-package/build-manifest.json" --output "$RUNNER_TEMP/native-package/platform.json"
           python scripts/check-package.py --manifest "$RUNNER_TEMP/native-package/build-manifest.json" --output "$RUNNER_TEMP/native-package/package-check.json"
+      - name: Verify npm launcher and native extraction
+        shell: bash
+        run: |
+          node --test npm/agent-mailbox/launcher.test.mjs
+          node npm/agent-mailbox/native-smoke.mjs "$RUNNER_TEMP/native-package/package-check.json" > "$RUNNER_TEMP/native-package/npm-launcher-check.json"
       - name: Preserve package verification and build diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -122,6 +127,7 @@ jobs:
             ${{ runner.temp }}/native-package/archives/*
             ${{ runner.temp }}/native-package/build-manifest.json
             ${{ runner.temp }}/native-package/package-check.json
+            ${{ runner.temp }}/native-package/npm-launcher-check.json
             ${{ runner.temp }}/native-package/platform.json
             ${{ runner.temp }}/platform.json
             ${{ runner.temp }}/native-build.log
