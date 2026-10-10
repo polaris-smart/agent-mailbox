@@ -26,6 +26,19 @@ The Mac package is not Developer ID signed or notarized. Follow your operating s
 
 Windows/Linux 为本地服务＋浏览器工作台，不包含 macOS 同款内嵌外壳。程序输出的访问链接带有本机访问凭据，不能公开分享。请保留整个解压目录，不能只复制可执行文件。
 
+## npm 启动入口 / npm launcher
+
+Node.js 22.13+：
+
+```sh
+npx @polaris-smart/agent-mailbox@0.8.2 --version
+npx @polaris-smart/agent-mailbox@0.8.2
+```
+
+首次启动从 GitHub Release 下载匹配平台的完整程序，校验固定 SHA-256 后缓存；成品包含 Python。上文的平台和预览边界仍然适用。切换前退出旧实例，自定义数据目录继续使用原来的 `--home`。不需要覆盖已有 Python 安装提供的同名命令。
+
+The official [scoped npm package](https://www.npmjs.com/package/@polaris-smart/agent-mailbox) downloads and verifies the matching native bundle on first launch, including its Python runtime. GitHub downloads must be reachable. The platform and preview boundaries above still apply. Quit the old instance and keep your existing custom `--home` when switching versions. The unscoped npm name belongs to an unrelated package; `dsh-agent-mailbox` is a separate integration.
+
 ## 本地 Web / Local Web
 
 使用 Python 3.10+ 和专用虚拟环境。以下为 macOS/Linux 的 shell 命令；Windows 用户可先使用预览原生包。不宣称各平台已经完成相同程度的人工验收。
@@ -42,7 +55,7 @@ AGENT_MAILBOX_BROWSER=1 agent-mailbox --home ~/.agent-mailbox
 
 The environment flag explicitly requests a browser window. Keep the terminal running and the access URL private. Reuse the same `--home`; if your existing workbench uses a different path, keep it.
 
-已有会话邮箱沿用宿主自身登录。可选受管执行需要另外准备运行组件；Python/源码方式在受管路径上要求 Node.js 22.13+，不应把这项要求混为普通邮箱接入要求。本次没有 Homebrew 或 TestPyPI 发行。npm 工作台入口使用 `@polaris-smart/agent-mailbox`，以其实际公开包为准；独立的 `dsh-agent-mailbox` 插件不是工作台安装器，不要混用不带 scope 的同名第三方包。
+已有会话邮箱沿用宿主自身登录。可选受管执行需要另外准备运行组件；Python/源码方式在受管路径上要求 Node.js 22.13+，不应把这项要求混为普通邮箱接入要求。本次没有 Homebrew 或 TestPyPI 发行。npm 工作台入口 `@polaris-smart/agent-mailbox@0.8.2` 已公开；独立的 `dsh-agent-mailbox` 插件不是工作台安装器，不要混用不带 scope 的同名第三方包。
 
 ## 保留数据升级 / Upgrade without changing the home
 

@@ -76,6 +76,19 @@ App 自带 Python 运行环境，这条安装路径不需要另装 Python。已�
 
 此 macOS 包尚无 Developer ID 签名和公证，发行边界及升级步骤见[安装指南](docs/BETA-INSTALL.md)。升级时保留原数据目录；换一个目录会打开另一套工作台数据。
 
+### npm 启动入口
+
+准备 Node.js 22.13+，使用官方带 scope 的包：
+
+```sh
+npx @polaris-smart/agent-mailbox@0.8.2 --version
+npx @polaris-smart/agent-mailbox@0.8.2
+```
+
+首次启动会下载匹配系统与芯片的 GitHub Release 成品，校验包内固定的 SHA-256，再缓存包含 Python 运行环境的完整程序。需要能访问 GitHub 下载；上表的平台与预览边界仍然适用。切换版本前退出旧实例；若使用自定义数据目录，继续传入原来的 `--home`。
+
+请使用完整包名：npm 上不带 scope 的 `agent-mailbox` 是无关第三方包；`dsh-agent-mailbox` 是独立配套集成，不是这个工作台启动器。查看[已发布的 npm 包](https://www.npmjs.com/package/@polaris-smart/agent-mailbox)。
+
 ## 从实现到复审的一次交接
 
 以 Claude Code 实现修改、Codex 复审为例：

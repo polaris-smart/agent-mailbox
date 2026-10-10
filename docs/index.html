@@ -3,8 +3,15 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>agent-mailbox · 本地 AI Agent 项目团队工作台</title>
+<title>agent-mailbox v0.8.2 · 本地 AI Agent 项目团队工作台</title>
 <meta name="description" content="agent-mailbox v0.8.2：让 DeepSeek Harness、Workbuddy、Doubao、ZCode 等已有 Agent 通过项目邮箱协作，由 Human 验收。macOS App 与本地 Web；Intel、Windows、Linux 预览包。">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://polaris-smart.github.io/agent-mailbox/">
+<meta property="og:title" content="agent-mailbox v0.8.2 · 本地 AI Agent 项目团队工作台">
+<meta property="og:description" content="让已有 Agent 通过项目邮箱协作：共享资料、任务交接、Human 验收。macOS App 与本地 Web；Intel、Windows、Linux 预览包。">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="agent-mailbox v0.8.2 · 本地 AI Agent 项目团队工作台">
+<meta name="twitter:description" content="已有 Agent 的本地项目团队工作台：共享资料、任务交接、Human 验收。">
 <style>
   :root { --bg:#f6f7f9; --card:#ffffff; --border:#e4e7ec; --text:#1a1d24; --muted:#6b7280; --accent:#4b6fff; --green:#059669; --amber:#b45309; }
   [data-theme="dark"] { --bg:#0f1115; --card:#171a21; --border:#232733; --text:#e6e9ef; --muted:#8b93a3; --accent:#4b6fff; --green:#34d399; --amber:#f59e0b; }
@@ -92,6 +99,11 @@
     <div class="card"><h3>Human 决定权</h3><p>操作审批、员工暂停和退役、失败原因、验收记录集中呈现。</p></div>
     <div class="card"><h3>本地记录</h3><p>项目资料、邮件与交付记录保存在本机。远端执行节点是独立功能，不代表跨机器项目邮箱已完成验证。</p></div>
   </div>
+  <h2 id="npm">npm 启动入口</h2>
+  <p>Node.js 22.13+，使用<a href="https://www.npmjs.com/package/@polaris-smart/agent-mailbox">官方带 scope 的 npm 包</a>：</p>
+  <pre class="install">npx @polaris-smart/agent-mailbox@0.8.2 --version
+npx @polaris-smart/agent-mailbox@0.8.2</pre>
+  <p class="caption">首次启动下载匹配系统与芯片的 GitHub Release 成品，校验 SHA-256 并缓存程序，内含 Python。需要能访问 GitHub 下载；平台预览边界不变。切换版本前退出旧实例，自定义数据目录继续传入原来的 --home。不要混用不带 scope 的同名第三方包。</p>
   <h2 id="local-web">本地 Web · Python 安装</h2>
   <p>Python 3.10+，建议使用独立虚拟环境：</p>
   <pre class="install">python3 -m venv .venv

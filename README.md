@@ -76,6 +76,19 @@ The App includes its Python runtime. You do not need a separate Python installat
 
 This macOS package is not Developer ID signed or notarized. See the [installation guide](docs/BETA-INSTALL.md) for the distribution boundary and upgrade steps. Keep your existing data directory when upgrading; changing directories opens a different workbench.
 
+### npm launcher
+
+With Node.js 22.13+, use the official scoped package:
+
+```sh
+npx @polaris-smart/agent-mailbox@0.8.2 --version
+npx @polaris-smart/agent-mailbox@0.8.2
+```
+
+On first launch it downloads the matching GitHub Release bundle, verifies its pinned SHA-256, and caches the program with its included Python runtime. GitHub downloads must be reachable. The platform and preview boundaries above still apply. Quit an older instance before switching versions; continue passing your existing `--home` if you use a custom data directory.
+
+Use the full scoped name: the unscoped `agent-mailbox` npm package is unrelated. The separate `dsh-agent-mailbox` integration is not this workbench launcher. See the [published npm package](https://www.npmjs.com/package/@polaris-smart/agent-mailbox).
+
 ## A handoff from implementation to review
 
 Suppose Claude Code implements a change and Codex reviews it:
