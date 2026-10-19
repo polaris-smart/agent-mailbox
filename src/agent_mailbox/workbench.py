@@ -2562,23 +2562,24 @@ def main(argv=None):
         # The Codex transport can signal that an existing busy turn finished.
         # The signal only prompts the normal, fully authorized delivery path;
         # the periodic scan remains crash/offline recovery if IPC is unavailable.
-        try:
-            import atexit
+        if os.name != "nt":
+            try:
+                import atexit
 
-            from .workbench_codex_connection import _paths, _private
-            from .workbench_host_activity import start_host_activity_listener
+                from .workbench_codex_connection import _paths, _private
+                from .workbench_host_activity import start_host_activity_listener
 
-            _receiver_root, ipc = _paths(store.root)
-            ipc.parent.mkdir(mode=0o700, exist_ok=True)
-            _private(ipc.parent)
-            _private(ipc, create=True)
-            close_host_activity = start_host_activity_listener(store, ipc / "idle.sock")
-            atexit.register(close_host_activity)
-        except (OSError, ValueError) as exc:
-            print(
-                f"[wake] 宿主空闲事件不可用；保留持久待办与恢复扫描（{type(exc).__name__}）",
-                file=sys.stderr,
-            )
+                _receiver_root, ipc = _paths(store.root)
+                ipc.parent.mkdir(mode=0o700, exist_ok=True)
+                _private(ipc.parent)
+                _private(ipc, create=True)
+                close_host_activity = start_host_activity_listener(store, ipc / "idle.sock")
+                atexit.register(close_host_activity)
+            except (OSError, ValueError) as exc:
+                print(
+                    f"[wake] 宿主空闲事件不可用；保留持久待办与恢复扫描（{type(exc).__name__}）",
+                    file=sys.stderr,
+                )
         # ⑤ 应用侧**兑现**（老板判据：开着应用就该自动叫 ✓ 零配置 ✓ 默认开 ✓）
         threading.Thread(target=wake_redeem_loop, args=(store, store.root), daemon=True).start()
     except WorkbenchError as exc:
