@@ -38,7 +38,9 @@ def case(tmp_path):
         "plan_id": "plan_" + "0" * 32,
     }
 
-    def invoke(code, *, timeout=2, mutate=None, request_value=None):
+    # A real isolated interpreter can start slowly on loaded Intel CI runners;
+    # the explicit bounded-timeout cases below still exercise the short limit.
+    def invoke(code, *, timeout=10, mutate=None, request_value=None):
         (source / "bridge.py").write_text(code)
         pins = {
             name: hashlib.sha256((source / name).read_bytes()).hexdigest() for name in process.FILES
