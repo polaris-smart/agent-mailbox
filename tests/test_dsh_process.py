@@ -16,9 +16,9 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="Unix DSH prepar
 APP_NODE = Path("/Applications/Agent Mailbox.app/Contents/Frameworks/runtime/bin/node")
 NODE = Path(
     os.environ.get("MAILBOX_TEST_NODE")
-    or (str(APP_NODE) if APP_NODE.exists() else shutil.which("node") or "/unavailable-node")
+    or shutil.which("node")
+    or (str(APP_NODE) if APP_NODE.exists() else "/unavailable-node")
 )
-NODE_SHA = hashlib.sha256(NODE.read_bytes()).hexdigest() if NODE.is_file() else None
 
 
 @pytest.fixture
@@ -26,6 +26,12 @@ def case(tmp_path):
     if not NODE.is_file():
         pytest.skip("requires an explicitly available Node executable")
     root = tmp_path.resolve()
+    # Hosted tool caches are not a trusted execution root for the adapter.
+    # Copy the synthetic test runtime into the private fixture directory.
+    node = root / "node"
+    shutil.copy2(NODE, node)
+    node.chmod(0o700)
+    node_sha = hashlib.sha256(node.read_bytes()).hexdigest()
     profile = root / "profile"
     profile.mkdir(mode=0o700)
     source = root / "source"
@@ -55,11 +61,11 @@ def case(tmp_path):
         if mutate:
             mutate(source, sdk, pins)
         return process.run(
-            NODE,
+            node,
             profile,
             value or request,
             source=source,
-            expected_node=NODE_SHA,
+            expected_node=node_sha,
             expected_files=pins,
             expected_sdk=expected_sdk,
             timeout=timeout,

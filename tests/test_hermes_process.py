@@ -19,6 +19,12 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="Unix host adapt
 @pytest.fixture
 def case(tmp_path):
     root = tmp_path.resolve()
+    # The setup-python interpreter on hosted runners lives under a mutable
+    # tool cache. The adapter correctly rejects it; use the system-owned
+    # interpreter for this synthetic child-process test.
+    python = (
+        Path("/usr/bin/python3") if Path("/usr/bin/python3").is_file() else Path(sys.executable)
+    )
     profile = root / "profile"
     profile.mkdir(mode=0o700)
     source = root / "payload"
@@ -40,7 +46,7 @@ def case(tmp_path):
         if mutate:
             mutate(source)
         return process.run(
-            Path(sys.executable),
+            python,
             profile,
             request_value or request,
             source=source,

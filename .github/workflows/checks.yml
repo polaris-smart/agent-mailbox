@@ -35,7 +35,16 @@ jobs:
       - name: Generate source build provenance
         run: python -c "import runpy; runpy.run_path('scripts/build-workbench.py')['write_build_info']()"
       - name: Install independent Python package
-        run: python -m pip install -e ".[dev]"
+        run: python -m pip install -e ".[dev,desktop]"
+      - name: Prepare short private Unix fixture root
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = Linux ]; then
+            sudo install -d -m 1777 /private/tmp
+          fi
+          mkdir -p /private/tmp/agent-mailbox-ci-pytest
+          chmod 700 /private/tmp/agent-mailbox-ci-pytest
       - name: Install locked execution dependencies
         working-directory: src/agent_mailbox/runtime_bridge
         run: npm ci --ignore-scripts --no-audit --no-fund
@@ -48,7 +57,7 @@ jobs:
         run: python scripts/check-hygiene.py
       - name: Verify TCP and pinned TLS claim cancellation
         run: python -m pytest tests/test_workbench_fleet.py -k "test_stop_interrupts_claim_response_after_http_connection_releases_socket or test_stop_interrupts_real_tls_close_response_and_preserves_control" -v --tb=short
-      - name: Run full regression and preserve diagnostics
+      - name: Run platform regression and preserve diagnostics
         shell: bash
         run: |
           python - <<'PYTHON'
@@ -56,7 +65,33 @@ jobs:
           log = pathlib.Path(os.environ["RUNNER_TEMP"]) / "pytest.log"
           try:
               with log.open("wb") as target:
-                  result = subprocess.run([sys.executable, "-m", "pytest", "-o", "addopts=--timeout=30", "-vv", "--tb=short"], stdout=target, stderr=subprocess.STDOUT, timeout=900)
+              args = [sys.executable, "-m", "pytest", "-o", "addopts=--timeout=30", "-vv", "--tb=short"]
+              if os.name == "nt":
+                  # The Hermes/DSH Unix adapters and native Codex receiver
+                  # require POSIX or macOS. Windows tests the portable mailbox
+                  # core here; native-package checks the Windows executable.
+                  args.extend([
+                      "tests/test_host_receipt_contract.py",
+                      "tests/test_mailbox_mcp.py",
+                      "tests/test_message_reads.py",
+                      "tests/test_workbench_fleet.py",
+                      "tests/test_workbench_frontend_syntax.py",
+                      "tests/test_workbench_mail_sessions.py",
+                      "tests/test_workbench_mail_tasks.py",
+                      "tests/test_workbench_node.py",
+                      "tests/test_workbench_private.py",
+                      "tests/test_workbench_registry_messages.py",
+                      "tests/test_workbench_resources.py",
+                      "tests/test_workbench_runtime.py",
+                      "tests/test_workbench_store.py",
+                      "tests/test_workbench_ui_wiring.py",
+                      "tests/test_workbench_wake_cli.py",
+                      "tests/test_workbench_wake_deliver.py",
+                      "tests/test_workbench_wake_run.py",
+                  ])
+              else:
+                  args.append("--basetemp=/private/tmp/agent-mailbox-ci-pytest")
+              result = subprocess.run(args, stdout=target, stderr=subprocess.STDOUT, timeout=900)
               code = result.returncode
           except subprocess.TimeoutExpired:
               code = 124

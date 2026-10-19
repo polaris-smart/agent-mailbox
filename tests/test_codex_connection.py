@@ -5,6 +5,7 @@ import plistlib
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -15,9 +16,12 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.skipif(sys.platform != "darwin", reason="macOS Codex App receiver")
+
 from agent_mailbox import workbench_codex_cli_service as cli_service
 from agent_mailbox import workbench_codex_connection as connection
 from agent_mailbox.workbench_host_bindings import set_binding
+from agent_mailbox.workbench_host_transport import endpoint_for
 from agent_mailbox.workbench_store import WorkbenchError, WorkbenchStore
 
 
@@ -1260,6 +1264,15 @@ def test_real_lightweight_receiver_recovers_after_ordinary_restart_without_model
     source = Path(__file__).resolve().parents[1] / "integrations/codex-mailbox-host"
     monkeypatch.setattr(cli_service, "_installed", lambda _: source)
     monkeypatch.setattr(cli_service, "_payload", lambda: (source, Path(shutil.which("node"))))
+    original_popen = subprocess.Popen
+    startup_log = s.store.root / "receiver-startup.log"
+
+    def diagnostic_popen(command, **kwargs):
+        with startup_log.open("ab") as log:
+            kwargs["stderr"] = log
+            return original_popen(command, **kwargs)
+
+    monkeypatch.setattr(cli_service.subprocess, "Popen", diagnostic_popen)
     current = connection.load_bindings(s.store.root)[0]
     for _ in range(2):
         manager = cli_service.CodexCliManager(s.store)
@@ -1272,7 +1285,12 @@ def test_real_lightweight_receiver_recovers_after_ordinary_restart_without_model
                 and time.monotonic() < deadline
             ):
                 time.sleep(0.03)
-            assert connection.receiver_online(s.store.root, current), manager.errors
+            assert connection.receiver_online(s.store.root, current), {
+                "errors": manager.errors,
+                "workers": [(worker.pid, worker.poll()) for worker in manager.processes.values()],
+                "socket_exists": Path(endpoint_for(s.store.root, current)).exists(),
+                "startup_log": startup_log.read_text(errors="replace")[-500:],
+            }
         finally:
             manager.close()
 

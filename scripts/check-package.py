@@ -181,7 +181,24 @@ def check(manifest_path, output_path):
                     )
                     return json.load(urllib.request.urlopen(request, timeout=10))
 
-                state = api("bootstrap")
+                # instance.json is written while WorkbenchHTTP is still restoring
+                # its connections. On slower hosts (notably Windows CI), the
+                # listener may not have entered serve_forever yet.
+                ready_deadline = time.monotonic() + 30
+                while True:
+                    try:
+                        state = api("bootstrap")
+                        break
+                    except urllib.error.HTTPError:
+                        raise
+                    except urllib.error.URLError as exc:
+                        exit_code = process.poll()
+                        if exit_code is not None or time.monotonic() >= ready_deadline:
+                            raise RuntimeError(
+                                "Packaged API did not become ready "
+                                f"(exit_code={exit_code}, error={type(exc.reason).__name__})"
+                            ) from exc
+                        time.sleep(0.1)
                 assert (
                     state["version"] == __version__
                     and not state["tasks"]

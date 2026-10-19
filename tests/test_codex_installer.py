@@ -4,11 +4,14 @@ import copy
 import hashlib
 import json
 import os
+import sys
 import threading
 import urllib.error
 import urllib.request
 
 import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform != "darwin", reason="macOS Codex App receiver")
 
 from agent_mailbox import workbench_codex_installer as installer
 from agent_mailbox.workbench_mail_config import export_session
