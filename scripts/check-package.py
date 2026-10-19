@@ -194,9 +194,15 @@ def check(manifest_path, output_path):
                     except urllib.error.URLError as exc:
                         exit_code = process.poll()
                         if exit_code is not None or time.monotonic() >= ready_deadline:
+                            launch_tail = "\n".join(
+                                (root / "launch.log")
+                                .read_text(encoding="utf-8", errors="replace")
+                                .splitlines()[-24:]
+                            )
                             raise RuntimeError(
                                 "Packaged API did not become ready "
-                                f"(exit_code={exit_code}, error={type(exc.reason).__name__})"
+                                f"(exit_code={exit_code}, error={type(exc.reason).__name__})\n"
+                                f"Packaged launcher output:\n{launch_tail}"
                             ) from exc
                         time.sleep(0.1)
                 assert (
