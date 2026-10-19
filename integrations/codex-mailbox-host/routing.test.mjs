@@ -87,7 +87,7 @@ for(const transport of ['rpc','native']) test(`Desktop owns approval routing aft
     });
     await desktop('initialize', {clientInfo: {name: 'mailbox_desktop_fixture', version: '1'}, capabilities: {experimentalApi: true}});
     child.stdin.write(JSON.stringify({method: 'initialized'}) + '\n');
-    const thread = await desktop('thread/start', {ephemeral: true, cwd: root, approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: 'workspace-write'});
+    const thread = await desktop('thread/start', {ephemeral: false, cwd: root, approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: 'workspace-write'});
     const file = (await fs.readdir(base)).find(n => n.endsWith('.json'));
     const manifest = JSON.parse(await fs.readFile(path.join(base, file)));
     if(transport==='rpc') {

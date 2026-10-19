@@ -15,7 +15,7 @@ const envelope=JSON.parse(await fs.readFile(path.join(root,'envelope.json')));
 const receive=createReceiver({home:path.join(root,'home'),stateDir:path.join(root,'journal'),
   candidates:async()=>[{close(){},async request(method,params){
     if(method==='thread/loaded/list')return {data:[envelope.binding.host_session_id]};
-    if(method==='thread/read')return {thread:{id:envelope.binding.host_session_id,status:{type:'idle'}}};
+    if(method==='thread/read')return {thread:{id:envelope.binding.host_session_id,ephemeral:false,status:{type:'idle'}}};
     if(method!=='thread/queue/add')throw Error('unexpected operation');
     await fs.appendFile(path.join(root,'admissions'),'one\\n');
     if(mode==='crash-unknown') {

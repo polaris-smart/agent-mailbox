@@ -47,7 +47,7 @@ export function deliveryReceipt(envelope) {
 export async function threadQueueAvailable(request, threadId) {
   const result=await request('thread/read',{threadId,includeTurns:false});
   if(result?.thread?.id!==threadId)throw new Error('thread_status_unconfirmed');
-  return ['idle','active'].includes(result.thread.status?.type);
+  return result.thread.ephemeral===false && ['idle','active'].includes(result.thread.status?.type);
 }
 
 export async function admit(envelope, { loadBindings, candidates }) {

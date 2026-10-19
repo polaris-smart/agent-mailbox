@@ -15,7 +15,7 @@ test('only one already-loaded original thread receives notification without priv
   const calls=[];
   const client={close(){calls.push('close');},async request(method,params){calls.push({method,params});
     if(method==='thread/loaded/list')return {data:[binding.host_session_id]};
-    if(method==='thread/read')return {thread:{id:binding.host_session_id,status:{type:'idle'}}};
+    if(method==='thread/read')return {thread:{id:binding.host_session_id,ephemeral:false,status:{type:'idle'}}};
     if(method==='thread/queue/add')return {queuedSubmission:{id:'queue_test',clientUserMessageId:params.clientUserMessageId,input:params.input}};
     assert.fail('unexpected API');
   }};
@@ -32,13 +32,25 @@ test('busy original thread queues mail without steering its current turn',async(
   const client={close(){},async request(method,params){
     calls.push(method);
     if(method==='thread/loaded/list')return {data:[binding.host_session_id]};
-    if(method==='thread/read')return {thread:{id:params.threadId,status:{type:'active'}}};
+    if(method==='thread/read')return {thread:{id:params.threadId,ephemeral:false,status:{type:'active'}}};
     if(method==='thread/queue/add')return {queuedSubmission:{id:'queued_busy',clientUserMessageId:params.clientUserMessageId,input:params.input}};
     assert.fail('busy thread must not receive turn/start');
   }};
   const result=await admit(envelope(),{loadBindings:async()=>[binding],candidates:async()=>[client]});
   assert.equal(result.status,'received');
   assert.deepEqual(calls,['thread/loaded/list','thread/read','thread/queue/add']);
+});
+test('loaded ephemeral thread cannot accept a mailbox queue submission',async()=>{
+  let queueCalls=0;
+  const client={close(){},async request(method,params){
+    if(method==='thread/loaded/list')return {data:[binding.host_session_id]};
+    if(method==='thread/read')return {thread:{id:params.threadId,ephemeral:true,status:{type:'idle'}}};
+    if(method==='thread/queue/add')queueCalls++;
+    throw Error('ephemeral_was_queued');
+  }};
+  const result=await admit(envelope(),{loadBindings:async()=>[binding],candidates:async()=>[client]});
+  assert.equal(result.status,'not_received');
+  assert.equal(queueCalls,0);
 });
 test('missing, duplicated, revoked, or changed bindings never start or resume a thread', async()=>{
   for(const mode of ['missing','two','revoked','changed']) {
@@ -52,7 +64,7 @@ test('missing, duplicated, revoked, or changed bindings never start or resume a 
 test('uncertain turn admission never becomes a success or negative receipt', async()=>{
   let closed=false;
   const client={close(){closed=true;},async request(m){if(m==='thread/loaded/list')return {data:[binding.host_session_id]};
-    if(m==='thread/read')return {thread:{id:binding.host_session_id,status:{type:'idle'}}};throw Error('lost response');}};
+    if(m==='thread/read')return {thread:{id:binding.host_session_id,ephemeral:false,status:{type:'idle'}}};throw Error('lost response');}};
   await assert.rejects(admit(envelope(),{loadBindings:async()=>[binding],candidates:async()=>[client]}),/lost response/);
   assert.equal(closed,true);
 });
@@ -90,7 +102,7 @@ test('target on final permitted page still delivers once, unless binding was rev
     let pages=0,turns=0,reads=0,closed=false;
     const client={close(){closed=true;},async request(method,params){
       if(method==='thread/loaded/list')return {data:++pages===20?[binding.host_session_id]:[],nextCursor:String(pages)};
-      if(method==='thread/read')return {thread:{id:binding.host_session_id,status:{type:'idle'}}};
+      if(method==='thread/read')return {thread:{id:binding.host_session_id,ephemeral:false,status:{type:'idle'}}};
       assert.equal(method,'thread/queue/add');turns++;return {queuedSubmission:{id:'queue_test',clientUserMessageId:params.clientUserMessageId,input:params.input}};
     }};
     const result=await admit(envelope(),{loadBindings:async()=>++reads>1&&revoked?[]:[binding],candidates:async()=>[client]});

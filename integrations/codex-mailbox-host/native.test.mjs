@@ -20,7 +20,7 @@ async function fixture(t, outcome='received') {
   const candidates=async()=>[{close(){},async request(method,params){
     calls.push({method,params});
     if(method==='thread/loaded/list')return {data:outcome==='missing'?[]:[b.host_session_id]};
-    if(method==='thread/read')return {thread:{id:b.host_session_id,status:{type:'idle'}}};
+    if(method==='thread/read')return {thread:{id:b.host_session_id,ephemeral:false,status:{type:'idle'}}};
     assert.equal(method,'thread/queue/add');
     assert.equal(params.threadId,b.host_session_id);
     assert.deepEqual(Object.keys(params).sort(),['clientUserMessageId','input','threadId']);
@@ -110,17 +110,22 @@ test('health only confirms the specified loaded original thread without starting
     calls.push(method);
     if(method==='thread/loaded/list')return {data:['target']};
     assert.equal(method,'thread/read');
-    return {thread:{id:params.threadId,cwd:'/synthetic',name:'Private name',status:{type:'idle'}}};
+    return {thread:{id:params.threadId,cwd:'/synthetic',name:'Private name',ephemeral:false,status:{type:'idle'}}};
   };
   const result=await inspectHealth(request,query('health',{thread_id:'target'}));
   assert.deepEqual(result,{protocol:HEALTH_PROTOCOL,request_id:'synthetic',thread_id:'target',
     loaded:true,admission_available:true});
   assert.deepEqual(calls,['thread/loaded/list','thread/read','thread/read']);
   const busy=await inspectHealth(async(method,params)=>method==='thread/loaded/list'
-    ?{data:['target']}:{thread:{id:params.threadId,cwd:'/synthetic',status:{type:'active'}}},
+    ?{data:['target']}:{thread:{id:params.threadId,cwd:'/synthetic',ephemeral:false,status:{type:'active'}}},
     query('health',{thread_id:'target'}));
   assert.equal(busy.loaded,true);
   assert.equal(busy.admission_available,true);
+  const ephemeral=await inspectHealth(async(method,params)=>method==='thread/loaded/list'
+    ?{data:['target']}:{thread:{id:params.threadId,cwd:'/synthetic',ephemeral:true,status:{type:'idle'}}},
+    query('health',{thread_id:'target'}));
+  assert.equal(ephemeral.loaded,true);
+  assert.equal(ephemeral.admission_available,false);
   await assert.rejects(inspectHealth(async()=>({data:[]}),query('health',{thread_id:'target'})),
     /session_not_loaded/);
   await assert.rejects(inspectHealth(()=>assert.fail('must not call host'),
