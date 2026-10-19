@@ -1231,6 +1231,9 @@ def test_real_lightweight_receiver_recovers_after_ordinary_restart_without_model
     setup, monkeypatch, short_ipc
 ):
     s = setup
+    codex_home = s.store.root / "isolated-codex-home"
+    codex_home.mkdir(mode=0o700)
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
     s.act("install")
     monkeypatch.setattr(connection, "_paths", lambda _: (s.root, short_ipc))
     monkeypatch.setattr(cli_service, "_paths", lambda _: (s.root, short_ipc))
