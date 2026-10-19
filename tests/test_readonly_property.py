@@ -26,7 +26,9 @@ CONNECTION_CALLS = ("_connection", "_transaction")
 # raw_connect() 也是"开一条连接"（无 readonly 形参 ⇒ 视为写）：检测器必须认得它，
 # 否则读语义函数只要改用 raw_connect 就能绕过整条只读性质（第八轮指出）。
 DETECTED_CALLS = (*CONNECTION_CALLS, "raw_connect")
-PRIMITIVES = frozenset((*CONNECTION_CALLS, "raw_connect"))  # 连接工厂本身，不参与判定
+PRIMITIVES = frozenset(
+    (*CONNECTION_CALLS, "raw_connect", "_wake_transaction")
+)  # 写事务工厂也不参与判定
 
 # 读语义名字前缀（会先去掉前导下划线再匹配，避免"私有函数免检"）
 READ_PREFIXES = (
@@ -155,7 +157,8 @@ DECLARED_WRITERS: frozenset[str] = frozenset(
         "merge_employee_memberships",
         "project",
         "request_contact",
-        "enroll",
+        # enroll delegates its writes to create_employee/create_session; it no
+        # longer opens a write connection itself, so it is not exempt here.
         "invoke",
         "accept_mail_task",
         "submit_mail_task",
@@ -174,8 +177,40 @@ DECLARED_WRITERS: frozenset[str] = frozenset(
         "update_channel",
         "resolve_permission",
         "verify_proof",
+        "connection",  # Codex 接收连接的 status 为读；配对/解绑动作会写绑定，按动作核权限
     }
 )
+
+# New ambiguous names are bound to their module so another operation/_settle
+# cannot inherit a write-connection exemption by accident.
+DECLARED_WRITERS_BY_FILE: dict[tuple[str, str], str] = {
+    (
+        "workbench_held_mail_release.py",
+        "operation",
+    ): "confirmed apply moves one held notification back to pending",
+    ("workbench_host_retractions.py", "_settle"): "records the host's queue-retraction outcome",
+    ("workbench_human_spaces.py", "issue_human_session"): "creates a scoped Human bearer session",
+    (
+        "workbench_human_spaces.py",
+        "recover_human_session",
+    ): "rotates recovery proof and revokes old sessions atomically",
+    (
+        "workbench_human_spaces.py",
+        "setup_human_recovery",
+    ): "records the Human's one-time recovery proof",
+    (
+        "workbench_human_spaces.py",
+        "rotate_human_session",
+    ): "issues a replacement bearer and revokes the old one",
+    (
+        "workbench_human_spaces.py",
+        "move_project_to_shared_space",
+    ): "revokes old grants and changes project scope",
+    (
+        "workbench_mail_notifications.py",
+        "settle_preexisting_opens",
+    ): "reconciles persisted first-open events into notification status",
+}
 
 
 def _sqlite_aliases(tree: ast.AST) -> set[str]:
@@ -296,6 +331,7 @@ def test_every_write_connection_is_a_declared_writer():
         if node.name not in PRIMITIVES
         and opens_write_connection(node, aliases=aliases)
         and node.name not in DECLARED_WRITERS
+        and (fname, node.name) not in DECLARED_WRITERS_BY_FILE
         and not _is_write_named(node.name)
     ]
     assert offenders == [], (
@@ -362,6 +398,15 @@ def test_declared_lists_have_no_dead_entries():
             continue
         if not any(opens_write_connection(node, aliases=al) for node, al in nodes):
             problems.append(f"DECLARED_WRITERS 里的 {name} 其实不开写连接（应移出清单）")
+    by_file_and_name = {
+        (fname, node.name): (node, aliases) for fname, node, aliases in _functions()
+    }
+    for key in sorted(DECLARED_WRITERS_BY_FILE):
+        entry = by_file_and_name.get(key)
+        if entry is None:
+            problems.append(f"DECLARED_WRITERS_BY_FILE 里的 {key} 在源码中不存在（死条目）")
+        elif not opens_write_connection(entry[0], aliases=entry[1]):
+            problems.append(f"DECLARED_WRITERS_BY_FILE 里的 {key} 其实不开写连接（应移出清单）")
     for name in sorted(WRITE_BY_DESIGN):
         nodes = by_name.get(name)
         if not nodes:

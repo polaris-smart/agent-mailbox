@@ -26,6 +26,40 @@ def team(tmp_path):
     return store, project, alice, bob, sessions
 
 
+def test_identity_is_current_minimal_and_not_a_project_read(team, monkeypatch):
+    store, project, alice, _bob, (a, _b) = team
+    before = store.snapshot()
+    monkeypatch.setattr(
+        store,
+        "project_context",
+        lambda *_args, **_kwargs: pytest.fail("identity must not read project content"),
+    )
+    assert invoke(store, a["token"], "identity", {}) == {
+        "protocol": "agent-mailbox.identity.v1",
+        "employee_id": alice["id"],
+        "project_id": project["id"],
+        "session_id": a["id"],
+    }
+    assert store.snapshot() == before
+    with pytest.raises(WorkbenchError):
+        invoke(store, a["token"], "identity", {"employee_id": "other"})
+    revoke_session(store, a["id"])
+    with pytest.raises(WorkbenchError):
+        invoke(store, a["token"], "identity", {})
+
+
+def test_same_named_connection_requires_explicit_reuse_or_rotation(team):
+    store, project, alice, _bob, (first, _other) = team
+    with pytest.raises(WorkbenchError) as conflict:
+        create_session(store, alice["id"], project["id"], "Existing conversation")
+    assert conflict.value.code == "SESSION_LABEL_CONFLICT"
+    sessions = list_sessions(store, alice["id"], project["id"])
+    assert len(sessions) == 1
+    active = [row for row in sessions if row["active"]]
+    assert [row["id"] for row in active] == [first["id"]]
+    assert invoke(store, first["token"], "identity", {})["session_id"] == first["id"]
+
+
 def test_mail_exchange_without_tasks_and_session_attribution(team):
     store, _project, alice, bob, (a, b) = team
     first = invoke(

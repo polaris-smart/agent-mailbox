@@ -43,6 +43,10 @@ def main(argv: list[str] | None = None) -> None:
 
 def _dispatch(argv: list[str] | None = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] == "codex-receiver-start":
+        from .workbench_codex_shortcut import main as receiver_main
+
+        return receiver_main(args[1:])
     if args and args[0] == "mailbox-mcp":
         from .mailbox_mcp import main as mailbox_main
 
@@ -266,11 +270,14 @@ def _dispatch(argv: list[str] | None = None) -> None:
     if args and args[0] == "wake":
         if "--help" in args or "-h" in args:
             print("""用法：agent-mailbox wake <动作> [--home <store home>] [--state-dir <目录>]
-  --once        跑一轮：发现新信 ⇒ 叫醒（首轮=冷启动，不叫任何人 ✓）
-  --status      看状态：开关 · 每位员工「已见 N 封 / 叫过 M 次」（M 是权威计数 ✓）
+  --once        投递新通知和待办；旧历史消息不重播；宿主接收不等于 Agent 接单
+  --status      查看开关、已见邮件、宿主确认接收次数、待办与未知交付
   --install     写 launchd 单元（**不自动加载** ✗ 需你自己 launchctl load -w ✓；写绝对路径 ✓）
   --uninstall   先 bootout 再删单元（零残留 ✓ 幂等 ✓）
   --enable/--disable  开/关唤醒判定（只写我们自己的状态 ✓ 不动信 ✓）
+  --bind EMPLOYEE --project PROJECT --host HOST --session SESSION  绑定已有宿主会话
+  --unbind EMPLOYEE --project PROJECT  撤销项目范围的宿主绑定
+  --bindings    只读列出绑定；绑定不等于已接通
   --plist-dir   单元目录（默认 ~/Library/LaunchAgents ✓ 测试时可指临时目录 ✓）
   --state-dir   唤醒状态目录（默认 <store home>/wake ✓ hook 与 outbox **钉在 store home** ✗）
 默认不装 ✓ opt-in ✓；四道闸（水位线/冷启动/冷却 15 分钟/≤4 次每小时）都在代码里 ✓""")
@@ -280,17 +287,22 @@ def _dispatch(argv: list[str] | None = None) -> None:
         from .workbench_wake import cli_main as _wake_cli
 
         home = Path.home() / ".agent-mailbox-v08"
-        for index, item in enumerate(args):
-            if item == "--home" and index + 1 < len(args):
-                home = Path(args[index + 1])
+        wake_args = args[1:]
+        while "--home" in wake_args:
+            index = wake_args.index("--home")
+            if index + 1 >= len(wake_args):
+                print("--home 需要路径")
+                return 2
+            home = Path(wake_args[index + 1])
+            del wake_args[index : index + 2]
         store = (
             None
-            if "--status" in args or "--install" in args or "--uninstall" in args
+            if any(
+                flag in wake_args for flag in ("--status", "--install", "--uninstall", "--bindings")
+            )
             else _Store(home)
         )
-        return _wake_cli(
-            [a for a in args[1:] if not (a == "--home" or a == home.name)], home=home, store=store
-        )
+        return _wake_cli(wake_args, home=home, store=store)
 
     if args and args[0] == "brief":
         # T31 钩子轻通道：会话起始简报（零常驻、有预算、只读）

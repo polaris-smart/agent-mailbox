@@ -117,13 +117,16 @@ for line in sys.stdin:
                     "options":[{"optionId":"allow", "name":"Allow", "kind":"allow_once"},
                         {"optionId":"deny", "name":"Deny", "kind":"reject_once"}],
                     "_meta":{"is_mcp_tool_approval":True}}})
-        elif text in ("permission", "permission_cancel"):
+        elif text in ("permission", "permission_cancel", "exit_plan_permission"):
             reqid = "ask-" + uuid.uuid4().hex
             permissions[reqid] = request
             pending[params["sessionId"]] = request
             out({"jsonrpc":"2.0", "id":reqid, "method":"session/request_permission",
                  "params":{"sessionId":params["sessionId"],
-                    "toolCall":{"toolCallId":"write-1", "title":"Write file", "kind":"edit"},
+                    "toolCall":{"toolCallId":"write-1",
+                        "title":"Leave plan mode" if text == "exit_plan_permission" else "Write file",
+                        "name":"ExitPlanMode" if text == "exit_plan_permission" else "Write",
+                        "kind":"execute" if text == "exit_plan_permission" else "edit"},
                     "options":[{"optionId":"allow", "name":"Allow", "kind":"allow_once"},
                                {"optionId":"deny", "name":"Deny", "kind":"reject_once"}]}})
         elif text == "hang":
@@ -273,11 +276,12 @@ class Bridge:
         self.process.stdin.flush()
 
     def run(self, run_id="r1", session_id="s1", prompt="hello", **value):
+        agent = value.pop("agent", "codex")
         self.send(
             op="run",
             run_id=run_id,
             session_id=session_id,
-            agent="codex",
+            agent=agent,
             prompt=prompt,
             cwd=str(self.project),
             **value,
@@ -405,6 +409,22 @@ def test_permission_round_trip(launch, decision, expected):
     assert request["tool_call"] == request["request"]["toolCall"]
     bridge.send(op="permission", run_id="r1", request_id=request["request_id"], decision=decision)
     assert bridge.result()["output_text"] == expected
+
+
+def test_claude_read_only_cannot_approve_exit_from_plan_mode(launch):
+    bridge = launch()
+    bridge.run(agent="claude", prompt="exit_plan_permission", sandbox="read-only")
+    assert bridge.result()["output_text"] == "denied"
+    assert not any(event["type"] == "permission_required" for event in bridge.seen)
+
+
+def test_other_read_only_approval_still_reaches_human(launch):
+    bridge = launch()
+    bridge.run(agent="claude", prompt="permission", sandbox="read-only")
+    request = bridge.until(lambda event: event["type"] == "permission_required")
+    assert request["tool_call"]["name"] == "Write"
+    bridge.send(op="permission", run_id="r1", request_id=request["request_id"], decision="deny")
+    assert bridge.result()["output_text"] == "denied"
 
 
 def test_permission_defaults_to_deny_and_late_answer_is_rejected(launch):

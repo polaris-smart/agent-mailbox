@@ -5,17 +5,37 @@ from __future__ import annotations
 import json
 import secrets
 
-from .workbench_mail_sessions import _bound_store, validate_session
+from .workbench_mail_sessions import _bound_store, _require_write_enabled, validate_session
 from .workbench_store import WorkbenchError, _id, _now, _text
 
 
-def create_mail_task(store, project_id, title, prompt, assignee_id):
+def create_mail_task(
+    store, project_id, title, prompt, assignee_id, *, review_recipient_id=None, request_id=None
+):
     """Human assigns an ordinary-mail task, not a managed execution request."""
     title = _text(title, "任务名称", 300).strip()
     prompt = _text(prompt, "任务说明")
     with store._transaction() as db:
         store._required(db, "projects", project_id)
+        previous, request_key = store._task_request(
+            db,
+            project_id,
+            request_id,
+            {
+                "kind": "mailbox",
+                "title": title,
+                "prompt": prompt,
+                "assignee_id": assignee_id,
+                "review_recipient_id": review_recipient_id,
+            },
+        )
+        if previous is not None:
+            return store._scrub(db, store._entity(previous))
         employee = store._message_member(db, project_id, assignee_id)
+        if review_recipient_id is not None:
+            reviewer = store._message_member(db, project_id, review_recipient_id)
+            if reviewer["id"] == assignee_id or reviewer["node_id"] != store.local_node_id(db):
+                raise WorkbenchError("invalid_field", "技术复核者须为另一名本机在岗项目成员。")
         if employee["node_id"] != store.local_node_id(db):
             raise WorkbenchError("REMOTE_MAILBOX_UNAVAILABLE", "现有会话邮箱目前只支持本机员工。")
         if db.execute("SELECT paused FROM update_settings WHERE id=1").fetchone()[0]:
@@ -48,6 +68,9 @@ def create_mail_task(store, project_id, title, prompt, assignee_id):
         )
         db.execute("UPDATE messages SET task_id=? WHERE id=?", (task_id, message["id"]))
         db.execute("UPDATE tasks SET request_message_id=? WHERE id=?", (message["id"], task_id))
+        db.execute(
+            "UPDATE tasks SET review_recipient_id=? WHERE id=?", (review_recipient_id, task_id)
+        )
         store._event(db, task_id, "queued", "邮件任务已分配，等待员工明确接受；不会启动 CLI。")
         store._governance(
             db,
@@ -55,20 +78,31 @@ def create_mail_task(store, project_id, title, prompt, assignee_id):
             employee_id=assignee_id,
             project_id=project_id,
             task_id=task_id,
-            payload={"message_id": message["id"], "execution_mode": "mailbox"},
+            payload={
+                "message_id": message["id"],
+                "execution_mode": "mailbox",
+                "review_recipient_id": review_recipient_id,
+            },
         )
+        store._remember_task_request(db, project_id, request_key, task_id)
         return store._scrub(db, store._entity(store._required(db, "tasks", task_id)))
 
 
 def _authorized_task(store, db, token, task_id):
     session = validate_session(store, db, token)
     task = store._required(db, "tasks", task_id)
-    if (
-        task["execution_mode"] != "mailbox"
-        or task["assignee_id"] != session["employee_id"]
-        or task["project_id"] != session["project_id"]
-    ):
+    if task["project_id"] != session["project_id"]:
+        # A foreign task may belong to another person or private project. Only
+        # explain the project mismatch when this employee is the assignee.
+        if task["assignee_id"] == session["employee_id"]:
+            raise WorkbenchError(
+                "PROJECT_MISMATCH", "这项任务属于另一个项目，请切换到该项目的员工信箱。"
+            )
         raise WorkbenchError("UNAUTHORIZED", "只能操作当前项目分配给本员工的邮件任务。")
+    if task["assignee_id"] != session["employee_id"]:
+        raise WorkbenchError("ASSIGNEE_MISMATCH", "这项任务未分配给当前员工。")
+    if task["execution_mode"] != "mailbox":
+        raise WorkbenchError("MODE_MISMATCH", "这项任务不是邮件交办，不能从员工信箱接单或提交。")
     if task["cancel_requested"]:
         raise WorkbenchError("invalid_state", "任务已请求取消，不能继续提交。")
     return task, session
@@ -94,8 +128,9 @@ def list_mail_tasks(store, token):
 
 
 def accept_mail_task(store, token, task_id):
-    with store._transaction() as db:
+    with store._transaction(allow_paused=True) as db:
         task, session = _authorized_task(store, db, token, task_id)
+        _require_write_enabled(db)
         if task["status"] != "queued":
             raise WorkbenchError("invalid_state", "只有待接受的邮件任务可以接受。")
         from .workbench_resources import freeze
@@ -127,8 +162,9 @@ def accept_mail_task(store, token, task_id):
 
 def submit_mail_task(store, token, task_id, result):
     result = _text(result, "任务结果")
-    with store._transaction() as db:
+    with store._transaction(allow_paused=True) as db:
         task, session = _authorized_task(store, db, token, task_id)
+        _require_write_enabled(db)
         if task["status"] != "running":
             raise WorkbenchError("invalid_state", "请先明确接受任务，再提交结果等待验收。")
         result = store._scrub(db, result.replace(token, "[redacted]"))
@@ -136,14 +172,33 @@ def submit_mail_task(store, token, task_id, result):
             "UPDATE tasks SET status='review',result=?,updated_at=? WHERE id=?",
             (result, _now(), task_id),
         )
-        _bound_store(store, db).send_message(
-            session["project_id"],
-            "交付 / Delivery: " + task["title"][:270],
-            result,
-            sender_id=session["employee_id"],
-            reply_to=task["request_message_id"],
-            mailbox_token=token,
-        )
+        reviewer = task["review_recipient_id"]
+        if reviewer is not None:
+            # Never broadcast a private task result. Human selected this recipient;
+            # the submitting employee cannot choose or impersonate the reviewer.
+            db.execute("SAVEPOINT delivery_notification")
+            try:
+                _bound_store(store, db).send_message(
+                    session["project_id"],
+                    "交付 / Delivery: " + task["title"][:270],
+                    f"Task: {task_id}\n技术复核待处理；Human 仍需最终验收。\n{result}",
+                    recipient_id=reviewer,
+                    sender_id=session["employee_id"],
+                    reply_to=task["request_message_id"],
+                    request_id=f"mail-delivery:{task_id}:{task['run_id']}",
+                    mailbox_token=token,
+                )
+            except WorkbenchError as exc:
+                db.execute("ROLLBACK TO delivery_notification")
+                store._event(
+                    db,
+                    task_id,
+                    "review_notification_blocked",
+                    "交付已保存，但技术复核通知未送出；请 Human 检查复核者权限。",
+                    {"review_recipient_id": reviewer, "error_code": exc.code},
+                )
+            finally:
+                db.execute("RELEASE delivery_notification")
         store._event(
             db,
             task_id,

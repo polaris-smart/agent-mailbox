@@ -16,8 +16,48 @@ _ROOT = Path(__file__).resolve().parents[1]
 
 import pathlib
 import re
+import shutil
+import subprocess
+
+import pytest
 
 ASSETS = pathlib.Path(__file__).resolve().parents[1] / "src/agent_mailbox/workbench_assets"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available on this machine")
+def test_cancelled_member_removal_keeps_button_usable():
+    result = subprocess.run(
+        ["node", str(_ROOT / "tests/member_remove_cancel_ui.cjs")],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available on this machine")
+def test_codex_cli_receiver_uses_one_employee_and_explicit_thread_binding():
+    result = subprocess.run(
+        ["node", str(_ROOT / "tests/codex_cli_receiver_ui.cjs")],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available on this machine")
+def test_one_employee_mailbox_aggregates_projects_without_merging_app_identity():
+    result = subprocess.run(
+        ["node", str(_ROOT / "tests/fixed_mailbox_ui.cjs")],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def _label_keys(block: str) -> set[str]:
@@ -40,11 +80,20 @@ def _nav_labels() -> set[str]:
     return _label_keys(block)
 
 
-def test_every_view_has_a_sidebar_button():
+def _view_parents() -> dict[str, str]:
+    block = re.search(r"const viewParents = \{(.*?)\};", _js(), re.DOTALL).group(1)
+    return dict(re.findall(r'([a-z_]+):\s*"([a-z_]+)"', block))
+
+
+def test_every_view_has_a_navigation_entry():
     html = (ASSETS / "index.html").read_text(encoding="utf-8")
     buttons = set(re.findall(r'data-view="([a-z_]+)"', html))
-    missing = _nav_labels() - buttons
+    parents = _view_parents()
+    missing = _nav_labels() - buttons - parents.keys()
     assert missing == set(), f"这些视图没有菜单入口：{sorted(missing)}"
+    assert set(parents.values()) <= buttons, "Secondary views require a reachable sidebar parent"
+    assert not (parents.keys() & buttons), "Secondary views should not duplicate sidebar entries"
+    assert parents == {"blackboard": "tasks", "classroom": "members"}
 
 
 def test_every_view_has_a_renderer():
@@ -95,8 +144,9 @@ def _html_without_comments() -> str:
 def test_sidebar_buttons_are_real_markup_not_comments():
     html = _html_without_comments()
     buttons = set(re.findall(r'data-view="([a-z_]+)"', html))
-    assert _nav_labels() - buttons == set(), (
-        f"这些视图没有真按钮：{sorted(_nav_labels() - buttons)}"
+    primary_views = _nav_labels() - _view_parents().keys()
+    assert primary_views - buttons == set(), (
+        f"这些一级视图没有真按钮：{sorted(primary_views - buttons)}"
     )
 
 
@@ -164,26 +214,32 @@ def test_missing_proof_is_shown_explicitly():
 
 
 def test_confirm_never_runs_in_the_render_path():
-    """渲染路径**不得**弹确认框 ✓（真实 bug ✗：`window.confirm` 曾在 map 循环里 ⇒ 死按钮 ✓）。
-
-    判定：每个 `window.confirm(` 之前 240 字符内**必须**能找到事件绑定（addEventListener ✓），
-    否则说明它跑在"构建 DOM"的路径上 ✗。
-    """
+    """Reject render-time confirms while allowing the two longer click handlers."""
     source = (_ROOT / "src" / "agent_mailbox" / "workbench_assets" / "workbench.js").read_text(
         encoding="utf-8"
     )
     offenders = []
     for match in re.finditer(r"window\.confirm\(", source):
         head = source[max(0, match.start() - 240) : match.start()]
-        if "addEventListener" not in head:
+        link_handler = (
+            source.find("const runLink = async (action) => {")
+            < match.start()
+            < source.find('linkCheck.addEventListener("click", () => runLink("preview"))')
+            and 'linkConfirm.addEventListener("click", () => runLink("apply"))' in source
+        )
+        held_click = (
+            source.find('send.addEventListener("click", async () => {')
+            < match.start()
+            < source.find('heldList.append(el("li"')
+        )
+        if "addEventListener" not in head and not link_handler and not held_click:
             line = source[: match.start()].count("\n") + 1
             offenders.append(line)
     assert offenders == [], f"这些 window.confirm 没绑在事件里（会在渲染时弹框 ✗）：行 {offenders}"
 
 
-def test_every_nav_view_has_a_renderer_and_a_button():
-    """三处齐不变量（本轮把「教室」接上后新增 ✓）：每个 `navLabels` 键都必须同时具备
-    ① `renders` 映射条目 ✓ ② 侧栏 `data-view` 按钮 ✓ —— 少一处就是"加了视图忘接线" ✗。"""
+def test_every_nav_view_has_a_renderer_and_a_reachable_entry():
+    """Every view has a renderer and a direct or grouped navigation entry."""
     js = (_ROOT / "src" / "agent_mailbox" / "workbench_assets" / "workbench.js").read_text(
         encoding="utf-8"
     )
@@ -197,8 +253,8 @@ def test_every_nav_view_has_a_renderer_and_a_button():
     render_keys = set(re.findall(r"(\w+):\s*render\w+", renders_block.group(1)))
     button_keys = set(re.findall(r'data-view="([a-z]+)"', html))
     assert nav_keys == render_keys, f"侧栏键与渲染映射不一致 ✗：{nav_keys ^ render_keys}"
-    missing = nav_keys - button_keys
-    assert not missing, f"这些视图没有侧栏按钮（进不去 ✗）：{missing}"
+    missing = nav_keys - button_keys - _view_parents().keys()
+    assert not missing, f"这些视图没有导航入口：{missing}"
     assert "classroom" in nav_keys, "教室视图必须已接线 ✓"
 
 
@@ -216,9 +272,9 @@ def test_blackboard_shows_the_four_verbs_and_proof():
     ):
         assert verb in js, f"四动词缺 {verb} ✗"
     assert "task.proof" in js, "黑板必须显示证明有无 ✓（task.proof 来自 proof_index ✓）"
-    assert "blackboard: renderBlackboard" in js and 'data-view="blackboard"' in (
-        _ROOT / "src" / "agent_mailbox" / "workbench_assets" / "index.html"
-    ).read_text(encoding="utf-8")
+    assert "blackboard: renderBlackboard" in js
+    assert _view_parents()["blackboard"] == "tasks"
+    assert 'viewSwitcher("tasks")' in js
 
 
 def test_discovery_states_its_own_boundary():
@@ -236,31 +292,27 @@ def test_discovery_states_its_own_boundary():
 
 
 def test_member_rows_expose_mailbox_key_status():
-    """缺口 2 回归 ✓：成员行必须**显式标出钥匙状态** ✗ 并能一键签发 ✓。
-
-    （用户"加了人却收不到信"的真因 ✓：`add_project_member` 只建成员关系 ✓ **不签钥匙** ✗
-      而界面里当时既没有状态也没有按钮 ⇒ 只能靠我用脚本签 ✓ 现在闭环了 ✓）
-    """
+    """成员行显示接入状态，但不能签发一把无人持有的凭据。"""
     js = (_ROOT / "src" / "agent_mailbox" / "workbench_assets" / "workbench.js").read_text(
         encoding="utf-8"
     )
-    assert "attachKeyStatus" in js, "缺钥匙状态渲染 ✓"
-    assert "未签发钥匙" in js, "必须**显式**标出未签发 ✗ 不许让用户猜 ✓"
-    assert "api.createMailSession" in js, "必须能一键签发（人侧点击 = 显式确认 ✓）"
-    assert "api.mailSessions" in js, "必须读现有钥匙状态 ✓"
-    assert "token 绝不显示" in js, "签发后只显示到期时间 ✓ 绝不显示 token ✓"
-    assert "有效至" in js, "要显示钥匙到期时间（实测返回里有 expires_at ✓ 没有路径字段 ✗）"
+    block = js.split("function attachKeyStatus(", 1)[1].split("function renderKeys(", 1)[0]
+    assert "api.mailSessions(employee.id, projectId)" in block
+    assert "尚无接入凭据" in block and "收信待验证" in block
+    assert "openMailConnection(employee, projectId)" in block
+    assert "api.createMailSession" not in block
 
 
 def test_key_page_shows_per_project_keys():
-    """钥匙管理页 ✓（老板判据：界面上的功能都要真能用 ✗）—— 回答"谁在哪个项目、持哪把钥匙、何时到期" ✓。"""
+    """钥匙页按项目展示连接；配置和逐把撤销进入实际接入流程。"""
     js = (_ROOT / "src" / "agent_mailbox" / "workbench_assets" / "workbench.js").read_text(
         encoding="utf-8"
     )
-    assert "function renderKeys(" in js, "缺钥匙页渲染 ✓"
-    assert "api.mailSessions" in js and "api.revokeMailSession" in js, "必须能看 + 能撤销 ✓"
-    assert "未签发" in js, "缺钥匙的行必须**显式**标出 ✗"
-    assert "token 绝不显示" in js, "签发后绝不显示 token ✓"
+    block = js.split("function renderKeys(", 1)[1].split("function openMemberForm(", 1)[0]
+    assert "api.mailSessions(row.employee.id, row.projectId)" in block
+    assert "openMailConnection(row.employee, row.projectId)" in block
+    assert "api.createMailSession" not in block
+    assert "未签发" in block
 
 
 def test_sidebar_cannot_overlap_when_window_is_short():
@@ -385,6 +437,32 @@ def test_mode_is_not_decided_by_build_info_presence(tmp_path):
     ]
     assert "build-info" not in mode_block, "形态判定不得引用 build-info.json ✗"
     assert "code_path" in mode_block, "形态判定必须基于实际加载的代码路径 ✓"
+
+
+def test_source_runtime_ignores_stale_packaged_build_info(tmp_path, monkeypatch):
+    import pathlib
+
+    from agent_mailbox import workbench
+    from agent_mailbox.workbench_store import WorkbenchStore
+
+    store = WorkbenchStore(tmp_path / "home")
+    manifest = pathlib.Path(workbench.__file__).with_name("workbench_assets") / "build-info.json"
+    original_is_file = pathlib.Path.is_file
+    original_read_text = pathlib.Path.read_text
+
+    def is_file(path):
+        return True if path == manifest else original_is_file(path)
+
+    def read_text(path, *args, **kwargs):
+        if path == manifest:
+            raise AssertionError("source runtime must not read an old packaged manifest")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "is_file", is_file)
+    monkeypatch.setattr(pathlib.Path, "read_text", read_text)
+    info = workbench.build_info(store)
+    assert info["mode"] == "source"
+    assert info["built_at"] is None
 
 
 def test_employee_filters_are_not_nested_inside_the_search_label():

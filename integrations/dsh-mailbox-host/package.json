@@ -1,0 +1,10 @@
+{
+  "name": "agent-mailbox-dsh-host",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "index.mjs",
+  "scripts": {
+    "test": "node --test test.mjs"
+  }
+}

@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from . import workbench_events
+from .workbench_store import WorkbenchError
 
 PROOF_EVENT = "delivery_proof"
 VERIFY_EVENT = "delivery_verified"
@@ -93,6 +94,7 @@ def build_proof(
     criteria: Iterable[dict] = (),
     checks: Iterable[dict] = (),
     root: str | Path | None = None,
+    managed_completion: bool = False,
 ) -> dict[str, Any]:
     """Assemble a handoff sheet for a task and record it as a governance event.
 
@@ -101,8 +103,14 @@ def build_proof(
     "sha256": ..., "note": ...}``; ``checks`` items look like ``{"name": ..., "status":
     "pass|fail|not_run", "detail": ...}``.
     """
-    with store._transaction() as db:
+    with store._transaction(allow_paused=managed_completion) as db:
         task = store._required(db, "tasks", task_id)
+        if (
+            managed_completion
+            and db.execute("SELECT paused FROM update_settings WHERE id=1").fetchone()[0]
+            and (task["execution_mode"] != "managed" or task["status"] != "review")
+        ):
+            raise WorkbenchError("invalid_state", "只有待验收的受管执行可在更新等待期间记录证明。")
         workspace = db.execute(
             "SELECT * FROM task_workspaces WHERE task_id=?", (task_id,)
         ).fetchone()

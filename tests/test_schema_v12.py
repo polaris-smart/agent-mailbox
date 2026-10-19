@@ -33,9 +33,9 @@ def _v11_with_data(tmp_path):
 def test_migration_adds_tables_and_preserves_data(tmp_path):
     before = _v11_with_data(tmp_path)
     reopened = WorkbenchStore(tmp_path / "home")  # 触发 11→12 迁移 ✓
-    assert SCHEMA_VERSION == 12
+    assert SCHEMA_VERSION >= 12
     db = sqlite3.connect(reopened.db_path)
-    assert db.execute("PRAGMA user_version").fetchone()[0] == 12
+    assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"notifications", "identity_links"} <= names
     after = {
@@ -55,7 +55,9 @@ def test_migration_adds_tables_and_preserves_data(tmp_path):
 def test_migration_creates_a_backup(tmp_path):
     _v11_with_data(tmp_path)
     WorkbenchStore(tmp_path / "home")
-    backups = list((tmp_path / "home" / "workbench").glob("state-v11-before-v12-*.sqlite"))
+    backups = list(
+        (tmp_path / "home" / "workbench").glob(f"state-v11-before-v{SCHEMA_VERSION}-*.sqlite")
+    )
     assert backups, "迁移前必须自动备份 ✓（回滚路径）"
 
 

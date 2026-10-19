@@ -209,7 +209,7 @@ def test_known_clis_are_found_but_unsupported_entries_are_never_launched(discove
     directories, _ = discovery
     marker = tmp_path / "unsupported-was-launched"
     for kind in runtime.KNOWN_AGENTS:
-        command = "wb" if kind == "workbuddy" else kind
+        command = kind
         if kind == "codex":
             source = "print('Logged in')\n"
         elif kind == "claude":
@@ -220,7 +220,7 @@ def test_known_clis_are_found_but_unsupported_entries_are_never_launched(discove
     rows = runtime.discover_employees()
     assert {r["kind"] for r in rows} == set(runtime.KNOWN_AGENTS)
     assert not marker.exists()
-    assert next(r for r in rows if r["kind"] == "workbuddy")["entrypoint"].endswith("/wb")
+    assert next(r for r in rows if r["kind"] == "workbuddy")["entrypoint"].endswith("/workbuddy")
     assert next(r for r in rows if r["kind"] == "claude")["auth_status"] == "auth_required"
     assert all(
         r["auth_status"] == "not_checked" for r in rows if r["kind"] not in runtime.SUPPORTED
@@ -243,7 +243,7 @@ def test_discovery_keeps_multiple_physical_cli_entries_and_exposes_no_auth_outpu
     assert rows == [r for r in runtime.discover_employees() if r["kind"] == "codex"]
 
 
-def test_mac_bundle_identity_overrides_filename_and_does_not_merge_app_and_cli(
+def test_mac_bundle_identity_overrides_filename_and_wandb_wb_is_not_workbuddy(
     discovery, monkeypatch
 ):
     directories, apps = discovery
@@ -258,7 +258,7 @@ def test_mac_bundle_identity_overrides_filename_and_does_not_merge_app_and_cli(
     assert all(r["name"] == "Codex" and r["binary"] is None for r in codex_apps)
     assert {r["entrypoint"] for r in codex_apps} == {str(d / "ChatGPT.app") for d in apps}
     workbuddy = [r for r in rows if r["kind"] == "workbuddy"]
-    assert {r["connection_type"] for r in workbuddy} == {"cli", "app"}
+    assert {r["connection_type"] for r in workbuddy} == {"app"}
     assert all(
         not r["execution_supported"] and not r["execution_verified"] for r in workbuddy + codex_apps
     )

@@ -337,6 +337,8 @@ def read(
                     }
                 try:
                     parsed = json.loads(raw.decode("utf-8", errors="replace"))
+                    if _json_depth_exceeds(parsed, 512):
+                        raise RecursionError("JSON nesting exceeds the supported depth")
                 except ValueError:
                     return {
                         **base,
@@ -466,6 +468,22 @@ def read(
         "truncated": False,
         "refused": reason or "missing_path",
     }
+
+
+def _json_depth_exceeds(node: Any, limit: int) -> bool:
+    """Bound JSON nesting even on Python versions whose parser accepts deep arrays."""
+    pending = [(node, 0)]
+    while pending:
+        value, depth = pending.pop()
+        if isinstance(value, dict):
+            if depth >= limit and value:
+                return True
+            pending.extend((child, depth + 1) for child in value.values())
+        elif isinstance(value, list):
+            if depth >= limit and value:
+                return True
+            pending.extend((child, depth + 1) for child in value)
+    return False
 
 
 def _keys_bounded(node: Any, budget: int) -> tuple[Any, bool]:

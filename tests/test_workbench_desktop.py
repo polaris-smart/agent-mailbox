@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
+import plistlib
+import signal
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -64,6 +67,58 @@ def test_frozen_mac_without_pyobjc_falls_back(args, monkeypatch):
     assert _desktop_wanted(args) is False
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="WKWebView is macOS-only")
+@pytest.mark.parametrize("approved", [True, False])
+def test_native_shell_returns_javascript_confirm_choice(monkeypatch, approved):
+    """An App confirmation must reach WebKit; Cancel must not authorize a DELETE."""
+    from agent_mailbox import workbench_desktop as desktop
+
+    assert desktop._DesktopDelegate.instancesRespondToSelector_(
+        b"webView:runJavaScriptConfirmPanelWithMessage:initiatedByFrame:completionHandler:"
+    )
+
+    class Alert:
+        def __init__(self):
+            self.buttons = []
+
+        @classmethod
+        def alloc(cls):
+            cls.latest = cls()
+            return cls.latest
+
+        def init(self):
+            return self
+
+        def setMessageText_(self, value):
+            self.message = value
+
+        def setInformativeText_(self, value):
+            self.detail = value
+
+        def addButtonWithTitle_(self, value):
+            self.buttons.append(value)
+
+        def beginSheetModalForWindow_completionHandler_(self, window, callback):
+            assert window is delegate._window
+            assert len(self.buttons) == 2
+            callback(desktop.NSAlertFirstButtonReturn if approved else 0)
+
+    monkeypatch.setattr(desktop, "NSAlert", Alert, raising=False)
+    delegate = desktop._DesktopDelegate.alloc().initWithURL_("http://127.0.0.1:1")
+    delegate._window = object()
+    frame = SimpleNamespace(
+        request=lambda: SimpleNamespace(URL=lambda: SimpleNamespace(host=lambda: "127.0.0.1"))
+    )
+    choices = []
+    delegate.webView_runJavaScriptConfirmPanelWithMessage_initiatedByFrame_completionHandler_(
+        None, "Remove this member?", frame, choices.append
+    )
+    assert choices == [approved]
+    assert Alert.latest.message == "127.0.0.1"
+    assert Alert.latest.detail == "Remove this member?"
+    assert "setUIDelegate_(self)" in inspect.getsource(desktop._DesktopDelegate._ensure_window)
+
+
 @pytest.mark.parametrize(
     "stale", ['{"endpoint":"http://127.0.0.1:1","token":"stale"}', "broken-json"]
 )
@@ -96,7 +151,7 @@ SCRIPT = (
     "fake.run_desktop = fake_desktop\n"
     "sys.modules['agent_mailbox.workbench_desktop'] = fake\n"
     "from agent_mailbox import workbench\n"
-    "workbench.WorkbenchEngine = lambda store: types.SimpleNamespace(start=lambda: None, close=lambda: None)\n"
+    "workbench.WorkbenchEngine = lambda store: types.SimpleNamespace(start=lambda: None, close=lambda: None, active_worker_count=lambda: 0)\n"
     "workbench.main(['--home', sys.argv[1]])\n"
 )
 
@@ -161,6 +216,245 @@ def test_relaunch_focuses_existing_desktop_window(tmp_path, monkeypatch):
     finally:
         lock.close()
     assert opened == [["open", "-b", workbench.DESKTOP_BUNDLE_ID]]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="desktop shell is macOS-only")
+def test_native_launch_attaches_to_existing_headless_service(tmp_path, monkeypatch):
+    """A background owner has no native window for ``open -b`` to focus."""
+    root = tmp_path / "headless-home"
+    from agent_mailbox.workbench_lock import WorkbenchLock
+
+    root.joinpath("workbench").mkdir(parents=True)
+    lock = WorkbenchLock(root)
+    root.joinpath("workbench/instance.json").write_text(
+        json.dumps(
+            {
+                "endpoint": "http://127.0.0.1:1",
+                "token": "x",
+                "ui_mode": "headless",
+            }
+        )
+    )
+    calls = []
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(workbench.urllib.request, "urlopen", lambda *a, **k: _Response())
+    monkeypatch.setattr(workbench.subprocess, "run", lambda *a, **k: calls.append("open"))
+    monkeypatch.setitem(
+        sys.modules,
+        "agent_mailbox.workbench_desktop",
+        SimpleNamespace(
+            run_desktop=lambda url, **kw: calls.append((url, kw)),
+        ),
+    )
+    monkeypatch.setenv("AGENT_MAILBOX_DESKTOP", "1")
+    monkeypatch.delenv("AGENT_MAILBOX_NO_DESKTOP", raising=False)
+    try:
+        workbench.main(["--home", str(root)])
+    finally:
+        lock.close()
+    assert calls == [("http://127.0.0.1:1/#token=x", {})]
+
+
+def test_owner_instance_records_headless_launch_mode(tmp_path):
+    from agent_mailbox.workbench_store import WorkbenchStore
+
+    store = WorkbenchStore(tmp_path)
+    engine = SimpleNamespace(close=lambda: None)
+    server = workbench.WorkbenchHTTP(store, engine=engine, token="fixture", ui_mode="headless")
+    try:
+        assert json.loads(server.instance_path.read_text())["ui_mode"] == "headless"
+    finally:
+        server.close()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="desktop shell is macOS-only")
+def test_native_shell_attaches_to_live_headless_owner_without_stopping_it(tmp_path, monkeypatch):
+    """The ordinary App launch can use a resident service's existing URL."""
+    root = tmp_path / "attached-home"
+    script = (
+        "import sys, types\n"
+        "from agent_mailbox import workbench\n"
+        "workbench.WorkbenchEngine = lambda store: types.SimpleNamespace("
+        "start=lambda: None, close=lambda: None, active_worker_count=lambda: 0)\n"
+        "workbench.main(['--home', sys.argv[1], '--no-browser'])\n"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(root)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        url = process.stdout.readline().strip()
+        assert url.startswith("http://127.0.0.1:") and "/#token=" in url
+        assert json.loads((root / "workbench/instance.json").read_text())["ui_mode"] == "headless"
+        opened = []
+        monkeypatch.setattr(workbench.subprocess, "run", lambda *a, **k: opened.append("open"))
+        monkeypatch.setitem(
+            sys.modules,
+            "agent_mailbox.workbench_desktop",
+            SimpleNamespace(
+                run_desktop=lambda target, **kw: opened.append((target, kw)),
+            ),
+        )
+        monkeypatch.setenv("AGENT_MAILBOX_DESKTOP", "1")
+        monkeypatch.delenv("AGENT_MAILBOX_NO_DESKTOP", raising=False)
+        workbench.main(["--home", str(root)])
+        assert opened == [(url, {})]
+        assert process.poll() is None  # Closing the attached shell does not stop mail delivery.
+    finally:
+        if process.poll() is None:
+            process.terminate()
+        process.wait(timeout=8)
+    assert not (root / "workbench/instance.json").exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="desktop shell is macOS-only")
+def test_relaunch_of_side_by_side_app_focuses_its_own_bundle(tmp_path, monkeypatch):
+    root = tmp_path / "focus-home"
+    from agent_mailbox.workbench_lock import WorkbenchLock
+
+    root.joinpath("workbench").mkdir(parents=True)
+    lock = WorkbenchLock(root)
+    probe = tmp_path / "Agent Mailbox Probe.app" / "Contents"
+    (probe / "MacOS").mkdir(parents=True)
+    with (probe / "Info.plist").open("wb") as file:
+        plistlib.dump({"CFBundleIdentifier": "com.polaris-smart.agent-mailbox.probe"}, file)
+    root.joinpath("workbench/instance.json").write_text(
+        json.dumps({"endpoint": "http://127.0.0.1:1", "token": "x"})
+    )
+    opened = []
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(probe / "MacOS" / "Agent Mailbox Probe"))
+    monkeypatch.setattr(
+        workbench.subprocess,
+        "run",
+        lambda cmd, **_: opened.append(cmd) or SimpleNamespace(returncode=0),
+    )
+    monkeypatch.setattr(workbench.urllib.request, "urlopen", lambda *a, **k: _Response())
+    monkeypatch.setenv("AGENT_MAILBOX_DESKTOP", "1")
+    try:
+        workbench.main(["--home", str(root)])
+    finally:
+        lock.close()
+    assert opened == [["open", "-b", "com.polaris-smart.agent-mailbox.probe"]]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="desktop shell is macOS-only")
+def test_native_quit_request_stops_run_loop_without_terminating_process(monkeypatch):
+    from agent_mailbox import workbench_desktop as desktop
+
+    events = []
+
+    class App:
+        def stop_(self, _sender):
+            events.append("stop")
+
+        def postEvent_atStart_(self, event, at_start):
+            assert event == "wake-event"
+            assert at_start is True
+            events.append("post")
+
+        def terminate_(self, _sender):
+            raise AssertionError("terminate_ bypasses Python owner cleanup")
+
+    app = App()
+    monkeypatch.setattr(desktop, "NSApplication", SimpleNamespace(sharedApplication=lambda: app))
+    monkeypatch.setattr(
+        desktop,
+        "NSEvent",
+        SimpleNamespace(
+            otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2_=lambda *_: (
+                "wake-event"
+            )
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(desktop, "NSEventTypeApplicationDefined", 15, raising=False)
+    monkeypatch.setattr(desktop, "NSMakePoint", lambda *_: (0, 0), raising=False)
+    monkeypatch.setattr(desktop.AppHelper, "stopEventLoop", lambda: app.terminate_(None))
+
+    desktop._request_app_stop()
+    assert events == ["stop", "post"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="desktop shell is macOS-only")
+def test_native_menu_quit_uses_owner_cleanup_path(monkeypatch):
+    from agent_mailbox import workbench_desktop as desktop
+
+    calls = []
+    monkeypatch.setattr(desktop, "_request_app_stop", lambda: calls.append("stop"))
+    desktop._DesktopDelegate.terminate_.callable(object(), None)
+    assert calls == ["stop"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="desktop shell is macOS-only")
+def test_desktop_sigterm_bridge_wakes_cocoa_run_loop_and_restores_handler(monkeypatch):
+    from agent_mailbox import workbench_desktop
+
+    calls = []
+    prior_python = lambda *_: None
+    installed = {}
+
+    def fake_mach_signal(signum, handler):
+        calls.append(("mach", signum, handler))
+        installed[signum] = handler
+
+    monkeypatch.setattr(
+        workbench_desktop, "MachSignals", SimpleNamespace(signal=fake_mach_signal), raising=False
+    )
+    monkeypatch.setattr(workbench_desktop.signal, "getsignal", lambda _: prior_python)
+    monkeypatch.setattr(
+        workbench_desktop.signal, "signal", lambda *args: calls.append(("python", *args))
+    )
+    monkeypatch.setattr(
+        workbench_desktop,
+        "NSApplication",
+        SimpleNamespace(
+            sharedApplication=lambda: SimpleNamespace(
+                stop_=lambda _: calls.append(("stop",)),
+                postEvent_atStart_=lambda event, at_start: calls.append(("post", event, at_start)),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        workbench_desktop,
+        "NSEvent",
+        SimpleNamespace(
+            otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2_=lambda *_: (
+                "wake-event"
+            )
+        ),
+    )
+
+    restore = workbench_desktop._install_quit_signal()
+    installed[signal.SIGTERM](signal.SIGTERM)
+    restore()
+
+    assert calls[0][:2] == ("mach", signal.SIGTERM)
+    assert ("stop",) in calls
+    assert ("post", "wake-event", True) in calls
+    assert calls[-2:] == [("mach", signal.SIGTERM, None), ("python", signal.SIGTERM, prior_python)]
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="desktop shell is macOS-only")

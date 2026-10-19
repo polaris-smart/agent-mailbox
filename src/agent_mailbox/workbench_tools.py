@@ -1,6 +1,6 @@
 """Project MCP 工具名与作用域（**唯一声明源** ✓）。
 
-计数（2026-10-07 实测）：受管面 16 · 邮箱面 17 · **远端面 11**（= 共享 14 + workspace-only 2 − 未实现 5 ✓ 与实现一致 ✓）。
+计数：受管面 16 · 邮箱面 19 · 远端面 11（= 共享 14 + workspace-only 2 − 未实现 5）。
 共享 14 个。计数变更必须同步 tests/test_workbench_tools.py 的断言 ✓。
 
 Before this module the product shipped **three** related but hand-maintained tool
@@ -40,6 +40,8 @@ SHARED_TOOLS: dict[str, str] = {
 }
 
 MAILBOX_ONLY: dict[str, str] = {
+    "project_identity": "确认当前绑定的员工和项目身份",
+    "project_message_open": "明确打开收到的信并记录首次打开回执",
     "project_tasks": "读本人名下的任务",
     "project_task_accept": "明确接受任务（读 ≠ 接单）",
     "project_task_submit": "提交结果，等待人工验收",

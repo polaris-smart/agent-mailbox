@@ -3,10 +3,46 @@
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 
 import pytest
 
 from agent_mailbox import workbench_cli_query as cq
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable and shebang behavior")
+def test_gui_path_finds_tool_and_its_interpreter(tmp_path, monkeypatch):
+    bindir = tmp_path / ".local" / "bin"
+    bindir.mkdir(parents=True)
+    (bindir / "provider-test-python").symlink_to(sys.executable)
+    script = bindir / "graft"
+    script.write_text("#!/usr/bin/env provider-test-python\nprint('{\"found\": true}')\n")
+    script.chmod(0o700)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.delenv("AGENT_MAIL_GRAFT_BIN", raising=False)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    assert cq.resolve_binary("graft") == str(script)
+    result = cq.run("graft", [], cwd=tmp_path)
+    assert result["ok"] is True and result["data"] == {"found": True}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX execute permission")
+def test_explicit_non_executable_does_not_fall_back(tmp_path, monkeypatch):
+    script = tmp_path / "disabled"
+    script.write_text("not an executable")
+    script.chmod(0o600)
+    monkeypatch.setenv("AGENT_MAIL_GRAFT_BIN", str(script))
+    assert cq.resolve_binary("graft") is None
+
+
+def test_failed_process_with_json_is_not_success(tmp_path, monkeypatch, python_cli):
+    script = python_cli("import sys;print('{\"results\": []}');sys.exit(2)")
+    monkeypatch.setenv("AGENT_MAIL_GRAFT_BIN", str(script))
+    result = cq.run("graft", [], cwd=tmp_path)
+    assert result["ok"] is False
+    assert result["data"] is None
+    assert result["error"]["code"] == "CLI_FAILED"
 
 
 def test_env_override_wins(tmp_path, monkeypatch, python_cli):

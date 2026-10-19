@@ -22,7 +22,7 @@ const state = {
   changesPending: false, changeTimer: null, streamError: false,
   governance: null, governanceError: null, governanceLoading: false, governanceQueued: false,
   applicationStopping: false, applicationStopped: false,
-  legalDocuments: {},
+  legalDocuments: {}, aboutDiagnosticsOpen: false,
   updates: null, updatesLoading: false, updatesError: null, updatesAction: "", updatesAttempted: false, updatePauseUnconfirmed: false,
   taskFormUpdate: null,
   employeeQuery: "", employeeFilter: "all", mailboxEmployeeId: "", mailboxFolder: "inbox",
@@ -34,16 +34,17 @@ try { state.projectId = sessionStorage.getItem("agent-mailbox.workbench.project"
 try { if (sessionStorage.getItem("agent-mailbox.workbench.language-view") === "about") { state.view = "about"; sessionStorage.removeItem("agent-mailbox.workbench.language-view"); } } catch { /* optional */ }
 
 const navLabels = {
-  wall: t("交接台", "Handover desk"),
-  overview: t("项目概览", "Overview"), tasks: t("任务", "Tasks"), activity: t("工作日志", "Work log"),
-  employees: t("所有员工", "All employees"), members: t("项目成员", "Project members"), messages: t("项目消息", "Messages"), resources: t("资料与记忆", "Resources & memory"),
-  mailboxes: t("员工信箱", "Employee mailboxes"), classroom: t("教室", "Classroom"), blackboard: t("任务黑板", "Task board"), keys: t("钥匙", "Keys"), devices: t("设备", "Devices"), about: t("关于与设置", "About & settings"),
+  wall: t("待办与验收", "Actions & reviews"),
+  overview: t("项目概览", "Project overview"), tasks: t("任务", "Tasks"), activity: t("工作日志", "Work log"),
+  employees: t("所有员工", "All employees"), members: t("项目成员", "Project members"), messages: t("项目消息", "Project messages"), resources: t("资料与记忆", "Resources & memory"),
+  mailboxes: t("员工信箱", "Employee mailboxes"), classroom: t("成员状态", "Member status"), blackboard: t("任务进展", "Task progress"), keys: t("项目钥匙", "Project access keys"), devices: t("设备与连接", "Devices & connections"), about: t("关于与设置", "About & settings"),
 };
 const viewScopes = {
   employees: "global", mailboxes: "global", keys: "global", devices: "global", about: "global",
   wall: "project", overview: "project", tasks: "project", members: "project",
   messages: "project", resources: "project", activity: "project", classroom: "project", blackboard: "project",
 };
+const viewParents = { blackboard: "tasks", classroom: "members" };
 const statusLabels = {
   queued: t("排队中", "Queued"), starting: t("正在启动", "Starting"),
   running: t("正在执行", "Running"), waiting_approval: t("等待授权", "Needs permission"),
@@ -146,12 +147,17 @@ function formatDate(value, detailed = false) {
 function errorText(error) {
   if (error.status === 401 || (error.status === 403 && ["UNAUTHORIZED", "authorization_required"].includes(error.code))) return t("此页面没有访问授权。请从本机工作台入口重新打开。", "This page is not authorized. Reopen it from the workbench launcher on this computer.");
   const messages = {
+    MULTI_HUMAN_SCOPED_REQUIRED: t("这里是旧的整库工作台。已有其他人的私人项目，请进入「我的空间」查看自己获授权的内容。", "This full-store view is unavailable with other people's private projects. Open My spaces for your authorized work."),
     KNOWLEDGE_INDEX_BUSY: t("索引工具正在写入，请等它完成后再检查。", "The index tool is writing. Wait for it to finish, then check again."),
     authorization_required: t("请从本机工作台入口重新打开页面以连接服务。", "Reopen this page from the workbench launcher to connect."),
     request_timeout: t("服务响应超时，请稍后重试。", "The service took too long to respond. Try again."),
     connection_failed: t("无法连接工作台服务，请确认它正在运行后重试。", "Could not connect to the workbench. Check that it is running and try again."),
     invalid_response: t("服务返回了无法读取的数据，请刷新后重试。", "The service returned an unreadable response. Refresh and try again."),
     request_failed: t("操作没有完成，请重试。", "The operation did not complete. Try again."),
+    desktop_employee_required: t("这位员工登记为命令行实例。请另建一位 Codex 桌面员工，再连接桌面会话。", "This employee is registered as a CLI instance. Register a separate Codex Desktop employee before connecting the desktop session."),
+    cli_employee_required: t("这位员工登记为桌面应用实例。请另建一位 Codex 命令行员工，再连接 CLI 会话。", "This employee is registered as a desktop app instance. Register a separate Codex CLI employee before connecting a CLI session."),
+    separate_employee_required_for_desktop: t("该员工已有命令行接收路由。请使用独立的桌面员工身份。", "This employee already has a CLI receiver route. Use a separate desktop employee identity."),
+    separate_employee_required_for_cli: t("该员工已有桌面接收路由。请使用独立的命令行员工身份。", "This employee already has a desktop receiver route. Use a separate CLI employee identity."),
     // 铁律 2：这三条此前 UI 零映射，中文界面会直接漏出英文原文（a11y 评审 A6）
     MAILBOX_TOOL_DENIED: t("邮箱接入不提供这个操作。请让员工改用项目工具；若必须执行，请在终端运行 agent-mailbox wall 查看可用入口。", "This mailbox does not expose that operation. Ask the employee to use project tools; run `agent-mailbox wall` in a terminal to see available entries."),
     MAILBOX_ARGUMENT_DENIED: t("邮箱接入不允许这些参数（不能指定他人身份/项目/执行参数）。请让员工只传收件人与正文。", "These arguments are not allowed for a mailbox (no impersonation, project or execution overrides)."),
@@ -352,9 +358,9 @@ function renderSidebar() {
     }, el("span", { class: "project-symbol", "aria-hidden": "true" }, (item.name || "P").slice(0, 1)), el("span", { class: "project-name" }, item.name))));
   } else list.replaceChildren(el("p", { class: "sidebar-empty" }, state.data ? t("还没有项目，点击 + 开始。", "No projects yet. Select + to begin.") : t("连接后显示你的项目。", "Your projects appear when connected.")));
   for (const control of document.querySelectorAll("[data-view]")) {
-    const active = control.classList.contains("nav-item") && control.dataset.view === state.view;
+    const active = control.classList.contains("nav-item") && control.dataset.view === (viewParents[state.view] || state.view);
     control.classList.toggle("selected", active);
-    if (active) control.setAttribute("aria-current", "page");
+    if (active) control.setAttribute("aria-current", control.dataset.view === state.view ? "page" : "true");
     else control.removeAttribute("aria-current");
   }
   for (const control of list.querySelectorAll("[data-project]")) {
@@ -391,6 +397,22 @@ function renderSidebar() {
 }
 function heading(title, description, actions = []) {
   return el("div", { class: "page-heading" }, el("div", {}, el("h1", { tabindex: "-1" }, title), description ? el("p", { class: "subheading" }, description) : null), actions.length ? el("div", { class: "page-heading-actions" }, actions) : null);
+}
+
+function viewSwitcher(parent) {
+  const views = [parent, ...Object.keys(viewParents).filter(view => viewParents[view] === parent)];
+  return el("nav", { class: "view-switcher", "aria-label": navLabels[parent] }, views.map(view =>
+    el("button", {
+      type: "button", class: "view-switcher-item", "data-view": view,
+      "aria-current": view === state.view ? "page" : null,
+      disabled: !project(),
+    }, navLabels[view])));
+}
+
+function tableViewport(table, label) {
+  return el("div", {},
+    el("p", { class: "table-scroll-hint" }, t("左右滑动查看全部列。", "Scroll horizontally to see all columns.")),
+    el("div", { class: "view-table-scroll", role: "region", tabindex: "0", "aria-label": label }, table));
 }
 function runtimeNotice({ force = false } = {}) {
   const runtime = state.data?.runtime;
@@ -594,7 +616,7 @@ function renderTasks() {
   search.addEventListener("input", () => { state.search = search.value; renderTaskList(); });
   filterRow.append(search);
   const list = el("div", { id: "task-list-container" });
-  const result = [heading(navLabels.tasks, t("分配任务 → 员工通过邮件交接 → Human 验收成果。全过程保留记录。", "Assign work → employees hand off through mail → Human accepts the outcome. Each step is recorded."), [button(t("新任务", "New task"), "new-task", { class: "primary", icon: "plus" })]), runtimeNotice(), filterRow, list];
+  const result = [heading(navLabels.tasks, t("分配任务 → 员工通过邮件交接 → Human 验收成果。全过程保留记录。", "Assign work → employees hand off through mail → Human accepts the outcome. Each step is recorded."), [button(t("新任务", "New task"), "new-task", { class: "primary", icon: "plus" })]), viewSwitcher("tasks"), runtimeNotice(), filterRow, list];
   window.queueMicrotask(renderTaskList);
   return result;
 }
@@ -648,48 +670,211 @@ function executionGuide(employee, error = null) {
   }
   return el("section", { class: "connection-guide" }, el("h3", {}, title), el("p", {}, explanation), el("p", {}, next), code ? el("p", { class: "field-hint" }, t("诊断代码", "Diagnostic code"), " · ", el("code", {}, code)) : null);
 }
-function openMailConnection(employee) {
+function openMailConnection(employee, preferredProjectId = state.projectId) {
   const body = openForm(t(`${employee.name} · 邮箱接入`, `${employee.name} · Mailbox connection`), t("连接员工已有的 App/CLI 会话，不启动新任务。", "Connect the employee's existing App/CLI session without starting a task."));
   if (!body) return;
   const projects = state.data.projects.filter(item => employee.project_ids?.includes(item.id) || employee.project_id === item.id);
   const select = el("select", { id: "mail-session-project" }, projects.map(item => el("option", { value: item.id }, item.name)));
-  if (projects.some(item => item.id === state.projectId)) select.value = state.projectId;
+  if (projects.some(item => item.id === preferredProjectId)) select.value = preferredProjectId;
+  let generation = 0, recordsRequest = 0;
+  const current = (epoch, projectId) => epoch === generation && select.value === projectId && body.isConnected && formDialog.open;
   const role = el("textarea", { id: "mail-session-role", maxlength: 4000, value: employee.project_roles?.[select.value] || "" });
   const saveRole = button(t("保存项目职责", "Save project responsibility"), null, { disabled: !projects.length });
-  saveRole.addEventListener("click", async () => { try { await api.setProjectRole(select.value, employee.id, role.value); employee.project_roles = { ...employee.project_roles, [select.value]: role.value }; showToast(t("职责已保存，不改变权限。", "Responsibility saved; permissions unchanged.")); } catch (e) { formError(error, e); } });
+  saveRole.addEventListener("click", async () => {
+    const epoch = generation, projectId = select.value, submittedRole = role.value;
+    saveRole.disabled = true;
+    try {
+      await api.setProjectRole(projectId, employee.id, submittedRole);
+      employee.project_roles = { ...employee.project_roles, [projectId]: submittedRole };
+      if (current(epoch, projectId)) showToast(t("职责已保存，不改变权限。", "Responsibility saved; permissions unchanged."));
+    } catch (e) { if (current(epoch, projectId)) formError(error, e); }
+    finally { saveRole.disabled = !projects.length; }
+  });
   const label = el("input", { id: "mail-session-label", value: `${employee.name} · ${employee.connection_type}`, maxlength: 120 });
   const output = el("pre", { class: "mail-session-config field-hint" });
   const records = el("div", {});
   const error = errorBox();
-  const create = button(t("生成邮箱接入配置", "Generate mailbox connection"), null, { class: "primary", disabled: !projects.length || employee.lifecycle !== "active" || employee.node_id !== state.data.node.id });
+  const canIssue = projects.length && employee.lifecycle === "active" && employee.node_id === state.data.node.id;
+  const create = button(t("生成项目接入凭据", "Generate project access credential"), null, { class: "primary", disabled: !canIssue });
+  const refreshRecords = button(t("刷新接入凭据", "Refresh access credentials"), null, { disabled: !projects.length });
   const load = async () => {
     if (!select.value) return;
-    const result = await api.mailSessions(employee.id, select.value);
+    const epoch = generation, projectId = select.value, requestId = ++recordsRequest;
+    records.replaceChildren();
+    let result;
+    try { result = await api.mailSessions(employee.id, projectId); }
+    catch (e) { if (current(epoch, projectId) && requestId === recordsRequest) formError(error, e); return; }
+    if (!current(epoch, projectId) || requestId !== recordsRequest) return;
     records.replaceChildren(...result.sessions.map(item => {
       const revoke = button(t("撤销", "Revoke"), null, { disabled: !!item.revoked_at });
       // 确认必须**在点击时**问 ✗：原先它在 map 渲染循环里 ⇒ 一渲染就弹框，
       // 用户取消时按钮已被造出却**没绑处理器**（死按钮 ✗）。2026-10-07 修复 ✓
       revoke.addEventListener("click", async () => {
+        if (!current(epoch, projectId)) return;
         if (!window.confirm(t("撤销邮箱会话不可撤销，确定继续？", "This cannot be undone. Continue?"))) return;
-        try { await api.revokeMailSession(item.id); await load(); } catch (e) { formError(error, e); }
+        revoke.disabled = true;
+        try { await api.revokeMailSession(item.id); if (current(epoch, projectId)) await load(); }
+        catch (e) { if (current(epoch, projectId)) formError(error, e); }
+        finally { revoke.disabled = !!item.revoked_at; }
       });
-      return el("div", { class: "field-hint" }, `${item.label} · ${!item.active ? t("已失效", "Inactive") : t("已签发，未代表已连接", "Issued; connection unverified")} · ${item.expires_at}`, revoke);
+      const install = employee.kind === "codex" && canIssue ? button(t("项目接入设置", "Project connection setup"), null) : null;
+      if (install) install.addEventListener("click", () => {
+        if (current(epoch, projectId)) openCodexMailboxInstall(employee, projectId, item.id, item.active);
+      });
+      return el("div", { class: "field-hint" }, `${item.label} · ${!item.active ? t("已失效", "Inactive") : t("已签发，未代表已连接", "Issued; connection unverified")} · ${item.expires_at}`, install, revoke);
     }));
   };
   create.addEventListener("click", async () => {
+    const epoch = generation, projectId = select.value;
     create.disabled = true;
+    output.textContent = ""; error.hidden = true;
     try {
-      const result = await api.createMailSession({ employee_id: employee.id, project_id: select.value, label: label.value });
+      const result = await api.createMailSession({ employee_id: employee.id, project_id: projectId, label: label.value });
+      if (!current(epoch, projectId)) return;
       output.textContent = JSON.stringify(result.config, null, 2);
       await load();
-    } catch (e) { formError(error, e); }
-    finally { create.disabled = false; }
+    } catch (e) {
+      if (current(epoch, projectId)) formError(error, new Error(`${t("配置签发结果未确认。请先刷新会话记录核对，避免重复签发。", "Configuration issuance is unconfirmed. Refresh session records before issuing again.")} ${errorText(e)}`));
+    }
+    finally { create.disabled = !canIssue; }
   });
-  select.addEventListener("change", () => { role.value = employee.project_roles?.[select.value] || ""; output.textContent = ""; load().catch(e => formError(error, e)); });
+  refreshRecords.addEventListener("click", () => { error.hidden = true; load(); });
+  select.addEventListener("change", () => { generation++; role.value = employee.project_roles?.[select.value] || ""; output.textContent = ""; error.hidden = true; load(); });
   body.append(formField(t("项目", "Project"), select), formField(t("项目职责（不改变权限）", "Project responsibility (does not change permissions)"), role), saveRole, formField(t("会话名称", "Session name"), label),
     el("p", { class: "field-hint" }, t("将配置加入该 App/CLI 的 MCP 设置。供应商格式不同，可能需重新连接或重启会话。凭据仅限本人和本项目，不交给子代理；30 天后需重新签发。邮件保存不代表已读或已唤醒。", "Add this configuration to the App/CLI's MCP settings. Client formats differ; reconnect or restart may be needed. Credentials bind this employee and project; do not share with subagents. Reissue after 30 days. Stored mail does not prove it was read or woke the employee.")),
-    create, output, records, error);
-  load().catch(e => formError(error, e));
+    create, output, refreshRecords, records, error);
+  load();
+}
+
+function openCodexMailboxInstall(employee, projectId, sessionId, active) {
+  const project = state.data.projects.find(item => item.id === projectId);
+  const body = openForm(t("项目邮箱 · Codex 接入", "Project mailbox · Codex setup"), `${employee.name} · ${project?.name || projectId}`);
+  if (!body) return;
+  const live = () => body.isConnected && formDialog.open;
+  const status = el("p", { role: "status" });
+  const error = errorBox();
+  const sessions = el("select", { id: "mail-install-thread" });
+  const history = el("select", { id: "mail-install-history", hidden: true });
+  const oldInstall = el("select", { id: "mail-install-replace", hidden: true });
+  const loadOld = button(t("读取可替换的旧接入", "Load previous connection to replace"), null);
+  const replacePreview = button(t("预览替换为当前凭据", "Preview replacement with current credential"), null);
+  const consent = el("input", { id: "mail-install-consent", type: "checkbox" });
+  const scope = el("div", { hidden: true });
+  const preview = button(t("检查并预览", "Check and preview"), null);
+  const verify = button(t("检查此会话身份", "Check this session's identity"), null);
+  const apply = button(t("确认安装到此项目", "Confirm project installation"), null, { class: "primary" });
+  const refresh = button(t("刷新接入记录", "Refresh installation record"), null);
+  const choose = button(t("读取已打开的会话", "Load open sessions"), null);
+  const remove = button(t("移除此项目配置", "Remove this project configuration"), null);
+  const recover = button(t("核对并恢复记录", "Check and recover record"), null);
+  const selectionArea = el("div", {}, choose, formField(t("已打开的 Codex 会话", "Open Codex session"), sessions), preview, verify,
+    loadOld, oldInstall, replacePreview);
+  const confirmation = el("label", {for: "mail-install-consent", class: "checkbox-choice receiver-session-choice"}, consent, el("span", {}, t("我确认将此员工邮箱接入上述项目目录的 Codex 会话。", "I confirm this employee's mailbox may be used by Codex sessions in the workspace above.")));
+  let busy = false, plan = null, pastPlans = [];
+  const labels = {
+    confirmation_required: t("检查已完成，等待你确认安装范围。", "Checks complete. Confirm the installation scope."),
+    written_waiting_for_host: t("项目配置已写入，尚未确认宿主加载。请在 Codex 中信任此项目并重新连接 MCP，再检查实际工具身份；不会自动重启或开启新聊天。", "Project configuration written; host loading is not verified. Trust this project in Codex and reconnect MCP, then check the actual tool identity. No automatic restart or new chat."),
+    removed: t("本次项目配置已移除。邮箱凭据尚未撤销，已加载的工具可能仍保留连接；可返回会话记录撤销凭据。", "This project configuration was removed. Its credential is not revoked, and loaded tools may still be connected. Revoke the credential from the session records if needed."),
+    outcome_requires_review: t("上次安装结果未确认。保留了恢复记录，先核对当前配置，不能直接重试写入。", "The last installation result is unconfirmed. Recovery records were retained. Inspect the current configuration before another write."),
+    configuration_changed: t("安装后配置已有变化，需核对后再操作。", "Configuration changed after installation. Review it before continuing."),
+    preview_expired: t("预览已过期，请重新检查配置。", "This preview expired. Check the configuration again."),
+    replaced: t("此接入已由新凭据替换。请到新凭据的接入记录核对；旧凭据不会自动撤销。", "This connection was replaced with a new credential. Check the new credential's installation record. The old credential is not automatically revoked."),
+    closed_at_original: t("当前配置与本次操作前一致，旧计划已结束。可重新检查并预览；这不证明宿主从未加载，凭据也未撤销。", "Current configuration matches the pre-operation version. This plan is closed; check and preview again. This does not prove the host never loaded it, and no credential was revoked."),
+  };
+  const controls = () => {
+    choose.disabled = busy || !active;
+    sessions.disabled = busy || !active;
+    history.disabled = busy;
+    preview.disabled = busy || !active || !sessions.value;
+    preview.hidden = plan?.state === "written_waiting_for_host";
+    verify.hidden = plan?.state !== "written_waiting_for_host";
+    verify.disabled = busy || !active || !sessions.value || plan?.state !== "written_waiting_for_host";
+    loadOld.hidden = replacePreview.hidden = plan?.state === "written_waiting_for_host";
+    loadOld.disabled = busy || !active;
+    oldInstall.disabled = busy || !active || plan?.state === "written_waiting_for_host";
+    oldInstall.hidden = oldInstall.options.length < 2 || plan?.state === "written_waiting_for_host";
+    replacePreview.disabled = busy || !active || !sessions.value || !oldInstall.value;
+    consent.disabled = busy || plan?.state !== "confirmation_required";
+    confirmation.hidden = plan?.state !== "confirmation_required";
+    apply.hidden = plan?.state !== "confirmation_required";
+    selectionArea.hidden = ["outcome_requires_review", "removed", "replaced"].includes(plan?.state);
+    apply.disabled = busy || !active || !consent.checked || plan?.state !== "confirmation_required" || Date.now() > plan.expires_at * 1000;
+    remove.disabled = busy || !plan || !["written_waiting_for_host", "configuration_changed"].includes(plan.state);
+    recover.hidden = !["outcome_requires_review", "configuration_changed", "closed_at_original"].includes(plan?.state);
+    recover.disabled = busy || !plan;
+    refresh.disabled = busy;
+  };
+  const display = (value) => {
+    plan = value; consent.checked = false; scope.replaceChildren(); scope.hidden = !plan;
+    formDialog.scrollTop = 0;
+    status.textContent = plan ? labels[plan.state] || t("状态未知，请核对记录。", "Unknown state; inspect the record.") : t("尚无安装记录。先选择在此项目目录打开的 Codex 会话。", "No installation record. Choose a Codex session opened in this project's folder.");
+    if (plan?.connection_verified === true && plan.verification_scope === "mailbox_identity_only") status.textContent = t("本次检查：此会话的员工、项目与邮箱身份一致。仅证明此刻的邮箱连接，不代表通知已送达、任务已接单或模型已执行。", "Current check: this session's employee, project and mailbox identity match. This confirms the mailbox connection now, not notification delivery, task acceptance or model execution.") + ` (${new Date(plan.checked_at * 1000).toLocaleTimeString()})`;
+    if (plan) scope.append(el("p", {}, t("作用目录：", "Workspace: "), el("code", {}, plan.workspace)), el("p", { class: "field-hint" }, t("此目录下的 Codex 会话将使用这位员工的项目邮箱。不是仅给一条聊天授权，不修改全局设置，也不额外签发凭据。邮件提醒的原会话绑定仍需单独确认。", "Codex sessions in this workspace will use this employee's project mailbox. This is not permission for a single chat. Global settings stay unchanged and no additional credential is issued. The notification session binding remains separate.")));
+    if (plan?.replaces) scope.append(el("p", {class: "field-hint"}, t("本次替换旧接入，保留其他配置；不撤销旧凭据，也不自动重连宿主。", "This replaces the previous connection and preserves other configuration. It does not revoke the old credential or reconnect the host automatically.")));
+    if (plan?.recovery_observation === "current_matches_removal_before") scope.append(el("p", {class: "field-hint"}, t("当前配置仍与移除前一致；尚未确认移除。核对后可再次明确执行移除。", "Current configuration matches the version before removal. Removal is not confirmed; inspect it before explicitly removing again.")));
+    apply.textContent = plan?.replaces ? t("确认替换此项目接入", "Confirm project connection replacement") : t("确认安装到此项目", "Confirm project installation");
+  };
+  const perform = async (action) => {
+    if (busy || !live()) return;
+    busy = true; controls(); error.hidden = true;
+    try {
+      if (action === "sessions") {
+        const result = await api.receiverAction({employee_id: employee.id, project_id: projectId, action: "sessions"});
+        if (!live()) return;
+        display(plan?.state === "written_waiting_for_host" ? {...plan, connection_verified: false} : null);
+        sessions.replaceChildren(el("option", {value: ""}, t("请选择会话", "Choose a session")), ...result.sessions.map(item => el("option", {value: item.id}, `${item.name || t("未命名", "Unnamed")} · ${item.cwd}`)));
+        status.textContent = result.sessions.length ? t("选择项目目录对应的会话，再检查配置。", "Select the session for this project folder, then check its configuration.") : t("没有已打开的会话。请从接收设置启动 Codex 并打开原聊天。", "No open sessions. Start Codex from receiver settings and open the original chat.");
+      } else {
+        if (action === "verify") display({...plan, connection_verified: false});
+        const result = await api.mailboxInstall({employee_id: employee.id, project_id: projectId, session_id: sessionId, action,
+          ...(["preview", "preview_replace", "verify"].includes(action) ? {thread_id: sessions.value} : {}),
+          ...(action === "preview_replace" ? {plan_id: oldInstall.value} : {}),
+          ...(action === "verify" ? {plan_id: plan.plan_id} : {}),
+          ...(["apply", "remove", "recover"].includes(action) ? {plan_id: plan.plan_id, confirmed: true} : {})});
+        if (live()) {
+          if (action === "replaceable") {
+            display(null);
+            oldInstall.replaceChildren(el("option", {value: ""}, t("请选择旧接入", "Choose a previous connection")),
+              ...result.plans.map(item => el("option", {value: item.plan_id}, `${new Date((item.expires_at - 600) * 1000).toLocaleString()} · ${item.session_id}`)));
+            oldInstall.hidden = result.plans.length === 0;
+            status.textContent = result.plans.length ? t("选择要替换的旧接入并预览。不会复用或重新启用旧凭据。", "Select the previous connection and preview the replacement. Its old credential will not be reused or reactivated.") : t("没有找到本工具安装且仍可替换的旧接入。", "No previous connection installed by this tool is available for replacement.");
+          } else if (action === "history") {
+            pastPlans = result.plans;
+            history.replaceChildren(...pastPlans.map(item => el("option", {value: item.plan_id}, `${new Date((item.expires_at - 600) * 1000).toLocaleString()} · ${labels[item.state] || item.state}`)));
+            history.hidden = pastPlans.length < 2;
+            display(pastPlans[0] || null);
+          } else { history.hidden = true; display(result); }
+        }
+      }
+    } catch (e) {
+      if (live()) {
+        if (["apply", "remove", "recover"].includes(action)) {
+          if (plan) plan = {...plan, state: "outcome_requires_review"};
+          consent.checked = false;
+          status.textContent = t("结果尚未确认，请先刷新接入记录，不要重复安装。", "The outcome is unconfirmed. Refresh the installation record before another installation.");
+        } else if (["preview", "preview_replace"].includes(action)) display(null);
+        formError(error, e);
+      }
+    } finally { busy = false; if (live()) controls(); }
+  };
+  choose.addEventListener("click", () => perform("sessions"));
+  preview.addEventListener("click", () => perform("preview"));
+  loadOld.addEventListener("click", () => perform("replaceable"));
+  replacePreview.addEventListener("click", () => { if (!replacePreview.disabled) perform("preview_replace"); });
+  oldInstall.addEventListener("change", () => { display(null); controls(); });
+  verify.addEventListener("click", () => { if (!verify.disabled) perform("verify"); });
+  apply.addEventListener("click", () => { if (!apply.disabled && consent.checked) perform("apply"); });
+  refresh.addEventListener("click", () => perform("history"));
+  remove.addEventListener("click", () => { if (!remove.disabled && window.confirm(t("仅移除本次添加的项目配置；不撤销邮箱凭据。继续？", "Remove only the configuration added by this installer, without revoking the credential. Continue?"))) perform("remove"); });
+  recover.addEventListener("click", () => { if (!recover.disabled && window.confirm(t("只核对当前配置并恢复本次记录，不重写配置、不重启宿主，也不撤销凭据。继续？", "Only check current configuration and recover this record. No configuration rewrite, host restart or credential revocation. Continue?"))) perform("recover"); });
+  sessions.addEventListener("change", () => { display(plan?.state === "written_waiting_for_host" ? {...plan, connection_verified: false} : null); controls(); });
+  history.addEventListener("change", () => { display(pastPlans.find(item => item.plan_id === history.value) || null); controls(); });
+  consent.addEventListener("change", controls);
+  history.setAttribute("aria-label", t("历史安装记录", "Previous installations"));
+  oldInstall.setAttribute("aria-label", t("待替换的旧接入", "Previous connection to replace"));
+  body.append(status, history, selectionArea, scope, confirmation,
+    el("div", {class: "approval-actions"}, apply, refresh, recover, remove), error);
+  controls(); perform("history");
 }
 
 async function openConnectionGuide(employee) {
@@ -770,8 +955,8 @@ function employeeRow(employee, { membership = false } = {}) {
     const remove = button(t("移出项目", "Remove from project"), null, { class: "small" });
     remove.addEventListener("click", async () => {
       const projectId = state.projectId;
-      remove.disabled = true;
       if (!window.confirm(t("移出项目不可撤销，确定继续？", "This cannot be undone. Continue?"))) return;
+      remove.disabled = true;
       try { await api.removeProjectMember(projectId, employee.id); await refresh(); showToast(t("已移出项目，员工身份与历史仍保留。", "Removed from this project. Identity and history are retained.")); }
       catch (error) { showToast(errorText(error), true); remove.disabled = false; }
     });
@@ -847,19 +1032,19 @@ function renderBlackboard() {
     el("td", {}, employeeName(task.assignee_id)),
     el("td", {}, task.proof ? t("有", "Yes") : t("无", "None")),
     el("td", {}, formatDate(task.updated_at))));
-  return [heading(navLabels.blackboard, t("每个任务走到哪一步、谁负责、证据齐不齐。", "Each task's stage, owner and evidence.")),
+  return [heading(navLabels.blackboard, t("每个任务走到哪一步、谁负责、证据齐不齐。", "Each task's stage, owner and evidence.")), viewSwitcher("tasks"),
     rows.length
-      ? el("table", { class: "board-table" },
+      ? tableViewport(el("table", { class: "board-table" },
           el("thead", {}, el("tr", {},
             el("th", { scope: "col" }, t("任务", "Task")), el("th", { scope: "col" }, t("流程", "Stage")),
             el("th", { scope: "col" }, t("状态", "Status")), el("th", { scope: "col" }, t("负责人", "Owner")),
             el("th", { scope: "col" }, t("证明", "Proof")), el("th", { scope: "col" }, t("更新", "Updated")))),
-          el("tbody", {}, ...rows))
-      : empty(t("这个项目还没有任务", "No tasks in this project"), t("先在「交接台」或项目里派一单。", "Dispatch work from the handover desk first."))];
+          el("tbody", {}, ...rows)), navLabels.blackboard)
+      : empty(t("这个项目还没有任务", "No tasks in this project"), t("在「任务」页新建任务。", "Create a task from Tasks."))];
 }
 
 function renderClassroom() {
-  // 教室视图（④ · 老师看学生）：形态 / 在岗 / 授权 / 能否自动执行 一屏可见 ✓
+  // Project member capabilities; unknown values remain explicitly unverified.
   // 只用既有只读字段 ✓；**拿不到的一律写「未采集」** ✗（不猜 ✗ 不造 ✗）
   const people = (state.data?.employees || []).filter(e => e.project_id === state.projectId || e.project_ids?.includes(state.projectId));
   const rows = people.map(employee => el("tr", {},
@@ -871,16 +1056,16 @@ function renderClassroom() {
       ? employee.auth_status : t("未采集", "Not collected")),
     el("td", {}, employee.execution_supported ? t("可自动执行", "Managed") : t("仅邮箱", "Mailbox only")),
     el("td", {}, employee.execution_verified ? t("已验证", "Verified") : t("未验证", "Unverified"))));
-  return [heading(navLabels.classroom, t("看每位学生：形态、在岗、能否被自动执行。", "Form, duty status, and managed capability per member.")),
+  return [heading(navLabels.classroom, t("查看当前项目成员的连接方式、在岗状态与执行能力。", "Connection, duty status, and execution capability of current project members.")), viewSwitcher("members"),
     rows.length
-      ? el("table", { class: "classroom-table" },
+      ? tableViewport(el("table", { class: "classroom-table" },
           el("thead", {}, el("tr", {},
-            el("th", { scope: "col" }, t("学生", "Member")), el("th", { scope: "col" }, t("类型", "Kind")),
+            el("th", { scope: "col" }, t("成员", "Member")), el("th", { scope: "col" }, t("类型", "Kind")),
             el("th", { scope: "col" }, t("形态", "Form")), el("th", { scope: "col" }, t("在岗", "Duty")),
             el("th", { scope: "col" }, t("授权", "Auth")), el("th", { scope: "col" }, t("执行", "Execution")),
             el("th", { scope: "col" }, t("验证", "Verified")))),
-          el("tbody", {}, ...rows))
-      : empty(t("这个项目还没有学生", "No members in this project"),
+          el("tbody", {}, ...rows)), navLabels.classroom)
+      : empty(t("这个项目还没有成员", "No members in this project"),
               t("先去「项目成员」把员工加进来。", "Add employees from Project members first."))];
 }
 
@@ -930,10 +1115,10 @@ function openManualEmployeeForm() {
        el("span", {}, t("登记后加入当前项目 ✓（当前无项目则跳过 ✗）", "Join the current project after registering"))),
     el("label", {}, t("可执行入口（绝对路径）", "Executable entry point (absolute path)"), entry,
        el("p", { class: "field-hint" }, t("必须真实存在且可执行 ✓ 扫描未发现不影响登记 ✓", "Must exist and be executable. Being undiscovered is fine."))),
-    box.node, end.node,
+    box, end.node,
   );
   form.addEventListener("submit", async (event) => {
-    event.preventDefault(); end.submit.disabled = true; box.node.hidden = true;
+    event.preventDefault(); end.submit.disabled = true; box.hidden = true;
     try {
       await api.addEmployee({
         name: name.value.trim(), kind: kind.value, connection_type: connection.value,
@@ -999,7 +1184,7 @@ function renderEmployees() {
   queueMicrotask(renderEmployeeGrid);
   const notice = unsignedNotice();
   return [notice, heading(navLabels.employees, t("你的 AI 员工，在这里相识，在项目里协作。", "Meet your AI employees here. Collaborate in projects."), [button(t("发现员工", "Discover employees"), "discover", { class: "primary", icon: "plus" }), button(t("创建项目", "Create project"), "new-project", { icon: "folder" })]),
-    el("div", { class: "employee-directory-toolbar" }, el("label", { class: "employee-search" }, icon("search"), search),       filters, el("span", { id: "employee-result-count", class: "muted small-text employee-result-count" }, t(`${people.length} 个入口`, `${people.length} entries`)), button(t("手工登记", "Register manually"), null, { class: "small", "data-action": "manual-employee" })),
+    el("div", { class: "employee-directory-toolbar" }, el("label", { class: "employee-search" }, icon("search"), search),       filters, el("span", { id: "employee-result-count", class: "muted small-text employee-result-count" }, t(`${people.length} 个入口`, `${people.length} entries`)), button(t("手工登记", "Register manually"), "manual-employee", { class: "small" })),
     people.length ? grid : empty(t("从你已有的员工开始", "Start with your existing employees"), t("发现并登记这台设备上的 AI 工具，无需先创建项目。", "Discover tools on this device before creating a project."), "discover", t("发现已有员工", "Discover existing employees"), "users"),
     el("p", { class: "directory-note" }, t("入口不等于独立账号；登录、执行支持和执行验证分别记录。可拖入左侧项目，或点“选择项目”。", "An entry is not a separate account. Sign-in, task support and verified execution are distinct. Drag into a project or Choose project."))];
 }
@@ -1013,6 +1198,720 @@ function openEmployeeProjects(employee) {
     add.addEventListener("click", () => submitAction(add, error, () => api.addProjectMember(item.id, employee.id), async () => { await refresh(); add.textContent = t("已加入", "Joined"); add.disabled = true; showToast(t(`${employee.name} 已加入项目。`, `${employee.name} joined the project.`)); }));
     body.append(el("div", { class: "member-picker-row" }, icon("folder"), el("strong", {}, item.name), add));
   }
+}
+function openNativeReceiverStatus(employee) {
+  const body = openForm(t("接收状态", "Reception status"), t("查看本机接收状态。修复操作会先说明影响，确认后才执行。", "Check local reception. Repair actions explain their effects and require confirmation."));
+  if (!body) return;
+  const projects = state.data.projects.filter(p => employee.project_id === p.id || employee.project_ids?.includes(p.id));
+  const select = el("select", {id: "native-receiver-project"}, projects.map(p => el("option", {value: p.id}, p.name)));
+  if (projects.some(p => p.id === state.projectId)) select.value = state.projectId;
+  const status = el("p", {id: "native-receiver-status", role: "status", "aria-live": "polite"});
+  const backlog = el("p", {id: "native-receiver-backlog", class: "field-hint", role: "status", hidden: true});
+  const retraction = el("p", {id: "native-retraction-status", class: "field-hint", hidden: true});
+  const refresh = button(t("刷新状态", "Refresh status"), null);
+  const error = errorBox();
+  const labels = {
+    binding_required: t("尚未授权此员工的原会话。需先完成宿主接收插件与会话授权设置。", "No existing session is authorized for this employee. Set up the host receiver and session authorization first."),
+    route_required: t("已有会话绑定，但未配置匹配的接收路由。", "A session is bound, but its reception route is not configured."),
+    receiver_offline: t("接收组件离线或尚未加载。请检查宿主是否运行并启用了接收插件。", "The receiver is offline or not loaded. Check that the host is running with its receiver enabled."),
+    host_unavailable: t("接收组件可响应，但宿主通知服务目前不可用。", "The receiver responds, but the host notification service is unavailable."),
+    session_reconnect_required: t("宿主在线，但此员工授权的原会话无法接收提醒。请核对当前会话并重新授权连接；待办邮件不会因此视为已送达。", "The host is online, but this employee's authorized session cannot receive notifications. Check the current session and reconnect with authorization; pending mail is not treated as delivered."),
+    component_available: t("接收组件可用。仍需核对原会话，并用实际收信确认投递。", "The receiver component is available. Verify the intended session and confirm delivery with actual mail."),
+    configuration_changed: t("检查期间配置已变化，请刷新后重新核对。", "Configuration changed during this check. Refresh and inspect it again."),
+    check_unconfirmed: t("尚未确认接收状态。请保留现有配置并检查宿主接入。", "Reception could not be confirmed. Keep the existing configuration and inspect the host connection."),
+    unsupported: t("当前系统或宿主暂不支持原会话自动接收邮件提醒；员工仍可主动查看项目邮箱。", "This system or host does not yet support automatic mail alerts in an existing session. The employee can still check the project mailbox directly."),
+    remote_device: t("这是另一台设备的员工，请在所属设备检查接收状态。", "This employee is on another device. Check reception on that device."),
+  };
+  let epoch = 0;
+  const inspect = async () => {
+    const own = ++epoch, projectId = select.value;
+    refresh.disabled = true; error.hidden = true;
+    retraction.hidden = true; backlog.hidden = true;
+    status.textContent = projectId ? t("正在检查接收组件…", "Checking receiver…") : t("先将此员工加入项目。", "Add this employee to a project first.");
+    if (!projectId) return;
+    const live = () => own === epoch && body.isConnected && formDialog.open && select.value === projectId;
+    try {
+      const result = await api.nativeReceiverStatus(employee.id, projectId);
+      if (live()) {
+        status.textContent = labels[result.state] || labels.check_unconfirmed;
+        if (Number.isSafeInteger(result.pending_alert_count) && result.pending_alert_count > 0) {
+          const oldest = result.oldest_pending_alert_at ? formatDate(result.oldest_pending_alert_at, true) : t("时间未记录", "time unavailable");
+          const unknown = Number.isSafeInteger(result.unknown_delivery_alert_count)
+            ? Math.max(0, Math.min(result.unknown_delivery_alert_count, result.pending_alert_count)) : 0;
+          backlog.textContent = unknown ? t(
+            `此员工在当前项目有 ${result.pending_alert_count} 条提醒尚无确定送达回执，其中 ${unknown} 条投递结果未知；系统不会自动重投，请先核对原会话。最早记录于 ${oldest}。邮件仍在信箱中。`,
+            `This employee has ${result.pending_alert_count} alerts without confirmed delivery receipts in this project; ${unknown} ${unknown === 1 ? "alert has" : "alerts have"} an unknown delivery result. Unknown deliveries will not be retried automatically; check the original host session first. Oldest recorded ${oldest}. Mail remains in the mailbox.`) : t(
+            `此员工在当前项目有 ${result.pending_alert_count} 条待处理提醒；最早记录于 ${oldest}。邮件仍在信箱中，不代表已送达。`,
+            `This employee has ${result.pending_alert_count} pending alerts in this project; oldest recorded ${oldest}. Mail remains in the mailbox; this does not confirm delivery.`);
+          backlog.hidden = false;
+        }
+        const counts = result.opened_alert_retractions;
+        if (result.host_kind === "deepseek" && counts && ["pending", "unknown", "binding_changed"].every(key => Number.isSafeInteger(counts[key]) && counts[key] >= 0)) {
+          retraction.textContent = t(
+            `已读后排队提醒：待撤回 ${counts.pending} · 结果不确定 ${counts.unknown} · 会话绑定变化 ${counts.binding_changed}。这是撤队账，不代表 Agent 已处理邮件。`,
+            `Queued alerts after mail opens: ${counts.pending} awaiting retraction · ${counts.unknown} uncertain · ${counts.binding_changed} session binding changed. These are queue records, not evidence that the Agent processed mail.`);
+          retraction.hidden = false;
+        }
+      }
+    } catch (e) { if (live()) { status.textContent = labels.check_unconfirmed; formError(error, e); } }
+    finally { if (live()) refresh.disabled = false; }
+  };
+  select.addEventListener("change", inspect); refresh.addEventListener("click", inspect);
+  body.append(formField(t("项目", "Project"), select), status, backlog, retraction,
+    el("p", {class: "field-hint"}, t("组件可用不代表原会话已收到提醒、已读、接单或 Human 验收。下方诊断接入只核验路由，不会接通首次收信。", "Component availability does not establish notification delivery, reading, task acceptance or Human approval. Diagnostic admission below checks only the route; it does not connect first-time mail reception.")), refresh, error);
+  if (employee.kind === "hermes" && employee.node_id === state.data.node?.id && employee.lifecycle === "active") {
+    const discover = button(t("查找配置档", "Find profiles"), null);
+    const profileStatus = el("p", {id: "hermes-profile-status", role: "status", "aria-live": "polite"});
+    const profiles = el("ul", {class: "receiver-profile-list", hidden: true});
+    const linkCheck = button(t("检查复用已有原会话", "Check existing session link"), null);
+    const linkConfirm = button(t("确认连接此项目", "Confirm this project link"), null, {attrs: {hidden: true}});
+    const linkStatus = el("p", {role: "status", "aria-live": "polite"});
+    let linkFingerprint = null, linkPending = false;
+    const resetLink = () => {
+      linkFingerprint = null; linkConfirm.hidden = true;
+      linkCheck.disabled = !select.value;
+      linkStatus.textContent = t("逐项目授权；不会自动连接此员工参与的其他项目。", "Authorize each project separately; other projects are not linked automatically.");
+    };
+    const runLink = async (action) => {
+      if (linkPending || !select.value || (action === "apply" && !linkFingerprint)) return;
+      const projectId = select.value, own = profileEpoch;
+      const live = () => own === profileEpoch && body.isConnected && formDialog.open && select.value === projectId;
+      const fingerprint = linkFingerprint;
+      if (action === "apply" && !window.confirm(t(
+        "此项目的新邮件提醒将进入这位 Hermes 员工已授权的同一个原会话，可能包含私人项目内容。旧提醒会留待单独核对，不会随连接补投。确认只连接此项目？",
+        "New mail alerts from this project will enter this Hermes employee's already authorized original session and may include private project content. Older alerts will be held for separate review, not replayed by this link. Link only this project?"))) return;
+      linkPending = true; linkCheck.disabled = true; linkConfirm.disabled = true;
+      linkStatus.textContent = t("正在核对现有路由…", "Checking the existing route…");
+      try {
+        const result = await api.hermesProjectLink({employee_id: employee.id, project_id: projectId,
+          action, ...(action === "apply" ? {fingerprint, confirmed: true} : {})});
+        if (!live()) return;
+        if (result.delivery_verified !== false) throw new Error("unconfirmed");
+        if (result.state === "confirmation_required" && action === "preview"
+            && /^[a-f0-9]{64}$/.test(result.fingerprint)) {
+          linkFingerprint = result.fingerprint; linkConfirm.hidden = false;
+          linkStatus.textContent = result.repair_required
+            ? t("此项目已有同一会话绑定，但接收路由不完整；确认后只补齐这个项目。", "This project already has the same session binding, but its receiver route is incomplete. Confirmation repairs only this project.")
+            : t("找到此员工已授权的原会话。确认后只连接当前项目；仍需用实际来信验证接收。", "An authorized original session was found. Confirmation links only this project; actual mail is still needed to verify reception.");
+        } else if (result.state === "already_linked" || result.state === "linked_runtime_unverified") {
+          linkFingerprint = null; linkConfirm.hidden = true;
+          const held = Number.isSafeInteger(result.old_alerts_held) ? result.old_alerts_held : 0;
+          linkStatus.textContent = held ? t(
+            `此项目路由已配置；${held} 条旧提醒已暂停，须另行核对，不会自动补投。原会话收信仍需实际新信核验。`,
+            `This project route is configured; ${held} older alerts are held for separate review and will not be replayed automatically. Actual reception still needs a new test mail.`) : t(
+            "此项目路由已配置。原会话收信仍需实际新信核验。", "This project route is configured. Actual reception still needs a new test mail.");
+          await inspect();
+        } else throw new Error("unconfirmed");
+      } catch (_) {
+        if (live()) {
+          linkFingerprint = null; linkConfirm.hidden = true;
+          linkStatus.textContent = t("连接未确认完成；若写入中断，此项目会保持安全暂停。请刷新并检查路由，勿直接重投旧提醒。", "The link was not confirmed complete. An interrupted write leaves this project safely gated. Refresh and inspect the route; do not replay old alerts directly.");
+        }
+      } finally {
+        linkPending = false;
+        if (live()) { linkCheck.disabled = false; linkConfirm.disabled = false; }
+      }
+    };
+    linkCheck.addEventListener("click", () => runLink("preview"));
+    linkConfirm.addEventListener("click", () => runLink("apply"));
+    const linkDetails = el("details", {class: "receiver-project-link"},
+      el("summary", {}, t("将当前项目连接到已有原会话", "Link this project to an existing session")),
+      el("p", {class: "field-hint"}, t("仅复用同一员工已配置的唯一 Hermes 原会话；不接入其他员工，不自动连接其他项目，也不启动宿主。", "Reuse only this employee's uniquely configured Hermes original session. No other employee or project is linked, and the host is not started.")),
+      el("div", {class: "receiver-profile-actions"}, linkCheck, linkConfirm), linkStatus);
+    const heldCheck = button(t("查看此项目旧提醒", "Review older alerts"), null);
+    const heldStatus = el("p", {role: "status", "aria-live": "polite"});
+    const heldList = el("ul", {class: "receiver-held-list", hidden: true});
+    let heldEpoch = 0, heldPending = false;
+    const resetHeld = () => {
+      heldEpoch++; heldList.replaceChildren(); heldList.hidden = true;
+      heldCheck.disabled = !select.value;
+      heldStatus.textContent = t("旧提醒不会随项目连接自动补投。", "Older alerts are not replayed when a project is linked.");
+    };
+    const reviewHeld = async () => {
+      if (heldPending || !select.value) return;
+      const own = ++heldEpoch, projectId = select.value;
+      const live = () => own === heldEpoch && body.isConnected && formDialog.open && select.value === projectId;
+      heldPending = true; heldCheck.disabled = true; heldList.replaceChildren(); heldList.hidden = true;
+      heldStatus.textContent = t("正在核对旧提醒…", "Checking older alerts…");
+      try {
+        const result = await api.hermesHeldMail({employee_id: employee.id, project_id: projectId, action: "list"});
+        if (!live()) return;
+        if (result.state !== "held_mail_list" || result.delivery_verified !== false || !Array.isArray(result.items)) throw new Error("unconfirmed");
+        for (const item of result.items) {
+          if (!/^message_[a-f0-9]{32}$/.test(item.id) || typeof item.title !== "string" || typeof item.created_at !== "string") throw new Error("unconfirmed");
+          const view = button(t("查看旧信正文", "Read older letter"), null);
+          const send = button(t("确认补达这一封", "Confirm this redelivery"), null, {attrs: {hidden: true}});
+          const letter = el("pre", {class: "receiver-held-body", hidden: true});
+          let approval = null;
+          view.addEventListener("click", async () => {
+            if (heldPending || !live()) return;
+            heldPending = true; heldCheck.disabled = true; view.disabled = true;
+            approval = null; send.hidden = true; letter.hidden = true;
+            try {
+              const preview = await api.hermesHeldMail({employee_id: employee.id, project_id: projectId,
+                message_id: item.id, action: "preview"});
+              if (!live()) return;
+              if (preview.state !== "confirmation_required" || preview.message_id !== item.id
+                  || preview.title !== item.title || typeof preview.body !== "string"
+                  || !/^[a-f0-9]{64}$/.test(preview.fingerprint)
+                  || preview.delivery_verified !== false) throw new Error("unconfirmed");
+              approval = preview.fingerprint;
+              letter.textContent = preview.body; letter.hidden = false; send.hidden = false;
+              heldStatus.textContent = t("请先核对上方的项目、收件人、标题与完整正文，再确认这一封。", "Review the project, recipient, title and full body before confirming this letter.");
+            } catch (_) {
+              if (live()) heldStatus.textContent = t("旧信正文无法确认；请刷新清单。", "The older letter could not be confirmed; refresh the list.");
+            } finally {
+              heldPending = false;
+              if (live()) { heldCheck.disabled = false; view.disabled = false; }
+            }
+          });
+          send.addEventListener("click", async () => {
+            if (heldPending || !live() || !approval || letter.hidden) return;
+            const fingerprint = approval;
+            approval = null; send.hidden = true;
+            if (!window.confirm(t(
+              `仅将这封旧信重新排入 ${employee.name} 在当前项目的原会话提醒：${item.title}。这不代表宿主已收到。确认？`,
+              `Queue only this older letter for ${employee.name}'s original session in this project: ${item.title}. This does not prove host delivery. Confirm?`))) return;
+            heldPending = true; heldCheck.disabled = true; view.disabled = true;
+            try {
+              const outcome = await api.hermesHeldMail({employee_id: employee.id, project_id: projectId,
+                message_id: item.id, action: "apply", fingerprint, confirmed: true});
+              if (!live()) return;
+              if (outcome.state !== "old_mail_pending" || outcome.delivery_verified !== false) throw new Error("unconfirmed");
+              heldStatus.textContent = t("这封旧信已进入待投递；仍需宿主回执或收件人明确打开。", "This letter is pending delivery; a host receipt or explicit recipient open is still required.");
+              heldList.replaceChildren(); heldList.hidden = true;
+            } catch (_) {
+              if (live()) heldStatus.textContent = t("补达结果未确认。请刷新旧提醒清单，不要重复点击。", "Redelivery is unconfirmed. Refresh the older-alert list before trying again.");
+            } finally {
+              heldPending = false;
+              if (live()) { heldCheck.disabled = false; view.disabled = false; }
+            }
+          });
+          const projectName = select.selectedOptions[0]?.textContent?.trim() || projectId;
+          const scope = t(`收件人：${employee.name} · 项目：${projectName}`,
+            `Recipient: ${employee.name} · Project: ${projectName}`);
+          heldList.append(el("li", {}, el("span", {}, `${item.title} · ${formatDate(item.created_at, true)}`),
+            el("span", {class: "receiver-held-scope"}, scope), view, letter, send));
+        }
+        heldList.hidden = result.items.length === 0;
+        heldStatus.textContent = result.items.length ? t(
+          `此项目有 ${result.items.length} 封可逐封核对的普通旧信；任务和投递结果未知的信不在此列。${result.has_more ? "仍有更多，请先处理当前列表。" : ""}`,
+          `This project has ${result.items.length} ordinary older letters for individual review. Tasks and unknown delivery effects are excluded.${result.has_more ? " More remain after this page." : ""}`)
+          : t("此项目没有可补达的普通旧信。", "No ordinary older letters are eligible in this project.");
+      } catch (_) {
+        if (live()) heldStatus.textContent = t("旧提醒状态无法确认；请刷新接收状态。", "Older-alert status is unconfirmed; refresh reception status.");
+      } finally {
+        heldPending = false;
+        if (live()) heldCheck.disabled = false;
+      }
+    };
+    heldCheck.addEventListener("click", reviewHeld);
+    const heldDetails = el("details", {class: "receiver-held-mail"},
+      el("summary", {}, t("逐封核对旧提醒", "Review older alerts individually")),
+      el("p", {class: "field-hint"}, t("只有当前项目中未送达、未打开的普通邮件可经你确认后重新排队；任务与投递结果未知的信不会在这里补投。", "Only unopened ordinary mail from this project can be queued again after your confirmation. Tasks and uncertain deliveries are excluded.")),
+      heldCheck, heldStatus, heldList);
+    const details = el("details", {class: "receiver-profile-discovery"},
+      el("summary", {}, t("本机 Hermes 配置档", "Local Hermes profiles")),
+      el("p", {class: "field-hint"}, t("只查找这台设备标准安装位置中的配置档名称，不读取聊天内容或修改设置。", "Look up profile names in this device's standard installation only. No chat content is read and no settings are changed.")),
+      discover, profileStatus, profiles);
+    let profileEpoch = 0;
+    const resetProfiles = () => {
+      profileEpoch++; profiles.replaceChildren(); profiles.hidden = true;
+      discover.disabled = !select.value;
+      profileStatus.textContent = select.value ? t("尚未查找。配置档与已授权会话是两回事。", "Not checked yet. A profile is not an authorized session.") : t("先将此员工加入项目。", "Add this employee to a project first.");
+      details.removeAttribute("aria-busy");
+    };
+    const profileRow = (profile, projectId, own) => {
+      const status = el("p", {role: "status", "aria-live": "polite"}, t("尚未检查诊断准备状态。", "Diagnostic preparation has not been checked."));
+      const check = button(t("查看准备状态", "Check preparation"), null);
+      const preview = button(t("预览诊断准备", "Preview diagnostic setup"), null);
+      const confirm = button(t("确认准备诊断组件", "Confirm diagnostic setup"), null, {attrs: {hidden: true}});
+      const remove = button(t("移除诊断组件", "Remove diagnostic component"), null, {attrs: {hidden: true}});
+      const controls = [check, preview, confirm, remove];
+      const grantCheck = button(t("检查原会话授权", "Check session permission"), null);
+      const grantConfirm = button(t("允许原会话接收邮件提醒", "Allow mail alerts in this session"), null, {attrs: {hidden: true}});
+      const grantStatus = el("p", {class: "hermes-grant-status", role: "status", "aria-live": "polite"});
+      controls.push(grantCheck, grantConfirm);
+      const admissionStatus = el("p", {role: "status", "aria-live": "polite"}, t("尚未检查诊断接入。", "Diagnostic admission has not been checked."));
+      const admissionCheck = button(t("查看接入状态", "Check admission"), null);
+      const admissionPreview = button(t("预览诊断接入", "Preview diagnostic admission"), null, {attrs: {hidden: true}});
+      const admissionExecute = button(t("确认诊断接入", "Confirm diagnostic admission"), null, {attrs: {hidden: true}});
+      const admissionVerify = button(t("核验当前诊断路由", "Verify current diagnostic route"), null, {attrs: {hidden: true}});
+      const admissionReconcile = button(t("核对恢复结果", "Reconcile restart"), null, {attrs: {hidden: true}});
+      const admissionRestore = button(t("恢复原服务", "Restore original Gateway"), null, {attrs: {hidden: true}});
+      const admissionResume = button(t("确认插件后恢复", "Resume after plugin confirmation"), null, {attrs: {hidden: true}});
+      const admissionControls = [admissionCheck, admissionPreview, admissionExecute, admissionVerify,
+        admissionReconcile, admissionRestore, admissionResume];
+      controls.push(...admissionControls);
+      let grantPreview = null;
+      let planId = null, admissionPlanId = null, preparationReady = false, pending = false;
+      const live = () => own === profileEpoch && body.isConnected && formDialog.open && select.value === projectId;
+      const show = (result) => {
+        if (result.profile_id !== profile.id || result.will_activate !== false || result.will_write_injection_grant !== false || result.session_verified !== false || result.delivery_verified !== false || result.activation_requested !== false) throw new Error("unconfirmed");
+        if (result.state === "not_prepared_here") {
+          planId = null;
+          status.textContent = t("此处没有准备记录；尚未连接原会话。", "No preparation record here; the existing session is not connected.");
+        } else {
+          if (typeof result.plan_id !== "string" || !/^[a-f0-9]{32}$/.test(result.plan_id)) throw new Error("unconfirmed");
+          planId = result.plan_id;
+          const labels = {
+            preview: t("预览完成。确认后只安装停用的诊断组件，不会接通收信。", "Preview ready. Confirmation installs only a disabled diagnostic component; mail reception stays disconnected."),
+            prepared_not_activated: t("诊断组件已准备，但尚未启用；原会话没有接通收信。", "Diagnostic component prepared but inactive; the existing session is not connected to mail."),
+            preparation_removed: t("诊断组件已移除；原会话仍未接通。", "Diagnostic component removed; the existing session remains disconnected."),
+            configuration_changed: t("配置已变化，准备状态无法确认。请保留现场并检查。", "Configuration changed. Preparation is unconfirmed; inspect before changing anything."),
+            preparation_incomplete: t("上次准备中断，结果无法确认。请保留现场并检查。", "Previous preparation was interrupted. Its result is unconfirmed; inspect before changing anything."),
+          };
+          if (!Object.hasOwn(labels, result.state)) throw new Error("unconfirmed");
+          status.textContent = labels[result.state];
+        }
+        confirm.hidden = result.state !== "preview";
+        remove.hidden = result.state !== "prepared_not_activated";
+        preview.hidden = result.state === "preview" || result.state === "prepared_not_activated" || result.state === "configuration_changed" || result.state === "preparation_incomplete";
+        preparationReady = result.state === "prepared_not_activated";
+        admissionPreview.hidden = !preparationReady || admissionPlanId !== null;
+      };
+      const run = async (action) => {
+        if (pending || !live()) return;
+        pending = true; controls.forEach(control => { control.disabled = true; });
+        status.textContent = t("正在核对诊断准备…", "Checking diagnostic preparation…");
+        try {
+          const result = await api.hermesDiagnostic({employee_id: employee.id, project_id: projectId,
+            action, ...(action === "preview" || (action === "lookup" && !planId) ? {profile_id: profile.id} : {plan_id: planId}),
+            ...(action === "apply" || action === "remove" ? {confirmed: true} : {})});
+          if (live()) show(result);
+        } catch (_) {
+          if (live()) {
+            status.textContent = t("准备结果尚未确认。请先查看状态，不要重复确认安装。", "Preparation is unconfirmed. Check status before confirming setup again.");
+            confirm.hidden = true; preview.hidden = true; remove.hidden = true;
+          }
+        } finally {
+          pending = false;
+          if (live()) controls.forEach(control => { control.disabled = false; });
+        }
+      };
+      const runGrant = async (action) => {
+        if (pending || !live() || (action === "apply" && !grantPreview)) return;
+        const approved = grantPreview;
+        grantPreview = null; grantConfirm.hidden = true;
+        pending = true; controls.forEach(control => { control.disabled = true; });
+        grantStatus.textContent = t("正在核对原会话授权…", "Checking session permission…");
+        try {
+          const result = await api.hermesGrant({employee_id: employee.id, project_id: projectId,
+            profile_id: profile.id, action,
+            ...(action === "apply" ? {confirmed: true, expected_binding_id: approved.binding_id,
+              expected_config_sha256: approved.config_sha256} : {})});
+          if (!live()) return;
+          if (result.profile_id !== profile.id || typeof result.binding_id !== "string" || !/^binding_[a-f0-9]{32}$/.test(result.binding_id)
+              || typeof result.config_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(result.config_sha256)
+              || result.runtime_verified !== false || result.delivery_verified !== false
+              || !["grant_preview", "already_enabled", "grant_enabled_runtime_unverified"].includes(result.state)
+              || result.enabled !== (result.state !== "grant_preview")
+              || (action === "preview" && result.state === "grant_enabled_runtime_unverified")
+              || (action === "apply" && (result.state === "grant_preview" || result.binding_id !== approved.binding_id))) throw new Error("unconfirmed");
+          if (result.state === "grant_preview") {
+            grantPreview = result; grantConfirm.hidden = false;
+            grantStatus.textContent = t("已绑定原会话的提醒授权已关闭。确认后仅恢复该授权，不新增会话，也不启动或重载 Gateway。", "Mail alerts are disabled for the bound session. Confirmation restores only this permission; it does not add a session or start or reload Gateway.");
+          } else {
+            await inspect();
+            if (!live()) return;
+            grantStatus.textContent = t("原会话提醒授权已开启，已重新检查上方的接收状态。仍需实际收信确认投递；此次未启动或重载宿主。", "Session alert permission is enabled; reception status above has been checked again. Actual mail is still needed to verify delivery. No host was started or reloaded.");
+          }
+        } catch (_) {
+          if (live()) grantStatus.textContent = t("无法确认原会话授权。请重新检查；不要据此认定已接通。首次接入或多会话配置不能用此操作修复。", "Session permission could not be confirmed. Check again; reception is not verified. This repair does not enroll new sessions or change multi-session configurations.");
+        } finally {
+          pending = false;
+          if (live()) controls.forEach(control => { control.disabled = false; });
+        }
+      };
+      const admissionLabels = {
+        not_admitted_here: t("尚无诊断接入计划。先准备停用组件。", "No diagnostic admission plan. Prepare the disabled component first."),
+        preview: t("计划已预览；确认后会在空闲时短暂停止并恢复原服务。", "Plan previewed. Confirmation briefly stops and restores the original service when idle."),
+        diagnostic_enabled_restart_required: t("诊断组件已提交；正在运行的路由仍需核验。", "Diagnostic component committed; the running route still needs verification."),
+        diagnostic_runtime_observed: t("诊断路由已核实。原会话获知邮件、接单和交付仍未验证。", "Diagnostic route verified. Mail receipt in the original session, acceptance and delivery remain unverified."),
+        diagnostic_enabled_runtime_unconfirmed: t("诊断组件已提交，但当前运行路由无法确认；未证明原会话收信。", "Diagnostic component committed, but the current route is unconfirmed; mail reception in the original session is not established."),
+        stop_outcome_requires_inspection: t("停机结果不明。只可先核证停机，再恢复原服务。", "Stop outcome is uncertain. Prove the stop before restoring the original service."),
+        plugin_outcome_requires_inspection: t("插件结果不明。只有官方状态确认已提交后才可恢复服务。", "Plugin outcome is uncertain. Restore only after the official status proves commitment."),
+        restart_outcome_requires_inspection: t("重启结果不明。先核对现役实例，不要重复启动。", "Restart outcome is uncertain. Reconcile the live instance; do not start it again."),
+        recorded_complete_runtime_unconfirmed: t("接入账已完成；当前运行仍需重新核验。", "Admission record is complete; current runtime needs re-verification."),
+        pre_admission_restored: t("原服务已恢复；诊断组件未接入。", "Original service restored; diagnostic component was not admitted."),
+        pre_admission_restored_recorded: t("已记录恢复原服务；当前运行状态仍需检查。", "Original service restoration recorded; current runtime still needs checking."),
+        pre_admission_restore_requires_inspection: t("原服务恢复结果不明。不要再次启动。", "Original service restoration is uncertain. Do not start it again."),
+        first_contact_not_started: t("尚未执行接入。", "Admission has not started."),
+        gateway_drain_not_idle: t("原服务仍有工作，未停机或启用组件。", "The original service is busy; no stop or plugin admission occurred."),
+        gateway_drain_changed: t("空闲状态已变化，未停机或启用组件。", "Idle state changed; no stop or plugin admission occurred."),
+        existing_hermes_route_requires_cutover: t("已有 Hermes 收信路由；首次接入不能覆盖它。", "An existing Hermes mail route requires a separate cutover."),
+      };
+      const hideAdmissionActions = () => admissionControls.slice(1).forEach(control => { control.hidden = true; });
+      const inspectAdmission = async (message = null) => {
+        const existing = await api.hermesAdmission({employee_id: employee.id,
+          project_id: projectId, action: "lookup", profile_id: profile.id});
+        if (!live()) return;
+        if (existing.profile_id !== profile.id || existing.runtime_verified !== false
+            || existing.session_verified !== false || existing.delivery_verified !== false) throw new Error("unconfirmed");
+        admissionPlanId = existing.state === "not_admitted_here" ? null : existing.plan_id;
+        if (admissionPlanId !== null && (typeof admissionPlanId !== "string" || !/^[a-f0-9]{32}$/.test(admissionPlanId))) throw new Error("unconfirmed");
+        const phase = admissionPlanId === null ? "first_contact_not_started"
+          : (await api.hermesAdmission({employee_id: employee.id, project_id: projectId,
+              action: "first_contact_status", plan_id: admissionPlanId})).state;
+        if (!live()) return;
+        let firstContactAvailable = true;
+        let firstContactMessage = null;
+        if (phase === "first_contact_not_started") {
+          const receiver = await api.nativeReceiverStatus(employee.id, projectId);
+          if (!live()) return;
+          firstContactAvailable = receiver.host_kind === "hermes"
+            && receiver.hermes_route_present === false
+            && receiver.binding_configured === false
+            && receiver.state === "binding_required";
+          if (!firstContactAvailable) firstContactMessage = receiver.host_kind === "hermes"
+              && receiver.hermes_route_present === true
+            ? admissionLabels.existing_hermes_route_requires_cutover
+            : t("无法确认此处没有既有 Hermes 路由；请先刷新接收状态。", "Cannot confirm that no Hermes route exists here. Refresh reception status first.");
+        }
+        hideAdmissionActions();
+        admissionPreview.hidden = !firstContactAvailable || !preparationReady || admissionPlanId !== null;
+        admissionExecute.hidden = !firstContactAvailable || existing.state !== "preview" || phase !== "first_contact_not_started";
+        admissionVerify.hidden = phase !== "recorded_complete_runtime_unconfirmed";
+        admissionRestore.hidden = phase !== "stop_outcome_requires_inspection";
+        admissionResume.hidden = phase !== "plugin_outcome_requires_inspection";
+        admissionReconcile.hidden = phase !== "restart_outcome_requires_inspection";
+        admissionStatus.textContent = firstContactMessage || message || (phase === "first_contact_not_started"
+          ? admissionLabels[existing.state] : admissionLabels[phase]) || admissionLabels[existing.state]
+          || t("接入状态无法确认；保留现场并检查。", "Admission state is unconfirmed; preserve the current state and inspect it.");
+      };
+      const runAdmission = async (action) => {
+        if (pending || !live()) return;
+        if (action === "preview" && (!preparationReady || !planId)) return;
+        if (action !== "lookup" && action !== "preview" && !admissionPlanId) return;
+        const requiresConfirmation = ["first_contact_execute", "first_contact_restore_before_pm",
+          "first_contact_resume_committed"].includes(action);
+        pending = true; controls.forEach(control => { control.disabled = true; });
+        admissionStatus.textContent = t("正在核对接入状态…", "Checking admission state…");
+        try {
+          if (action === "preview" || action === "first_contact_execute") {
+            const receiver = await api.nativeReceiverStatus(employee.id, projectId);
+            if (!live()) return;
+            if (receiver.host_kind !== "hermes" || receiver.hermes_route_present !== false
+                || receiver.binding_configured !== false
+                || receiver.state !== "binding_required") {
+              hideAdmissionActions();
+              admissionStatus.textContent = receiver.host_kind === "hermes"
+                  && receiver.hermes_route_present === true
+                ? admissionLabels.existing_hermes_route_requires_cutover
+                : t("无法确认此处没有既有 Hermes 路由；请先刷新接收状态。", "Cannot confirm that no Hermes route exists here. Refresh reception status first.");
+              return;
+            }
+          }
+          if (action === "lookup") await inspectAdmission();
+          else {
+            const result = await api.hermesAdmission({employee_id: employee.id,
+              project_id: projectId, action,
+              ...(action === "preview" ? {preparation_id: planId} : {plan_id: admissionPlanId}),
+              ...(requiresConfirmation ? {confirmed: true} : {})});
+            if (!live()) return;
+            if (action === "preview") {
+              if (result.state !== "preview" || result.profile_id !== profile.id
+                  || typeof result.plan_id !== "string" || !/^[a-f0-9]{32}$/.test(result.plan_id)) throw new Error("unconfirmed");
+              admissionPlanId = result.plan_id;
+            }
+            await inspectAdmission(admissionLabels[result.state] || null);
+          }
+        } catch (_) {
+          if (live()) {
+            hideAdmissionActions();
+            admissionStatus.textContent = t("结果尚未确认。请只查看状态，勿重复停机、启用或启动服务。", "Outcome is unconfirmed. Check status only; do not repeat stop, admission or start.");
+          }
+        } finally {
+          pending = false;
+          if (live()) controls.forEach(control => { control.disabled = false; });
+        }
+      };
+      grantCheck.addEventListener("click", () => runGrant("preview"));
+      grantConfirm.addEventListener("click", () => runGrant("apply"));
+      check.addEventListener("click", () => run(planId ? "status" : "lookup"));
+      preview.addEventListener("click", () => run("preview"));
+      confirm.addEventListener("click", () => run("apply"));
+      remove.addEventListener("click", () => run("remove"));
+      admissionCheck.addEventListener("click", () => runAdmission("lookup"));
+      admissionPreview.addEventListener("click", () => runAdmission("preview"));
+      admissionVerify.addEventListener("click", () => runAdmission("verify"));
+      admissionExecute.addEventListener("click", () => {
+        if (window.confirm(t("仅在 Gateway 空闲且身份核实后短暂停止、准备诊断组件并恢复原服务；不会接通邮件。继续？", "Only after proving the Gateway idle and its identity, this briefly stops it, prepares a diagnostic component and restores the service. Mail stays disconnected. Continue?"))) runAdmission("first_contact_execute");
+      });
+      admissionReconcile.addEventListener("click", () => runAdmission("first_contact_reconcile"));
+      admissionRestore.addEventListener("click", () => {
+        if (window.confirm(t("仅在插件未提交且原服务确证已停时恢复；结果不明时不会重复启动。继续？", "Restore only if the plugin was not committed and the original service is proven stopped. An uncertain result will not be restarted. Continue?"))) runAdmission("first_contact_restore_before_pm");
+      });
+      admissionResume.addEventListener("click", () => {
+        if (window.confirm(t("仅在官方状态确认插件已提交、原服务确证已停时恢复；不会重复提交插件。继续？", "Restore only after the official status proves the plugin committed and the original service stopped. The plugin will not be submitted again. Continue?"))) runAdmission("first_contact_resume_committed");
+      });
+      const admissionDetails = el("details", {class: "receiver-profile-discovery"},
+        el("summary", {}, t("诊断接入（尚不收信）", "Diagnostic admission (mail stays disconnected)")),
+        el("p", {class: "field-hint"}, t("仅为当前原服务准备诊断路由。原会话获知邮件、已读与接单需要另行实测；接入中断时先查看状态。", "This prepares a diagnostic route for the original service only. Mail notification, reading and task acceptance in its original session need separate testing. Inspect state first after an interruption.")),
+        admissionStatus,
+        el("div", {class: "receiver-profile-actions"}, ...admissionControls));
+      return el("li", {class: "receiver-profile-item"}, el("strong", {}, profile.label), status,
+        el("div", {class: "receiver-profile-actions"}, check, preview, confirm, remove),
+        admissionDetails,
+        grantStatus, el("div", {class: "receiver-profile-actions"}, grantCheck, grantConfirm));
+    };
+    discover.addEventListener("click", async () => {
+      const own = ++profileEpoch, projectId = select.value;
+      if (!projectId) return;
+      const live = () => own === profileEpoch && body.isConnected && formDialog.open && select.value === projectId;
+      discover.disabled = true; details.setAttribute("aria-busy", "true");
+      profiles.replaceChildren(); profiles.hidden = true;
+      profileStatus.textContent = t("正在查找配置档…", "Finding profiles…");
+      try {
+        const result = await api.hermesProfiles(employee.id, projectId);
+        if (!live()) return;
+        if (result.host_kind !== "hermes" || result.discovery_scope !== "local_default_installation" || result.session_verified !== false || result.delivery_verified !== false || !Array.isArray(result.profiles)) throw new Error("unconfirmed");
+        if (result.state === "runtime_not_discovered" && result.profiles.length === 0) {
+          profileStatus.textContent = t("标准位置未找到 Hermes 运行环境。若安装在其他位置，当前查找范围不包含它；这不代表设备上没有 Hermes。", "No Hermes runtime was found in the standard location. Installations elsewhere are outside this check; Hermes may still be installed on this device.");
+        } else if (result.state === "profile_candidates" && result.profiles.length <= 64 && result.profiles.every(p => p && /^hermes_profile_[a-f0-9]{64}$/.test(p.id) && typeof p.label === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(p.label) && p.candidate_only === true) && new Set(result.profiles.map(p => p.id)).size === result.profiles.length) {
+          profiles.replaceChildren(...result.profiles.map(p => profileRow(p, projectId, own)));
+          profiles.hidden = !result.profiles.length;
+          profileStatus.textContent = result.profiles.length
+            ? t(`找到 ${result.profiles.length} 个配置档。Gateway 与原会话尚未验证；可检查已绑定原会话的授权；诊断接入不等于收信接入。`, `Found ${result.profiles.length} ${result.profiles.length === 1 ? "profile" : "profiles"}. Gateway and session are unverified; you can check permission for an existing bound session. Diagnostic admission does not connect mail reception.`)
+            : t("未找到可核实的配置档。请先在 Hermes 中建立配置档，再重试。", "No verifiable profiles were found. Create a profile in Hermes, then retry.");
+        } else throw new Error("unconfirmed");
+      } catch (_) {
+        if (live()) profileStatus.textContent = t("无法确认配置档。请检查本机 Hermes 安装后重试；现有设置未改动。", "Profiles could not be confirmed. Check the local Hermes installation and retry; existing settings are unchanged.");
+      } finally { if (live()) { discover.disabled = false; details.removeAttribute("aria-busy"); } }
+    });
+    select.addEventListener("change", () => { resetProfiles(); resetLink(); resetHeld(); });
+    body.append(linkDetails, heldDetails, details); resetProfiles(); resetLink(); resetHeld();
+  }
+  if (employee.kind === "deepseek" && employee.node_id === state.data.node?.id && employee.lifecycle === "active") {
+    const discover = button(t("查找配置档", "Find profiles"), null);
+    const profileStatus = el("p", {id: "dsh-profile-status", role: "status", "aria-live": "polite"});
+    const profiles = el("ul", {class: "receiver-profile-list", hidden: true});
+    const details = el("details", {class: "receiver-profile-discovery"},
+      el("summary", {}, t("本机 DSH 配置档", "Local DSH profiles")),
+      el("p", {class: "field-hint"}, t("仅查找标准安装位置的配置档名称；找到配置档不代表已连接原会话。不会读取聊天或更改设置。", "Only profile names in the standard installation are checked. A profile is not a connected session. No chat content or settings are changed.")),
+      discover, profileStatus, profiles);
+    let profileEpoch = 0;
+    const resetProfiles = () => {
+      profileEpoch++; profiles.replaceChildren(); profiles.hidden = true;
+      discover.disabled = !select.value;
+      profileStatus.textContent = select.value ? t("尚未查找。", "Not checked yet.") : t("先将此员工加入项目。", "Add this employee to a project first.");
+      details.removeAttribute("aria-busy");
+    };
+    discover.addEventListener("click", async () => {
+      const own = ++profileEpoch, projectId = select.value;
+      if (!projectId) return;
+      const live = () => own === profileEpoch && body.isConnected && formDialog.open && select.value === projectId;
+      discover.disabled = true; details.setAttribute("aria-busy", "true");
+      profiles.replaceChildren(); profiles.hidden = true;
+      profileStatus.textContent = t("正在查找配置档…", "Finding profiles…");
+      try {
+        const result = await api.dshProfiles(employee.id, projectId);
+        if (!live()) return;
+        if (result.host_kind !== "deepseek" || result.discovery_scope !== "local_default_installation" || result.session_verified !== false || result.delivery_verified !== false || !Array.isArray(result.profiles)) throw new Error("unconfirmed");
+        if (result.state === "runtime_not_discovered" && result.profiles.length === 0) {
+          profileStatus.textContent = t("标准位置未找到 DSH 运行环境；其他安装位置不在本次查找范围。", "No DSH runtime was found in the standard location; other installations are outside this check.");
+        } else if (result.state === "profile_candidates" && result.profiles.length <= 64 && result.profiles.every(p => p && /^dsh_profile_[a-f0-9]{64}$/.test(p.id) && typeof p.label === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(p.label) && p.candidate_only === true) && new Set(result.profiles.map(p => p.id)).size === result.profiles.length) {
+          profiles.replaceChildren(...result.profiles.map(p => el("li", {class: "receiver-profile-item"}, el("strong", {}, p.label))));
+          profiles.hidden = !result.profiles.length;
+          profileStatus.textContent = result.profiles.length
+            ? t(`找到 ${result.profiles.length} 个配置档。尚未核实或连接原会话，当前不能在这里启用接收。`, `Found ${result.profiles.length} ${result.profiles.length === 1 ? "profile" : "profiles"}. The session is unverified and unconnected; reception cannot be enabled here yet.`)
+            : t("未找到可核实的配置档。", "No verifiable profiles were found.");
+        } else throw new Error("unconfirmed");
+      } catch (_) {
+        if (live()) profileStatus.textContent = t("无法确认配置档；现有设置未改动。", "Profiles could not be confirmed; existing settings are unchanged.");
+      } finally { if (live()) { discover.disabled = false; details.removeAttribute("aria-busy"); } }
+    });
+    select.addEventListener("change", resetProfiles);
+    body.append(details); resetProfiles();
+  }
+  inspect();
+}
+
+function openCodexCliReceiverSettings(employee) {
+  const body = openForm(t("Codex CLI 接收设置", "Codex CLI reception"), t(
+    "这个 CLI 员工只有一个固定信箱。项目钥匙与接收会话只是它的连接；Codex 桌面应用须登记为另一名员工。接收组件空闲时不会启动模型。",
+    "This CLI employee has one fixed mailbox. Project keys and sessions are connections to it. Register the Codex desktop app as a separate employee. The idle receiver does not start a model."));
+  if (!body) return;
+  const projects = state.data.projects.filter(p => employee.project_id === p.id || employee.project_ids?.includes(p.id));
+  const projectSelect = el("select", { id: "cli-receiver-project" }, projects.map(p => el("option", { value: p.id }, p.name)));
+  if (projects.some(p => p.id === state.projectId)) projectSelect.value = state.projectId;
+  const thread = el("input", { id: "cli-receiver-thread", autocomplete: "off", spellcheck: false,
+    placeholder: t("已有 Codex CLI 会话 ID", "Existing Codex CLI thread ID") });
+  const consent = el("input", { type: "checkbox", id: "cli-receiver-consent" });
+  const install = button(t("安装接收组件", "Install receiver"), null);
+  const preflight = button(t("核对已有会话", "Verify existing thread"), null);
+  const bind = button(t("连接固定信箱", "Connect fixed mailbox"), null);
+  const enable = button(t("启用按需接收", "Enable on-demand reception"), null, { class: "primary" });
+  const refresh = button(t("刷新状态", "Refresh status"), null);
+  const status = el("p", { role: "status", "aria-live": "polite" });
+  const error = errorBox();
+  let busy = false, current = null, verifiedThread = "";
+  const controls = () => {
+    const sameThread = verifiedThread && verifiedThread === thread.value.trim();
+    projectSelect.disabled = busy || !projects.length;
+    thread.disabled = busy || !projects.length;
+    install.disabled = busy || !projects.length;
+    preflight.disabled = busy || !projects.length || !thread.value.trim();
+    consent.disabled = busy || !sameThread;
+    bind.disabled = busy || !sameThread || !consent.checked;
+    enable.disabled = busy || !sameThread || !consent.checked || !current?.installed ||
+      !current?.binding_id || current.bound_thread_id !== verifiedThread;
+    refresh.disabled = busy || !projects.length;
+  };
+  const explain = (result) => {
+    if (result.state === "cli_receiver_online") return t("按需接收端已就绪；信件是否打开、接单与交付另有记录。", "The on-demand receiver is ready. Message opens, acceptance and delivery are recorded separately.");
+    if (result.state === "cli_receiver_unavailable" || result.state === "cli_launch_requested") return t("接收端尚未确认就绪。刷新状态；邮件仍保留在固定信箱中。", "Reception is not yet confirmed. Refresh status; mail stays in the fixed mailbox.");
+    if (!result.installed) return t("先安装本机接收组件，然后核对已有 CLI 会话。", "Install the local receiver, then verify an existing CLI thread.");
+    if (result.binding_id) return t("已有会话绑定；核对该会话并启用按需接收。", "A thread is bound. Verify that thread and enable on-demand reception.");
+    return t("输入此项目已有的 Codex CLI 会话 ID，核对后明确授权连接。", "Enter an existing Codex CLI thread ID for this project, verify it, then explicitly authorize the connection.");
+  };
+  const perform = async (action) => {
+    if (busy || !projectSelect.value) return;
+    busy = true; controls(); error.replaceChildren();
+    const selectedProject = projectSelect.value, selectedThread = thread.value.trim();
+    try {
+      const result = action === "status"
+        ? await api.receiverStatus(employee.id, selectedProject)
+        : await api.receiverAction({ employee_id: employee.id, project_id: selectedProject, action,
+            ...(action.startsWith("cli_") ? { thread_id: selectedThread } : {}),
+            ...(action === "cli_bind" || action === "cli_enable"
+              ? { expected_binding_id: current?.binding_id || null, confirmed: consent.checked } : {}) });
+      if (!body.isConnected || !formDialog.open || projectSelect.value !== selectedProject) return;
+      if (action === "cli_preflight") {
+        verifiedThread = result.workspace_verified === true && result.thread_id === selectedThread ? selectedThread : "";
+        status.textContent = verifiedThread
+          ? t("会话元数据与项目目录已核对；这不代表已接入或唤醒。", "Thread metadata and project folder verified; this does not mean reception is connected or awake.")
+          : t("会话未通过核对。", "Thread verification failed.");
+      } else {
+        current = action === "cli_bind"
+          ? { ...current, ...result, bound_thread_id: selectedThread }
+          : result;
+        if (action === "status" && result.bound_thread_id && !thread.value) thread.value = result.bound_thread_id;
+        status.textContent = explain(current);
+      }
+    } catch (e) {
+      if (body.isConnected && formDialog.open && projectSelect.value === selectedProject) {
+        if (action === "cli_preflight") verifiedThread = "";
+        else current = null;
+        status.textContent = t("操作未确认；请刷新状态后再重试。", "The operation is unconfirmed. Refresh status before retrying.");
+        formError(error, e);
+      }
+    } finally { busy = false; controls(); }
+  };
+  projectSelect.addEventListener("change", () => { current = null; verifiedThread = ""; thread.value = ""; consent.checked = false; perform("status"); });
+  thread.addEventListener("input", () => { verifiedThread = ""; consent.checked = false; controls(); });
+  consent.addEventListener("change", controls);
+  install.addEventListener("click", () => perform("install"));
+  preflight.addEventListener("click", () => perform("cli_preflight"));
+  bind.addEventListener("click", () => perform("cli_bind"));
+  enable.addEventListener("click", () => perform("cli_enable"));
+  refresh.addEventListener("click", () => perform("status"));
+  body.append(formField(t("项目", "Project"), projectSelect),
+    formField(t("已有 CLI 会话", "Existing CLI thread"), thread),
+    el("label", { for: "cli-receiver-consent", class: "checkbox-choice" }, consent,
+      el("span", { class: "field-hint" }, t("授权此会话接收该员工在所选项目的提醒；不新建信箱或聊天。", "Authorize this thread to receive this employee's project alerts. No mailbox or chat is created."))),
+    status, error, el("div", { class: "approval-actions" }, install, preflight, bind, enable, refresh));
+  if (!projects.length) status.textContent = t("请先把这名 CLI 员工加入项目。", "Add this CLI employee to a project first.");
+  controls(); if (projects.length) perform("status");
+}
+function openReceiverSettings(employee) {
+  if (employee.connection_type === "cli") { openCodexCliReceiverSettings(employee); return; }
+  const body = openForm(t("接收设置", "Mail reception"), t("安装本机接收组件，再连接这个项目已有的会话。此操作不创建聊天，也不授予新的项目权限。", "Install the local receiver, then connect this project's existing session. This does not create a chat or grant project access."));
+  if (!body) return;
+  const projects = state.data.projects.filter(p => employee.project_id === p.id || employee.project_ids?.includes(p.id));
+  const select = el("select", { id: "receiver-project" }, projects.map(p => el("option", { value: p.id }, p.name)));
+  if (projects.some(p => p.id === state.projectId)) select.value = state.projectId;
+  const status = el("p", { role: "status", "aria-live": "polite" });
+  const error = errorBox();
+  const install = button(t("安装接收组件", "Install receiver"), null);
+  const connect = button(t("连接或启动", "Connect or start"), null, { class: "primary" });
+  const launch = button(t("启动接收应用", "Start receiver app"), null);
+  const reload = button(t("刷新状态", "Refresh status"), null);
+  const discover = button(t("选择原会话", "Choose existing session"), null);
+  const shortcut = button(t("创建并显示启动图标", "Create and show launch icon"), null);
+  const session = el("select", { id: "receiver-session" });
+  const consent = el("input", { type: "checkbox", id: "receiver-consent" });
+  const bind = button(t("授权此会话接收提醒", "Authorize this session"), null, { class: "primary" });
+  const bindingArea = el("div", { hidden: true },
+    formField(t("已打开的会话", "Open session"), session),
+    el("label", { for: "receiver-consent", class: "checkbox-choice receiver-session-choice" }, consent,
+      el("span", { class: "field-hint" }, t("允许所选会话接收该员工在此项目的邮件提醒；不授予额外项目权限。", "Allow the selected session to receive this employee's project mail notifications. This does not grant additional project access."))), bind);
+  let bindingId, sessions = [];
+  const clearSelection = () => { bindingArea.hidden = true; session.replaceChildren(); consent.checked = false; bindingId = undefined; sessions = []; };
+  let busy = false, current = null;
+  const labels = {
+    unsupported: t("此接收适配器尚不支持当前系统。", "This receiver is not yet supported on this system."),
+    install_required: t("接收组件尚未安装。", "The receiver is not installed."),
+    binding_required: t("组件已安装；先启动接收应用并打开已有聊天，再选择原会话。", "Receiver installed. Start the receiver app and open an existing chat, then choose that session."),
+    connect_required: t("会话已授权，点“连接或启动”启用此项目的接收路由。", "Session authorized. Select Connect or start to enable this project's reception route."),
+    restart_required: t("应用正在运行，但此接收端未加载。请正常退出宿主，再点“连接或启动”；不会强制退出。", "The app is running without this receiver. Quit the host normally, then select Connect or start. It will not be force-quit."),
+    ready_to_start: t("组件已安装，可从此处启动宿主。", "Receiver installed. You can start the host here."),
+    launch_requested: t("已请求启动，尚未确认接收就绪。打开原会话后刷新状态。", "Launch requested; reception is not yet confirmed. Open the original session, then refresh."),
+    receiver_not_ready: t("接收组件可连接，但原会话未确认可接收。请打开已授权的会话后刷新；也可重新选择会话。", "Receiver transport is reachable, but the original session is not confirmed ready. Open the authorized session and refresh, or choose another session."),
+    receiver_online: t("已确认原会话可接收提醒；这不代表邮件已送达或任务已完成。", "The original session is ready for notifications. This does not confirm mail delivery or task completion."),
+  };
+  const controls = () => {
+    select.disabled = busy || !projects.length;
+    reload.disabled = busy || !projects.length;
+    install.disabled = busy || !projects.length || current?.state === "unsupported";
+    connect.disabled = busy || !current?.installed || !current?.binding_configured || current?.state === "unsupported";
+    launch.hidden = Boolean(current?.binding_configured);
+    launch.disabled = busy || !current?.installed || current?.state === "unsupported";
+    discover.disabled = busy || !current?.installed || !current?.transport_online;
+    shortcut.disabled = busy || !current?.installed || current?.state === "unsupported";
+    session.disabled = busy || !sessions.length;
+    consent.disabled = busy || !session.value;
+    bind.disabled = busy || !consent.checked || !sessions.some(s => s.id === session.value);
+  };
+  const perform = async (action, extra = {}) => {
+    if (busy || !select.value) return;
+    busy = true; controls(); error.replaceChildren();
+    try {
+      const result = action === "status" ? await api.receiverStatus(employee.id, select.value) : await api.receiverAction({ employee_id: employee.id, project_id: select.value, action, ...extra });
+      if (!body.isConnected || !formDialog.open) return;
+      if (action === "shortcut") {
+        if (result.available === true && result.state === "shortcut_ready") {
+          await api.receiverAction({employee_id: employee.id, project_id: select.value, action: "reveal_shortcut"});
+          if (!body.isConnected || !formDialog.open) return;
+        }
+        status.textContent = result.available === true && result.state === "shortcut_ready"
+          ? t("启动图标已在 Finder 中显示。可把 Codex · Mailbox 固定到 Dock，以后从它启动；创建图标不代表邮箱已连接。", "Launch icon shown in Finder. You can pin Codex · Mailbox to the Dock and use it to start Codex. Creating the icon does not confirm a mailbox connection.")
+          : t("启动图标尚未确认，请检查后重试。", "The launch icon is unconfirmed. Check before retrying.");
+      } else if (action === "sessions") {
+        clearSelection(); bindingId = result.binding_id; sessions = result.sessions;
+        session.replaceChildren(el("option", { value: "" }, t("请选择，不会自动绑定", "Choose a session; no automatic binding")), ...sessions.map(s => el("option", { value: s.id }, `${s.name || t("未命名会话", "Unnamed session")} · ${s.cwd} · ${s.id.slice(0, 8)}`)));
+        bindingArea.hidden = !sessions.length;
+        status.textContent = !sessions.length ? t("没有已打开的会话。请在宿主打开已有聊天，再点“选择原会话”。", "No open sessions. Open an existing chat in the host, then choose a session again.") : result.truncated ? t("仅显示前 50 个已打开会话；请关闭无关会话后重试。", "Showing the first 50 open sessions. Close unrelated sessions and retry if needed.") : t("请选择目标会话并确认授权；会话目录帮助辨认，不代表项目权限。", "Choose the intended session and confirm authorization. Its folder helps identify it; it does not establish project permissions.");
+      } else {
+        current = result; clearSelection();
+        status.textContent = labels[current.state] || t("状态未知，请保留当前配置并检查。", "Unknown state. Keep the current configuration and inspect it.");
+      }
+    } catch (e) {
+      if (!body.isConnected || !formDialog.open) return;
+      if (action !== "shortcut") { current = null; clearSelection(); }
+      status.textContent = ["sessions", "bind"].includes(action)
+        ? t("尚未确认结果，请先刷新状态再操作。确认接收应用与原聊天仍打开；旧接收组件可能需要安装更新并正常重启宿主。", "The result is unconfirmed. Refresh status before trying again. Check that the receiver app and original chat are open; an older receiver may need an update and a normal host restart.")
+        : t("尚未确认接收状态。", "Reception is not confirmed.");
+      formError(error, e);
+    }
+    finally { busy = false; controls(); }
+  };
+  install.addEventListener("click", () => perform("install"));
+  connect.addEventListener("click", () => perform("connect"));
+  launch.addEventListener("click", () => perform("launch"));
+  discover.addEventListener("click", () => perform("sessions"));
+  shortcut.addEventListener("click", () => perform("shortcut", {confirmed: true}));
+  session.addEventListener("change", () => { consent.checked = false; controls(); });
+  consent.addEventListener("change", controls);
+  bind.addEventListener("click", () => perform("bind", {thread_id: session.value, expected_binding_id: bindingId, confirmed: consent.checked}));
+  reload.addEventListener("click", () => perform("status"));
+  select.addEventListener("change", () => { current = null; clearSelection(); perform("status"); });
+  body.append(formField(t("项目", "Project"), select), status, error,
+    el("div", { class: "approval-actions" }, install, launch, connect, reload, discover), bindingArea,
+    el("div", { class: "approval-actions" }, shortcut),
+    el("p", { class: "field-hint" }, t("项目选择用于连接该项目的原会话；同一员工跨项目共用一个 Codex · Mailbox 启动图标。从此处或该图标启动可加载接收组件，原厂图标可能不加载它。图标只是启动入口，不包含账号或密钥；原会话的审批与权限保持不变。", "Select a project to connect its existing session. One Codex · Mailbox launch icon serves this employee across projects. Start here or through that icon to load the receiver; the vendor icon may not load it. The icon is only a launcher and contains no accounts or keys. The existing session's approvals and permissions remain unchanged.")));
+  if (!projects.length) status.textContent = t("请先把员工加入项目。", "Add this employee to a project first.");
+  controls(); perform("status");
 }
 function renderMailboxes() {
   const employees = state.data.employees;
@@ -1033,7 +1932,7 @@ function renderMailboxes() {
       const inboxCount = folderMessages(person, "inbox").length;
       const item = el("button", { type: "button", class: `mailbox-rail-item${person.id === employee.id ? " selected" : ""}`, "aria-pressed": String(person.id === employee.id) },
         avatar(person.name),
-        el("span", { class: "mailbox-rail-identity" }, el("span", { class: "mailbox-rail-name" }, person.name), el("span", { class: "mailbox-rail-kind mono" }, person.kind || "")),
+        el("span", { class: "mailbox-rail-identity" }, el("span", { class: "mailbox-rail-name" }, person.name), el("span", { class: "mailbox-rail-kind mono" }, [person.kind, person.connection_type].filter(Boolean).join(" · "))),
         inboxCount ? el("span", { class: "mailbox-rail-count mono" }, inboxCount) : null);
       item.addEventListener("click", () => { state.mailboxEmployeeId = person.id; state.mailboxMessageId = ""; render(); });
       return item;
@@ -1049,9 +1948,11 @@ function renderMailboxes() {
   if (!relevant.length) list.append(el("div", { class: "mailbox-empty" }, icon("folder"), el("p", {}, t("这里还没有信件", "No messages here yet")), el("p", { class: "muted" }, state.mailboxFolder === "group" ? t("显示该员工当前项目的全员消息；发给其他员工的定向消息不会混入。", "Shows broadcasts in current projects; direct messages to other employees are excluded.") : t("v0.8 项目通信记录；发送普通消息不会启动员工。", "v0.8 project correspondence. Ordinary messages do not start employees."))));
   for (const message of relevant) {
     const isSelected = Boolean(selectedMessage && message.id === selectedMessage.id);
+    const sourceProject = state.data.projects.find(project => project.id === message.project_id);
     const row = el("button", { type: "button", role: "option", class: `mailbox-message-row${isSelected ? " selected" : ""}`, "aria-selected": String(isSelected), "data-message-id": message.id },
       el("span", { class: "mailbox-message-top" }, el("strong", {}, message.sender?.name || t("你 · Human", "You · Human")), el("time", { class: "mono" }, formatDate(message.created_at, true))),
       el("span", { class: "mailbox-message-title" }, message.title),
+      el("span", { class: "mailbox-message-project" }, sourceProject?.name || t("历史项目", "Historical project")),
       el("span", { class: "mailbox-message-snippet" }, String(message.body || "").replace(/\s+/g, " ").slice(0, 90)));
     row.addEventListener("click", () => { state.mailboxMessageId = message.id; render(); });
     list.append(row);
@@ -1061,6 +1962,13 @@ function renderMailboxes() {
     reading.append(el("div", { class: "mailbox-reading-empty" }, icon("document"), el("p", {}, t("选择一封信开始阅读", "Choose a message to read"))));
   } else {
     const item = state.data.projects.find(p => p.id === selectedMessage.project_id);
+    const receipt = selectedMessage.read_receipt;
+    const directed = selectedMessage.recipient_id && selectedMessage.sender_id !== selectedMessage.recipient_id;
+    const readStatus = !directed
+      ? t("此类信件不记录逐封打开状态", "Per-message opens are not recorded for this message type")
+      : receipt?.reader_id === selectedMessage.recipient_id && receipt?.first_opened_at
+        ? t(`员工信箱已打开 · ${formatDate(receipt.first_opened_at, true)}`, `Opened through employee mailbox · ${formatDate(receipt.first_opened_at, true)}`)
+        : t("尚无打开记录", "No recorded open");
     const reply = button(t("回复", "Reply"), null, { class: "small primary" });
     reply.addEventListener("click", () => {
       selectProject(selectedMessage.project_id);
@@ -1077,10 +1985,13 @@ function renderMailboxes() {
           el("span", {}, el("strong", {}, selectedMessage.sender?.name || t("你 · Human", "You · Human")), " → ", selectedMessage.recipient?.name || t("项目全员", "Everyone")),
           el("time", { class: "mono" }, formatDate(selectedMessage.created_at, true)),
           el("span", { class: "muted mailbox-reading-project" }, icon("folder"), item?.name || t("历史项目", "Historical project")))),
+      el("p", { class: "muted mailbox-read-status", title: t("仅表示该员工的信箱凭据明确打开了信；同一凭据可能供多个宿主会话使用，不能据此判定哪个窗口打开，也不代表理解、接单或 Human 验收。管理员查看不会写入此记录。", "Records an explicit open using this employee's mailbox credential. If several host sessions share it, the record does not identify which window opened the message. It does not prove comprehension, task acceptance or Human approval. Administrator viewing does not write this record.") }, readStatus),
       el("div", { class: "mailbox-reading-body" }, selectedMessage.body),
       el("footer", { class: "mailbox-reading-actions" }, reply, open));
   }
-  return [heading(`${employee.name} · ${navLabels.mailboxes}`, t("管理员查看 · 显示该员工相关的项目通信，不代表登录或代替它发信。", "Administrator view · Project correspondence for this employee. This does not sign in or send as the employee.")),
+  const receiverSettings = button(employee.kind === "codex" ? t("接收设置", "Mail reception") : t("接收状态", "Reception status"), null);
+  receiverSettings.addEventListener("click", () => employee.kind === "codex" ? openReceiverSettings(employee) : openNativeReceiverStatus(employee));
+  return [heading(`${employee.name} · ${navLabels.mailboxes}`, t("每位在册员工一个固定信箱；项目授权和接入凭据不会新建信箱。此处仅供管理员查看，不代表员工已登录、收信或已读。", "One fixed mailbox per registered employee. Project grants and access credentials do not create more mailboxes. This administrator view does not prove sign-in, reception, or reading."), ["codex", "hermes", "deepseek", "workbuddy"].includes(employee.kind) && employee.node_id === state.data.node.id ? [receiverSettings] : []),
     el("div", { class: "mailbox-layout" }, rail, el("section", { class: "mailbox-list-pane", "aria-label": t("信件列表", "Message list") }, folders, list), reading),
     el("p", { class: "directory-note" }, t("给员工发信：打开对应项目 → 项目消息 → 选择收件人。Agent 自己通过授权的项目工具读写；查看此页不标记已读或自动确认。", "To write: open the project → Messages → choose the recipient. Agents use authorized project tools. Viewing this page does not mark messages read or acknowledge them."))];
 }
@@ -1088,6 +1999,7 @@ function renderMembers() {
   if (!project()) return [heading(navLabels.members), empty(t("为团队选择一个项目", "Choose a project for your team"), t("员工已在全局登记；创建项目后选择需要的成员。", "Employees are registered globally. Create a project and choose its members."), "new-project", t("创建项目", "Create project"), "users")];
   const people = projectEmployees();
   return [heading(navLabels.members, t("从已登记员工中选择成员。移出项目不会删除员工身份或历史。", "Choose from registered employees. Removing a member keeps their identity and history."), [button(t("选择已有员工", "Choose existing employees"), "add-member", { class: "primary", icon: "plus" }), button(t("发现更多员工", "Discover more employees"), "discover", { icon: "search" })]),
+    viewSwitcher("members"),
     people.length ? el("div", { class: "employee-grid" }, people.map((employee) => {
       const row = employeeRow(employee, { membership: true });
       attachKeyStatus(row, employee, state.projectId);   // 缺口 2 ✓
@@ -1102,34 +2014,19 @@ function attachKeyStatus(row, employee, projectId) {
   const box = el("span", { class: "key-status muted small-text" }, t("钥匙状态检查中…", "Checking mailbox key…"));
   const actions = row.querySelector(".employee-actions") || row;
   actions.append(box);
-  const issue = button(t("签发邮箱钥匙", "Issue mailbox key"), null, { class: "small" });
-  issue.hidden = true;
-  issue.addEventListener("click", () => submitAction(issue, box, () => api.createMailSession({
-    employee_id: employee.id, project_id: projectId,
-    label: `ui-${employee.name}-${projectId.slice(-6)}`,
-  }), async (result) => {
-    // 实测键名 ✓（`create_session` 返回 active/expires_at/id/label/… ✓ **没有路径字段** ✗）
-    // ⇒ 显示**到期时间** ✓ 并**绝不**读取或显示 token ✗（响应里带 token ✓ 这是已知暴露 ⇒ 已记待办 ✓）
-    const until = String(result?.expires_at || "").slice(0, 10);
-    box.textContent = until
-      ? t(`已签发 ✓（有效至 ${until}）`, `Issued ✓ until ${until}`)
-      : t("已签发 ✓", "Issued");
-    issue.hidden = true;
-    showToast(t("钥匙已签发 ✓ 交给该员工后，他就能收发信了 ✓（token 绝不显示 ✗）", "Key issued."));
-  }));
-  actions.append(issue);
+  const connect = button(t("配置接入", "Set up access"), null, { class: "small" });
+  connect.addEventListener("click", () => openMailConnection(employee, projectId));
+  actions.append(connect);
   api.mailSessions(employee.id, projectId)
     .then((data) => {
-      const live = (data?.sessions || []).filter((item) => !item.revoked_at);
+      const live = (data?.sessions || []).filter((item) => item.active);
       if (live.length) {
-        box.textContent = t(`已签发 ✓（${live.length} 把有效）`, `${live.length} active key(s)`);
+        box.textContent = t(`${live.length} 把有效接入凭据 · 收信待验证`, `${live.length} active access credential(s) · reception unverified`);
       } else {
-        // **显式标出"未签发"** ✗ —— 别让用户猜"为什么他收不到信" ✓
-        box.textContent = t("未签发钥匙 ✗（还不能收发信）", "No key ✗");
-        issue.hidden = false;
+        box.textContent = t("尚无接入凭据 · 邮件可留存，员工暂不能读取或接单", "No access credential · mail is stored, but this employee cannot read or accept yet");
       }
     })
-    .catch(() => { box.textContent = t("钥匙状态未知", "Key status unknown"); issue.hidden = false; });
+    .catch(() => { box.textContent = t("接入凭据状态未知", "Access credential status unknown"); });
 }
 
 // 钥匙管理页（0.8.1 ✓ 老板判据"界面上的功能都要真能用"✓）
@@ -1147,7 +2044,7 @@ function renderKeys() {
   const box = el("div", { class: "keys-table-wrap" });
   if (!rows.length) {
     return [heading(navLabels.keys, t("每位员工在每个项目持哪把钥匙，一屏看清。", "One row per employee and project.")),
-      empty(t("还没有成员关系", "No memberships yet"), t("先把员工加入项目，钥匙会自动签发。", "Add employees to a project and the key is issued automatically."), "discover", t("发现员工", "Discover employees"), "users")];
+      empty(t("还没有成员关系", "No memberships yet"), t("先把员工加入项目，再为需要收信的员工配置接入。加入项目不会自动签发凭据。", "Add employees to a project, then set up access for those who need to read mail. Joining a project does not issue credentials automatically."), "discover", t("发现员工", "Discover employees"), "users")];
   }
   const table = el("table", { class: "board-table keys-table" },
     el("thead", {}, el("tr", {},
@@ -1165,26 +2062,22 @@ function renderKeys() {
       el("td", {}, employeeName(row.employee.id)), el("td", {}, row.project ? row.project.name : row.projectId.slice(-6)),
       cell, expires, action));
     api.mailSessions(row.employee.id, row.projectId).then((data) => {
-      const live = (data?.sessions || []).filter((item) => !item.revoked_at);
+      const live = (data?.sessions || []).filter((item) => item.active);
       if (!live.length) {
         cell.textContent = t("未签发 ✗", "None ✗");
-        const issue = button(t("签发", "Issue"), null, { class: "small primary" });
-        issue.addEventListener("click", () => submitAction(issue, cell, () => api.createMailSession({
-          employee_id: row.employee.id, project_id: row.projectId,
-          label: `ui-${row.employee.name}-${row.projectId.slice(-6)}`,
-        }), async () => { showToast(t("已签发 ✓ 交给该员工即可 ✓（token 绝不显示 ✗）", "Issued.")); render(); }));
-        action.append(issue);
+        const connect = button(t("配置接入", "Set up access"), null, { class: "small primary" });
+        connect.addEventListener("click", () => openMailConnection(row.employee, row.projectId));
+        action.append(connect);
         return;
       }
-      cell.textContent = t(`有效 ✓（${live.length} 把）`, `${live.length} active`);
+      cell.textContent = t(`${live.length} 把有效接入凭据`, `${live.length} active access credential(s)`);
       expires.textContent = String(live[0].expires_at || "").slice(0, 10) || "—";   // 直接写 ✓ 不再搞 DOM 替换 ✗
-      const revoke = button(t("撤销", "Revoke"), null, { class: "small" });
-      revoke.addEventListener("click", () => submitAction(revoke, cell, () => api.revokeMailSession(live[0].id),
-        async () => { showToast(t("已撤销 ✓ 该员工立刻失去本项目收发能力 ✓", "Revoked.")); render(); }));
-      action.append(revoke);
+      const manage = button(t("管理连接", "Manage connections"), null, { class: "small" });
+      manage.addEventListener("click", () => openMailConnection(row.employee, row.projectId));
+      action.append(manage);
     }).catch(() => { cell.textContent = t("未知", "Unknown"); });
   }
-  return [heading(navLabels.keys, t("谁在哪个项目、持哪把钥匙、何时到期 —— 一屏看清 ✗（缺钥匙的行会显式标出 ✓）")), box];
+  return [heading(navLabels.keys, t("按员工与项目查看接入凭据；每把凭据是一条连接，不是一个新信箱。", "Inspect access credentials by employee and project. Each credential is a connection, not another mailbox.")), box];
 }
 
 function openMemberForm() {
@@ -1295,6 +2188,7 @@ const governanceLabels = {
   task_dispatched: t("派发任务", "Task assigned"), employee_joined: t("员工加入", "Employee connected"),
   employee_lifecycle: t("员工状态调整", "Employee lifecycle changed"), permission_decided: t("操作授权决定", "Permission decided"), task_reviewed: t("成果验收", "Work reviewed"),
   permission_expired: t("授权请求过期", "Permission expired"),
+  mail_task_stop_unconfirmed: t("外部停工待核实", "External work needs checking"),
 };
 function governanceActor(actor) {
   if (actor === "human") return t("人工操作", "Human action");
@@ -1557,16 +2451,39 @@ function renderResources() {
 function renderDevices() {
   const devices = state.data?.devices || [];
   const fleet = state.data.fleet;
+  const humanForward = state.data.human_forward;
   const remote = fleet?.remote;
   const shared = remote?.projects || [];
   const mappings = remote?.mappings || {};
   const errors = remote?.worker?.errors || {};
+  let fleetSshCommand = "";
+  if (fleet?.listener?.base_url) {
+    try {
+      const endpoint = new URL(fleet.listener.base_url);
+      fleetSshCommand = `ssh -o ControlPath=none -o ExitOnForwardFailure=yes -N -L 127.0.0.1:49181:${endpoint.hostname}:${endpoint.port} USER@SSH_HOST`;
+    } catch { /* Keep the address visible even if an old service returned bad metadata. */ }
+  }
   const pairCards = el("div", { class: "fleet-options" },
     el("section", { class: "fleet-card" }, el("span", { class: "eyebrow" }, t("在主控设备上", "On the coordinator")), el("h2", {}, t("邀请另一台设备", "Invite another device")), el("p", {}, t("按需启用局域网或私网接入，选择共享项目，生成一次性邀请。在这里统一派单和验收。", "Optionally enable local or private network connections, select projects, and create a single-use invitation. Assign and review work here.")),
       fleet?.listener ? el("div", { class: "fleet-actions" }, button(t("生成设备邀请", "Create device invitation"), "fleet-invite", { class: "primary small", disabled: !state.data.projects.length }), button(t("暂停设备接入", "Pause device connections"), "fleet-stop", { class: "small" })) : button(t("启用设备接入", "Enable device connections"), "fleet-start", { class: "primary small", icon: "link" }),
-      fleet?.listener ? el("p", { class: "fleet-address" }, t("接入地址", "Connection address"), " · ", el("code", {}, fleet.listener.base_url)) : null),
-    el("section", { class: "fleet-card" }, el("span", { class: "eyebrow" }, t("在另一台设备上", "On the other device")), el("h2", {}, remote?.paired ? t("已加入主控", "Connected to coordinator") : t("加入已有团队", "Join an existing team")), el("p", {}, remote?.paired ? t("为共享项目选择这台设备的工作目录，再加入已安装的员工。主控就能把任务交给它。", "Choose this device's working folder for a shared project, then connect an installed employee. The coordinator can assign work to it.") : t("在另一台设备打开工作台，粘贴主控生成的邀请。项目文件需要提前准备在这台设备上。", "Open the workbench on the other device and paste the coordinator's invitation. Prepare the project files on that device first.")),
-      remote?.paired ? el("div", { class: "fleet-actions" }, el("span", { class: "status-tag online" }, t("设备已配对", "Device paired")), button(t("断开此设备", "Disconnect this device"), "fleet-leave", { class: "small" })) : button(t("粘贴邀请并加入", "Paste invitation to join"), "fleet-join", { class: "small", icon: "link" })));
+      fleet?.listener ? el("p", { class: "fleet-address" }, t("接入地址", "Connection address"), " · ", el("code", {}, fleet.listener.base_url)) : null,
+      fleet?.listener && fleet.listener.lan_advertised === false ? el("p", { class: "fleet-address" }, fleet.listener.lan_error
+        ? t("同网广播不可用；仍可用完整邀请和手动地址接入。", "LAN announcement is unavailable. Use the complete invitation and manual address.")
+        : t("当前地址不向同网广播；可使用手动地址或 SSH 转发。", "This address is not announced on the LAN; use a manual address or SSH forward.")) : null,
+      fleetSshCommand ? el("p", { class: "fleet-address" }, t("跨网且已有 SSH 登录时，在目标设备运行：", "With existing SSH access across networks, run this on the target device:"), " ", el("code", {}, fleetSshCommand), " ", t("保持终端打开，关闭即结束转发；替换 SSH 登录地址并选空闲本地端口。保留邀请中的证书指纹，只将 base_url 改为本地 HTTPS 转发地址。", "Keep the terminal open; closing it ends the forward. Replace the SSH login and choose a free local port. Keep the invitation certificate fingerprint; change only base_url to the forwarded local HTTPS address.")) : null),
+    el("section", { class: "fleet-card" }, el("span", { class: "eyebrow" }, t("在另一台设备上", "On the other device")), el("h2", {}, remote?.paired ? t("已加入主控", "Connected to coordinator") : fleet?.saved_pairing ? t("主控暂不可达", "Coordinator unavailable") : t("加入已有团队", "Join an existing team")), el("p", {}, remote?.paired ? t("为共享项目选择这台设备的工作目录，再加入已安装的员工。主控就能把任务交给它。", "Choose this device's working folder for a shared project, then connect an installed employee. The coordinator can assign work to it.") : fleet?.saved_pairing ? t("原设备身份已保留。主控换了 IP 或隧道地址时，输入新地址并核对同一主控，无需重新配对。", "This device identity is preserved. If the coordinator IP or tunnel address changed, enter the new address and verify the same coordinator without pairing again.") : t("在另一台设备打开工作台，粘贴主控生成的邀请。项目文件需要提前准备在这台设备上。", "Open the workbench on the other device and paste the coordinator's invitation. Prepare the project files on that device first.")),
+      fleet?.saved_pairing ? el("div", { class: "fleet-actions" }, remote?.paired ? el("span", { class: "status-tag online" }, t("设备已配对", "Device paired")) : null, button(t("更改主控地址", "Change coordinator address"), "fleet-relocate", { class: "small" }), button(t("断开此设备", "Disconnect this device"), "fleet-leave", { class: "small" })) : button(t("粘贴邀请并加入", "Paste invitation to join"), "fleet-join", { class: "small", icon: "link" })));
+  const humanCard = humanForward ? el("section", { class: "fleet-card human-forward-card" },
+    el("span", { class: "eyebrow" }, t("Human 操作端", "Human access")),
+    el("h2", {}, t("从另一台电脑查看私人和共享项目", "View private and shared projects from another computer")),
+    el("p", {}, t("只在这台主控的本机启动 Human 专用入口。先用已有 SSH 登录连接主控，再凭个人邀请或会话登录；此入口不提供旧管理 API，也不会把服务开放到公网。", "Start a Human-only endpoint on this coordinator's loopback address. Connect through your existing SSH login, then use your own invitation or session. This does not expose the legacy admin API or bind a public port.")),
+    humanForward.error ? el("p", { class: "fleet-error", role: "status" }, t("上次启动后未能恢复 Human 入口。检查端口占用，再重新启用；此前的 SSH 转发此时不可用。", "Human access did not recover after restart. Check whether its port is occupied, then enable it again; the previous SSH forward is unavailable.")) : null,
+    humanForward.enabled ? el("div", {},
+      el("p", { class: "fleet-address" }, t("在另一台电脑的终端运行（替换 SSH 主机名）：", "On the other computer, replace the SSH host and run:")),
+      el("p", { class: "fleet-address" }, el("code", {}, `ssh -o ControlPath=none -o ExitOnForwardFailure=yes -N -L 127.0.0.1:49180:127.0.0.1:${humanForward.port} user@home-host`), " ", t("保持终端打开；关闭即结束转发。", "Keep the terminal open; closing it ends the forward.")),
+      el("p", { class: "fleet-address" }, t("然后打开", "Then open"), " ", el("code", {}, "http://127.0.0.1:49180/human")),
+      button(t("停止 Human 远程入口", "Stop remote Human access"), "human-forward-stop", { class: "small" }))
+      : button(t("启用 SSH 转发入口", "Enable SSH forward target"), "human-forward-start", { class: "small" })) : null;
   const remoteProjects = shared.length ? el("section", { class: "remote-projects" }, el("div", { class: "section-heading" }, el("h2", {}, t("这台设备参与的共享项目", "Shared projects on this device"))), shared.map((item) => {
     const mapped = mappings[item.id];
     const mapButton = button(mapped ? t("更换本机目录", "Change local folder") : t("选择本机目录", "Choose local folder"), null, { class: "small", icon: "folder" });
@@ -1585,6 +2502,7 @@ function renderDevices() {
   return [heading(navLabels.devices, t("单机使用无需配置设备。需要更多执行节点时，可连接局域网或私网中的设备；远处设备需先通过私网或隧道可达。", "Single-computer use needs no device setup. Add execution nodes on a local or private network when needed; distant devices must first be reachable through a private network or tunnel.")),
     fleet?.error ? el("div", { class: "runtime-notice error", role: "status" }, icon("warning"), el("span", {}, fleet.error.message || t("设备连接需要重新检查。", "Check the device connection.")), button(t("重新检查", "Check again"), "refresh", { class: "small" })) : null,
     fleet === undefined ? el("p", { class: "device-info" }, t("当前服务未提供设备配对。请更新工作台服务后重试。", "This service does not provide device pairing. Update the workbench service and try again.")) : pairCards,
+    humanCard,
     remote ? runtimeNotice({ force: true }) : null,
     remoteProjects,
     errors.recovery ? el("p", { class: "fleet-error" }, errors.recovery) : null,
@@ -1592,6 +2510,10 @@ function renderDevices() {
     el("p", { class: "device-info" }, t("项目目录会分别留在各台设备上，配对不会同步文件。每台设备使用自己的 AI 工具登录；任务结果、授权和验收回到主控。", "Project folders stay on each device. Pairing does not synchronize files. Each device uses its own AI tool sign-in; results, permissions, and review return to the coordinator."))];
 }
 function renderDisconnected() {
+  if (state.error?.code === "MULTI_HUMAN_SCOPED_REQUIRED") {
+    return [heading(t("请进入我的空间", "Open My spaces"), errorText(state.error)),
+      el("a", { href: "/human", class: "button primary" }, t("进入我的空间", "Open My spaces"))];
+  }
   return [heading(t("工作台暂未连接", "The workbench is disconnected"), t("连接服务后，你的项目、员工和任务会显示在这里。", "Your projects, employees, and tasks appear when the service is connected.")),
     empty(t("连接本机工作台", "Connect to your workbench"), errorText(state.error || new ApiError("connection_failed")), "refresh", t("重新连接", "Reconnect"), "link")];
 }
@@ -1650,9 +2572,9 @@ function renderMaintenanceBanner() {
   const details = button(t("查看更新准备", "View update preparation"), null, { class: "small" });
   details.addEventListener("click", () => { selectView("about"); loadUpdates({ force: true }); });
   banner.replaceChildren(icon("pause"), el("div", { class: "update-maintenance-copy" },
-    el("strong", {}, t("更新准备中 · 已暂停领取新任务", "Update preparation · New task claims paused")),
-    el("p", {}, t("已有任务继续执行，队列保留。重启后仍暂停，需要你显式恢复接单。", "Existing tasks continue and the queue is retained. The pause survives restart; explicitly resume task claims when ready."))),
-    el("div", { class: "update-actions" }, details, updateControl(t("恢复接单", "Resume task claims"), "resume")));
+    el("strong", {}, t("更新准备中 · 已暂停接单与邮箱写入", "Update preparation · Claims and mailbox writes paused")),
+    el("p", {}, t("受管执行须结束；邮箱任务保留状态，暂不能提交。重启后仍暂停，请在核对数据后显式恢复。", "Managed runs must finish. Mail tasks retain their state but cannot submit. The pause survives restart; resume after checking the data."))),
+    el("div", { class: "update-actions" }, details, updateControl(t("恢复接单与写入", "Resume claims and writes"), "resume")));
 }
 function nodeCompatibility(node) {
   const labels = {
@@ -1683,7 +2605,7 @@ function renderUpdateSection() {
     const retry = button(t("重新读取更新设置", "Reload update settings"), null, { class: "small", disabled: busy });
     retry.addEventListener("click", () => loadUpdates({ force: true }));
     section.append(el("p", { class: "muted" }, busy ? t("正在读取更新设置…", "Loading update settings…") : t("更新设置暂时不可用。", "Update settings are unavailable.")), retry);
-    if (paused || state.updatePauseUnconfirmed) section.append(updateControl(t("恢复接单", "Resume task claims"), "resume"));
+    if (paused || state.updatePauseUnconfirmed) section.append(updateControl(t("恢复接单与写入", "Resume claims and writes"), "resume"));
     return section;
   }
   const channel = el("select", { id: "update-channel", disabled: busy, "aria-label": t("更新渠道", "Update channel") },
@@ -1710,10 +2632,12 @@ function renderUpdateSection() {
   const instructions = data.installation?.instructions || [];
   if (instructions.length) section.append(el("ol", {}, instructions.map(item => el("li", {}, english ? item.en || item.zh : item.zh || item.en))));
   if (data.installation?.home) section.append(el("p", { class: "update-location" }, t("数据目录", "Data directory"), " · ", el("code", {}, data.installation.home)));
-  section.append(el("h3", {}, t("安全更新准备", "Prepare safely")), el("p", {}, t("先暂停领取新任务，等待已有执行及远端回执结束，再备份工作台数据和身份配置。项目文件及供应商外部登录不在此备份中。准备失败也保持暂停。", "Pause new task claims, wait for existing executions and remote receipts, then back up workbench data and identity settings. Project files and external provider sign-in are excluded. Preparation failures keep claims paused.")));
+  section.append(el("h3", {}, t("安全更新准备", "Prepare safely")), el("p", {}, t("先暂停新派单和项目邮箱写入，等待受管执行与远端回执结束，再备份工作台数据、身份配置与唤醒投递状态。已接单的邮箱任务保留原状态，更新后恢复写入再继续；外部 Agent 是否停工不由此保证。项目文件和外部登录不在备份中。", "Pause new assignments and project mailbox writes, wait for managed runs and remote receipts, then back up workbench data, identity settings and wake delivery state. Accepted mail tasks retain their state and can continue after writes resume; this does not stop external agents. Project files and external sign-in are excluded.")));
   if (state.updatePauseUnconfirmed) section.append(el("p", { class: "update-error", role: "status" }, t("准备请求未完成，暂停状态暂时无法确认。重新读取设置或显式恢复接单；不要据此认为已完成备份。", "The preparation request did not complete and pause status cannot be confirmed. Reload settings or explicitly resume task claims; this does not confirm a completed backup.")));
   const active = maintenance?.active_tasks || [];
-  if (paused) section.append(el("p", { class: "update-pause-state" }, t("已暂停接单", "Task claims paused"), ` · ${t("队列保留", "Queue retained")}: ${maintenance.queued_count || 0}`));
+  const durableMail = maintenance?.durable_mail_tasks || [];
+  if (paused) section.append(el("p", { class: "update-pause-state" }, t("已暂停接单与邮箱写入", "Task claims and mailbox writes paused"), ` · ${t("队列保留", "Queue retained")}: ${maintenance.queued_count || 0}`));
+  if (paused && durableMail.length) section.append(el("p", { role: "status" }, t(`保留 ${durableMail.length} 项已接单邮箱任务；恢复接单后由原会话继续，更新准备不代表外部工作已停止。`, `${durableMail.length} accepted mail task(s) remain. The original sessions may continue after writes resume; preparation does not prove external work stopped.`)));
   const pendingClaims = maintenance?.pending_claims || [];
   if (paused && (active.length || pendingClaims.length || data.remote_pending?.length || data.status === "waiting")) section.append(el("p", { role: "status" }, t("等待现有任务、未确认的远端领取或执行回执。确认结束后点击“重新检查并备份”。", "Waiting for existing tasks, unconfirmed remote claims, or execution receipts. Once confirmed finished, click “Recheck & back up”.")),
     active.length ? el("ul", { class: "update-active-tasks" }, active.map(task => el("li", {}, task.title || task.id, " · ", statusLabels[task.status] || task.status))) : null);
@@ -1723,7 +2647,7 @@ function renderUpdateSection() {
     el("p", {}, `${formatDate(backup.created_at, true)} · ${backup.files ?? "—"} ${t("文件", "files")} · ${formatUpdateBytes(backup.bytes || 0)}`),
     el("code", {}, backup.path || ""), el("p", { class: "muted" }, t("备份保存在本机，不会通过页面下载身份凭证。升级后检查员工和项目，确认后恢复接单。", "The backup stays on this machine; identity credentials are not downloadable through this page. After upgrading, verify employees and projects, then resume task claims."))));
   section.append(el("div", { class: "update-actions" }, updateControl(state.updatesAction === "prepare" ? t("正在准备…", "Preparing…") : paused ? t("重新检查并备份", "Recheck & back up") : t("暂停接单并准备更新", "Pause claims & prepare update"), "prepare", true),
-    paused || state.updatePauseUnconfirmed ? updateControl(t("恢复接单", "Resume task claims"), "resume") : null));
+    paused || state.updatePauseUnconfirmed ? updateControl(t("恢复接单与写入", "Resume claims and writes"), "resume") : null));
   if (data.nodes?.length) section.append(el("h3", {}, t("设备版本兼容性", "Device version compatibility")), el("p", { class: "muted" }, t("版本由节点报告。未报告的旧节点显示待确认，不代表兼容；协议不兼容时阻止新派工。", "Versions are reported by nodes. Older nodes without a report remain unconfirmed, not compatible; incompatible protocols block new claims.")),
     el("ul", { class: "update-node-list" }, data.nodes.map(node => el("li", {}, el("div", {}, el("strong", {}, node.name || node.id), node.is_local ? el("span", { class: "muted" }, " · ", t("本机", "This device")) : null, el("p", {}, node.version || t("版本未知", "Unknown version"), " · ", t("协议", "Protocol"), " ", node.protocol ?? "?")), nodeCompatibility(node)))));
   section.append(el("p", { class: "about-links" }, el("a", { href: "https://github.com/polaris-smart/agent-mailbox/releases", target: "_blank", rel: "noopener noreferrer" }, t("GitHub 发行页 ↗", "GitHub releases ↗")), el("a", { href: "https://github.com/polaris-smart/agent-mailbox/issues", target: "_blank", rel: "noopener noreferrer" }, t("反馈问题 ↗", "Report an issue ↗"))));
@@ -1786,10 +2710,16 @@ function renderAbout() {
     });
     return details;
   });
-  return [heading(t("关于与更新", "About & updates"), "agent-mailbox · " + version), el("div", { class: "about-content" },
-    buildInfoSection(section, el),   // AM-06 ✓
+  const diagnostics = el("details", { class: "about-diagnostics" },
+    el("summary", {}, t("构建诊断", "Build diagnostics")),
+    el("p", { class: "muted" }, t("排查版本或运行问题时查看。包含本机路径，分享截图前请检查。", "For version or runtime troubleshooting. Contains local paths; review before sharing screenshots.")),
+    buildInfoSection(section, el));
+  diagnostics.open = state.aboutDiagnosticsOpen;
+  diagnostics.addEventListener("toggle", () => { if (diagnostics.isConnected) state.aboutDiagnosticsOpen = diagnostics.open; });
+  return [heading(navLabels.about, "agent-mailbox · " + version), el("div", { class: "about-content" },
     section(t("界面语言", "Interface language"), el("p", {}, t("支持简体中文与英文。偏好保存在当前浏览器；切换会重新加载界面，不会改变任务或项目资料的语言。", "Simplified Chinese and English are available. Preferences are stored in this browser. Switching reloads the interface and does not translate tasks or project content.")), language),
     renderUpdateSection(),
+    diagnostics,
     section(t("开源与版权", "Open source & notices"), el("p", {}, "© 2026 NoFox · Apache-2.0"), el("p", {}, t("保留原有代码及第三方要求的版权声明。以下是随本版本发行的原始内容。", "Original and required third-party copyright notices are retained. The documents below ship with this version.")), ...licenses))];
 }
 
@@ -2007,9 +2937,45 @@ function openFleetJoinForm() {
   const body = openForm(t("加入主控设备", "Join coordinator"), t("粘贴主控生成的完整邀请内容。请先确认邀请来自你希望加入的主控设备。", "Paste the complete invitation generated by the coordinator you intend to join."));
   if (!body) return;
   const value = el("textarea", { id: "fleet-join-invitation", required: true, spellcheck: "false", placeholder: t("在这里粘贴邀请内容", "Paste the invitation here") });
+  const discover = button(t("查找同网主控", "Find local coordinators"), null, { class: "small" });
+  const suggestions = el("div", { class: "field-hint", role: "status" });
+  discover.addEventListener("click", async () => {
+    discover.disabled = true;
+    suggestions.textContent = t("正在查找…", "Searching…");
+    try {
+      const listing = await api.discoverFleet();
+      if (!body.isConnected) return;
+      suggestions.replaceChildren();
+      if (!listing.devices?.length) {
+        suggestions.textContent = t("未找到同网主控；仍可按完整邀请手动加入。", "No coordinator found; you can still join with the complete invitation.");
+        return;
+      }
+      for (const device of listing.devices) {
+        const use = button(device.base_url, null, { class: "small" });
+        use.addEventListener("click", () => {
+          let invite;
+          try { invite = JSON.parse(value.value); }
+          catch { formError(box, new ApiError(t("先粘贴完整邀请。", "Paste the complete invitation first."))); return; }
+          if (!invite || typeof invite !== "object" || Array.isArray(invite)
+              || !invite.fingerprint || !invite.invite_id || !invite.invite_secret) {
+            formError(box, new ApiError(t("邀请缺少配对信息。", "The invitation is incomplete.")));
+            return;
+          }
+          invite.base_url = device.base_url;
+          value.value = JSON.stringify(invite, null, 2);
+          box.hidden = true;
+          showToast(t("只填入地址；确认加入时仍核验证书指纹。", "Address filled; joining still verifies the certificate fingerprint."));
+        });
+        suggestions.append(use);
+      }
+    } catch (error) { if (body.isConnected) formError(box, error); }
+    finally { discover.disabled = false; }
+  });
   const box = errorBox();
   const end = footer(t("确认邀请并加入", "Confirm invitation and join"));
-  const form = el("form", {}, formField(t("设备邀请", "Device invitation"), value), box, end.node);
+  const form = el("form", {}, formField(t("设备邀请", "Device invitation"), value),
+    el("p", { class: "field-hint" }, t("同网发现只提供未经核验的地址；必须先取得可信的完整邀请。", "Local discovery provides unverified address hints. A trusted complete invitation is still required.")),
+    discover, suggestions, box, end.node);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     let invite;
@@ -2022,6 +2988,21 @@ function openFleetJoinForm() {
     });
   });
   body.append(form); value.focus();
+}
+function openFleetRelocateForm() {
+  const body = openForm(t("更改主控地址", "Change coordinator address"), t("只在主控的 IP 或 SSH 隧道地址变化时使用。工作台会先验证原证书、设备身份和项目权限；验证失败不会改动已保存的配对。", "Use this only when the coordinator IP or SSH tunnel address changes. The workbench verifies the pinned certificate, device identity, and project access before saving; a failed check leaves the pairing unchanged."));
+  if (!body) return;
+  const address = el("input", { id: "fleet-new-address", type: "url", required: true, value: state.data?.fleet?.remote?.base_url || "", placeholder: "https://192.168.1.10:8765", autocomplete: "off", spellcheck: "false" });
+  const box = errorBox();
+  const end = footer(t("验证并使用新地址", "Verify and use new address"));
+  const form = el("form", {}, formField(t("新的 HTTPS 地址", "New HTTPS address"), address), box, end.node);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitAction(end.submit, box, () => api.relocateFleet(address.value.trim()), async () => {
+      formDialog.close(); await refresh(); showToast(t("已连接同一主控，原设备身份与授权保留。", "Connected to the same coordinator; device identity and permissions are preserved."));
+    });
+  });
+  body.append(form); address.focus();
 }
 function openRemoteMapForm(sharedProject) {
   const body = openForm(t("选择这台设备的工作目录", "Choose this device's working folder"), t(`为“${sharedProject.name}”选择本机目录。请提前准备项目文件，配对不会复制文件。`, `Choose a local folder for “${sharedProject.name}”. Prepare the project files first; pairing does not copy them.`));
@@ -2089,6 +3070,25 @@ function confirmFleetAction(action, device) {
   const form = el("form", {}, box, end.node);
   form.addEventListener("submit", (event) => { event.preventDefault(); submitAction(end.submit, box, () => revoke ? api.revokeDevice(device.id) : leave ? api.leaveFleet() : api.stopFleet(), async () => { formDialog.close(); await refresh(); showToast(revoke ? t("设备配对已撤销。", "Device pairing revoked.") : leave ? t("此设备已断开，项目目录已保留。", "This device is disconnected. Project folders are kept.") : t("设备接入已暂停。", "Device connections paused.")); }); });
   body.append(form);
+}
+function suggestedDiscoveredIdentity(employee, localIdentities, discoveredEmployees = []) {
+  const connectionType = employee.connection_type || "cli";
+  const sameInstance = localIdentities.find((item) => {
+    if ((item.connection_type || "cli") !== connectionType) return false;
+    if (item.entrypoint && employee.entrypoint) return item.entrypoint === employee.entrypoint;
+    return item.name === employee.name;
+  });
+  const baseName = `${employee.name} ${connectionType === "app" ? "App" : "CLI"}`;
+  const distinctPeer = discoveredEmployees.some((item) => item !== employee && item.kind === employee.kind && item.name === employee.name && (
+    (item.connection_type || "cli") !== connectionType ||
+    (item.entrypoint && employee.entrypoint && item.entrypoint !== employee.entrypoint)
+  ));
+  let suggestedName = sameInstance?.name || (distinctPeer ? baseName : employee.name);
+  if (!sameInstance && localIdentities.some((item) => item.name === suggestedName)) {
+    suggestedName = baseName;
+    for (let suffix = 2; localIdentities.some((item) => item.name === suggestedName); suffix++) suggestedName = `${baseName} ${suffix}`;
+  }
+  return { sameInstance, suggestedName };
 }
 function openProjectForm() {
   const body = openForm(t("选择项目", "Choose a project"), t("选择工作目录。任务、员工和资料会围绕这个项目组织。", "Choose the working folder. Tasks, employees, and context will belong to this project."));
@@ -2158,7 +3158,7 @@ async function openEmployeeForm() {
           `${suspects.length} suspect agent(s) detected: adding them is your call. Use the button to register manually.`)));
         suspects.slice(0, 5).forEach((item) => box.append(el("div", { class: "suspect-row" },
           el("code", {}, item.name), el("span", { class: "muted small-text" }, item.path),
-          button(t("去登记", "Register"), null, { class: "small", "data-action": "manual-employee" }))));
+          button(t("去登记", "Register"), "manual-employee", { class: "small" }))));
         list.append(box);
       }
       // 第 10a 条（HS · 老板拍板）：结果必须**完整展示边界** ✓ ——
@@ -2169,15 +3169,17 @@ async function openEmployeeForm() {
       result.employees.forEach((employee, index) => {
         const unavailable = ["missing", "not_installed", "unavailable"].includes(employee.status) || !employee.entrypoint;
         const connectionType = employee.connection_type || "cli";
-        const identities = state.data.employees.filter((item) => item.kind === employee.kind && (item.connection_type || "cli") === connectionType && (!item.node_id || item.node_id === state.data.node?.id));
-        const newName = el("input", { id: `new-employee-name-${index}`, maxlength: 160, autocomplete: "off", value: employee.name, placeholder: t("例如：代码审查员", "For example: Code reviewer"), "aria-label": t("员工名称", "Employee name") });
+        const localIdentities = state.data.employees.filter((item) => item.kind === employee.kind && (!item.node_id || item.node_id === state.data.node?.id));
+        const { sameInstance, suggestedName } = suggestedDiscoveredIdentity(employee, localIdentities, result.employees);
+        const newName = el("input", { id: `new-employee-name-${index}`, maxlength: 160, autocomplete: "off", value: suggestedName, placeholder: t("例如：代码审查员", "For example: Code reviewer"), "aria-label": t("员工名称", "Employee name") });
         const hint = el("p", { class: "field-hint" });
         const add = button(t("登记员工", "Register employee"), null, { class: "small primary" });
         const updateIdentity = () => {
-          const existing = identities.find((item) => item.name === newName.value.trim());
+          const existing = localIdentities.find((item) => item.name === newName.value.trim());
+          const sameEntrypoint = existing && (existing.connection_type || "cli") === connectionType && (!existing.entrypoint || existing.entrypoint === employee.entrypoint);
           add.disabled = unavailable || !newName.value.trim() || Boolean(existing);
-          add.textContent = existing?.lifecycle === "retired" ? t("身份已退役", "Identity retired") : existing ? t("已登记", "Registered") : t("登记员工", "Register employee");
-          hint.textContent = existing?.lifecycle === "retired" ? t("此身份已退役。填写新名称可建立新身份，原记录保留。", "This identity is retired. Choose a new name to create a new identity; history is retained.") : t("名称用于管理员工，不会创建独立账号。已有登录与执行验证分别记录。", "Names organize employees without creating separate accounts. Sign-in and execution verification are recorded separately.");
+          add.textContent = existing?.lifecycle === "retired" ? t("身份已退役", "Identity retired") : existing ? sameEntrypoint ? t("已登记", "Registered") : t("名称已占用", "Name in use") : t("登记员工", "Register employee");
+          hint.textContent = existing?.lifecycle === "retired" ? t("此身份已退役。填写新名称可建立新身份，原记录保留。", "This identity is retired. Choose a new name to create a new identity; history is retained.") : existing && !sameEntrypoint ? t("该名称属于另一独立 App/CLI 实例，请填写不同的员工名称。", "That name belongs to another app or CLI instance. Choose a different employee name.") : t("名称用于管理员工，不会创建独立账号。已有登录与执行验证分别记录。", "Names organize employees without creating separate accounts. Sign-in and execution verification are recorded separately.");
         };
         newName.addEventListener("input", updateIdentity); updateIdentity();
         add.addEventListener("click", () => {
@@ -2215,6 +3217,15 @@ function openTaskForm(mode = "mailbox") {
   const title = el("input", { id: "task-title", required: true, maxlength: 240, placeholder: t("用一句话说明这件事", "Describe the work in one sentence") });
   const prompt = el("textarea", { id: "task-prompt", required: true, placeholder: t("要做什么？可参考哪些资料？什么结果算完成？", "What should be done? Which context matters? What counts as complete?") });
   const assignee = el("select", { id: "task-assignee", required: true }, people.map((employee) => el("option", { value: employee.id }, `${employee.name} · ${employee.kind}`)));
+  const reviewer = el("select", { id: "task-reviewer" });
+  const reviewers = projectEmployees().filter(e => e.lifecycle === "active" && e.node_id === state.data.node.id);
+  const updateReviewers = () => {
+    const selected = reviewer.value;
+    reviewer.replaceChildren(el("option", { value: "" }, t("仅 Human 验收", "Human review only")), ...reviewers.filter(e => e.id !== assignee.value).map(e => el("option", { value: e.id }, e.name)));
+    if ([...reviewer.options].some(option => option.value === selected)) reviewer.value = selected;
+  };
+  updateReviewers();
+  assignee.addEventListener("change", updateReviewers);
   const model = el("select", { id: "task-model" }, el("option", { value: "" }, t("复用员工设置", "Use employee settings")));
   const modelHint = el("p", { class: "field-hint", id: "task-model-hint" }, t("可选。保持默认即可；显式选择时，只显示员工当前服务确认的模型。", "Optional. Keep the default, or choose a model confirmed by this employee's service."));
   model.setAttribute("aria-describedby", modelHint.id);
@@ -2256,6 +3267,29 @@ function openTaskForm(mode = "mailbox") {
   const form = el("form", {}, formField(t("任务名称", "Task title"), title), formField(t("交给谁", "Assign to"), assignee), el("div", { class: "form-field" }, el("label", { for: model.id }, t("模型（可选）", "Model (optional)")), model, modelHint), formField(t("工作说明", "Instructions"), prompt), el("div", { class: "form-field", hidden: mode === "mailbox" }, el("span", { class: "field-hint" }, t("这次任务的权限", "Permissions for this task")), permissions), box);
   const end = footer(t("派发任务", "Assign task"));
   const runtimeBox = el("div", { id: "task-runtime-status", role: "status" });
+  const receiverHint = el("p", { id: "task-receiver-status", class: "field-hint", role: "status", hidden: mode !== "mailbox" });
+  let receiverRequest = 0;
+  async function updateReceiverHint() {
+    if (mode !== "mailbox") return;
+    const request = ++receiverRequest, employeeId = assignee.value;
+    receiverHint.textContent = t("正在核对本项目邮箱接入与自动接收状态…", "Checking project mailbox access and automatic reception…");
+    const [sessions, receiver] = await Promise.allSettled([
+      api.mailSessions(employeeId, projectId),
+      api.nativeReceiverStatus(employeeId, projectId),
+    ]);
+    if (request !== receiverRequest || !body.isConnected || assignee.value !== employeeId) return;
+    if (sessions.status !== "fulfilled" || !Array.isArray(sessions.value?.sessions)) {
+      receiverHint.textContent = t("未能确认本项目邮箱接入。任务可先保存，但不能据此认为员工能够接单。", "Project mailbox access could not be confirmed. You may save the task, but cannot assume the employee can accept it.");
+    } else if (!sessions.value.sessions.some((item) => item.active)) {
+      receiverHint.textContent = t("这名员工尚无本项目有效邮箱接入。任务可先保存，但须先在员工信箱完成接入才能接单。", "This employee has no active mailbox connection for this project. You may save the task, but they must connect in Employee mailboxes before accepting it.");
+    } else if (receiver.status === "fulfilled" && receiver.value.state === "component_available") {
+      receiverHint.textContent = t("接收组件已响应；实际送达、已读和接单仍以各自回执为准。", "The receiver component responds. Delivery, reading and acceptance still require their own receipts.");
+    } else if (receiver.status === "fulfilled") {
+      receiverHint.textContent = t("这名员工的原会话自动提醒尚不可用。任务仍会保存到项目邮箱，需员工主动查收；可在员工信箱的“接收状态”查看原因。", "Automatic alerts to this employee's existing session are unavailable. The task is still saved in the project mailbox for the employee to check; see Reception status in Employee mailboxes for the reason.");
+    } else {
+      receiverHint.textContent = t("未能确认自动接收状态。任务仍会保存到项目邮箱，不能据此认为员工已收到提醒。", "Automatic reception could not be confirmed. The task is still saved in the project mailbox; do not assume an alert reached the employee.");
+    }
+  }
   const isRemote = () => { const employee = people.find((item) => item.id === assignee.value); return Boolean(employee?.node_id && employee.node_id !== state.data.node?.id); };
   const canAssign = () => mode === "mailbox" || isRemote() || Boolean(state.data.runtime?.installed && state.data.runtime?.node_available);
   const updateRuntime = () => {
@@ -2268,13 +3302,21 @@ function openTaskForm(mode = "mailbox") {
     else runtimeBox.replaceChildren(runtimeNotice({ force: true }) || el("p", { class: "field-hint" }, t("本机执行环境已准备好。", "Local execution environment is ready.")));
   };
   state.taskFormUpdate = updateRuntime;
-  assignee.addEventListener("change", () => { loadModels(); updateRuntime(); });
-  form.append(runtimeBox);
+  assignee.addEventListener("change", () => { loadModels(); updateRuntime(); updateReceiverHint(); });
+  form.append(runtimeBox, receiverHint);
+  form.append(formField(t("交付后通知技术复核者", "Notify a technical reviewer on delivery"), reviewer), el("p", { class: "field-hint" }, t("仅通知所选本机项目成员；不会授予验收权限。宿主未接通时保留待投递通知。", "Notifies only the selected local project member, without granting acceptance rights. Notifications remain pending when the host is disconnected.")));
   form.append(end.node);
+  const newTaskRequestId = () => `task-ui-${Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("")}`;
+  let taskRequestId = newTaskRequestId();
+  // Retrying an unchanged form after an uncertain network result must reuse
+  // the same request. Editing the work describes a new request instead.
+  form.addEventListener("input", () => { taskRequestId = newTaskRequestId(); });
+  form.addEventListener("change", () => { taskRequestId = newTaskRequestId(); });
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     if (!title.value.trim() || !prompt.value.trim() || !assignee.value || !canAssign()) return;
-    submitAction(end.submit, box, () => (mode === "mailbox" ? api.createMailTask : api.createTask)({ project_id: projectId, title: title.value.trim(), prompt: prompt.value.trim(), assignee_id: assignee.value, model: model.value || null, permission_mode: write.checked ? "workspace-write" : "read-only" }), async (result) => {
+    const payload = { project_id: projectId, title: title.value.trim(), prompt: prompt.value.trim(), assignee_id: assignee.value, review_recipient_id: reviewer.value || null, model: model.value || null, permission_mode: write.checked ? "workspace-write" : "read-only", request_id: taskRequestId };
+    submitAction(end.submit, box, () => (mode === "mailbox" ? api.createMailTask : api.createTask)(payload), async (result) => {
       formDialog.close();
       state.view = "tasks";
       state.taskFilter = "all";
@@ -2286,6 +3328,7 @@ function openTaskForm(mode = "mailbox") {
   });
   body.append(formField(t("交办方式", "Assignment mode"), method), form);
   updateRuntime();
+  updateReceiverHint();
   title.focus();
   loadModels();
 }
@@ -2419,6 +3462,13 @@ function renderTaskDetail({ task, events, permissions, delivery, links = [] }) {
   const top = el("div", { class: "detail-top" }, el("div", { class: "dialog-heading" }, el("h2", { id: "detail-dialog-title" }, t("任务详情", "Task details")), close), el("h3", { class: "detail-title" }, task.title), el("div", { class: "detail-meta" }, tag(task.status), el("span", {}, employeeName(task.assignee_id)), el("span", {}, task.model || t("复用员工模型设置", "Employee model settings")), el("span", {}, formatDate(task.created_at, true))));
   const content = el("div", { class: "detail-content" });
   const box = errorBox();
+  if (events.some((event) => event.type === "external_stop_unconfirmed")) {
+    content.append(el("section", { class: "approval-panel", role: "alert" },
+      el("h3", {}, t("外部停工未确认", "External work may still be running")),
+      el("p", { class: "prose" }, t(
+        "项目或员工权限已撤销，mailbox 内的任务已取消；宿主侧是否停工无法确认。请人工检查宿主进程及已产生的外部影响。此记录不代表工作仍在运行。",
+        "Project or employee access was revoked and the mailbox task was cancelled. Whether work stopped in the host is unknown. Check the host process and any external effects manually. This record does not mean the work is still running."))));
+  }
   for (const permission of permissions.filter((item) => ["pending", "requested", "waiting", "waiting_approval", "expired"].includes(item.status))) {
     const call = permission.tool_call;
     const tool = typeof call === "string" ? call : call?.title || call?.name || t("员工请求执行工具操作。", "The employee requests a tool operation.");
@@ -2519,7 +3569,7 @@ async function installRuntime(control) {
   } catch (error) { state.runtimeInstalling = false; showToast(errorText(error), true); render(); }
 }
 const actions = {
-  "new-project": openProjectForm, discover: openEmployeeForm, "add-member": openMemberForm,
+  "new-project": openProjectForm, discover: openEmployeeForm, "manual-employee": () => openManualEmployeeForm(), "add-member": openMemberForm,
   // **AM-15 修复** ✗：委托是 `actions[...](target)` ⇒ 裸引用会把**被点按钮**当成第一个参数 ✓
   // `openTaskForm(mode = "mailbox")` ⇒ mode 变成元素 ⇒ 误入**自动执行分支** ✗（实机：跳到项目成员 ✓）
   // ⇒ **显式包一层** ✓ 让"点按钮"与"传参"彻底解耦 ✓
@@ -2527,8 +3577,10 @@ const actions = {
   "add-memory": openMemoryForm, refresh: () => refresh(),
   "install-runtime": installRuntime,
   "fleet-start": openFleetStartForm, "fleet-invite": openFleetInviteForm,
-  "fleet-join": openFleetJoinForm, "fleet-stop": () => confirmFleetAction("stop"),
+  "fleet-join": openFleetJoinForm, "fleet-relocate": openFleetRelocateForm, "fleet-stop": () => confirmFleetAction("stop"),
   "fleet-leave": () => confirmFleetAction("leave"),
+  "human-forward-start": async () => { try { await api.startHumanForward(); await refresh(); } catch (error) { showToast(errorText(error), true); } },
+  "human-forward-stop": async () => { try { await api.stopHumanForward(); await refresh(); } catch (error) { showToast(errorText(error), true); } },
   "quit-application": openQuitForm,
 };
 document.addEventListener("click", (event) => {
@@ -2572,7 +3624,7 @@ for (const control of document.querySelectorAll("[data-view]")) {
   const span = control.querySelector("span");
   if (span) span.textContent = navLabels[control.dataset.view];
 }
-document.getElementById("version-label").setAttribute("aria-label", t("关于与更新", "About & updates"));
+document.getElementById("version-label").setAttribute("aria-label", navLabels.about);
 document.querySelector(".brand small").textContent = t("团队工作台", "Team workbench");
 document.getElementById("project-nav-label").textContent = t("当前项目", "Current project");
 document.getElementById("team-nav-label").textContent = t("团队", "Team");
@@ -2667,7 +3719,7 @@ function paletteEntries() {
   const entries = [];
   const add = (label, hint, run) => entries.push({ label, hint, run });
   for (const [view, label] of Object.entries(navLabels)) {
-    const needsProject = ["wall", "overview", "members", "messages", "tasks", "activity", "resources"].includes(view);
+    const needsProject = viewScopes[view] === "project";
     if (needsProject && !project()) continue;
     add(`${t("前往", "Go to")} · ${label}`, t("视图", "View"), () => selectView(view));
   }

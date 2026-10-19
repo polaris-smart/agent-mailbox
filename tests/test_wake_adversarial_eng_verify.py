@@ -311,7 +311,10 @@ def test_multiprocess_concurrent_wake_once_wakes_exactly_once(tmp_path):
         "        stream.write(employee_id + '\\n')\n"
         "    time.sleep(0.4)\n"
         "    return True\n"
-        "wk.hook_deliver = lambda home: deliver\n" + command[2]
+        "def hook(home, *, require_receipt, binding_resolver):\n"
+        "    assert require_receipt is True\n"
+        "    return deliver\n"
+        "wk.hook_deliver = hook\n" + command[2]
     )
 
     procs = [
@@ -322,7 +325,7 @@ def test_multiprocess_concurrent_wake_once_wakes_exactly_once(tmp_path):
 
     calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
     assert len(calls) == 1, f"并发下 hook 被调用 {len(calls)} 次（闸门被击穿）：{calls}"
-    assert sum("叫醒 1 位" in text for text in outs) == 1, outs
+    assert sum("宿主确认接收 1 位" in text for text in outs) == 1, outs
     state = wk.load_state(home)
     assert len(state["employees"][next(iter(state["employees"]))]["wakes"]) == 1
 
@@ -383,7 +386,7 @@ def test_lock_file_deletion_is_recoverable(tmp_path):
     # **契约已变（2026-10-08）** ✗：锁锚从 `wake.lock` 文件改为 `wake/` **目录 fd** ✓
     # （flow-product 三轮证明：拿文件当锚时，持锁期 `rm wake.lock` ⇒ 新 inode 上能再拿一把锁 ✓）
     # ⇒ 锁文件不再被创建 ✓ 断言改为「轮次真的跑过」✓ 意图不变 ✓：删锁**不得 brick**
-    assert "冷启动" in done.stdout or "叫醒" in done.stdout, done.stdout
+    assert "冷启动" in done.stdout or "宿主确认接收" in done.stdout, done.stdout
 
 
 def test_uninstall_is_idempotent_and_leaves_no_residue(tmp_path):

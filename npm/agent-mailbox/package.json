@@ -1,6 +1,6 @@
 {
   "name": "@polaris-smart/agent-mailbox",
-  "version": "0.8.2",
+  "version": "0.8.3-alpha.1",
   "description": "Verified native launcher for the local-first agent-mailbox workbench",
   "type": "module",
   "bin": {"agent-mailbox": "cli.mjs"},

@@ -2,6 +2,9 @@
 
 import json
 import secrets
+import select
+import socket
+import socketserver
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -11,6 +14,85 @@ import pytest
 from agent_mailbox.workbench_fleet import FleetClient, FleetCoordinator
 from agent_mailbox.workbench_private import private_access
 from agent_mailbox.workbench_store import WorkbenchError, WorkbenchStore
+
+
+def test_pairing_through_local_tcp_forward_keeps_tls_pin_and_project_scope(fleet, tmp_path):
+    """A local SSH -L style byte relay changes transport, not trusted identity."""
+    _, project, other, coordinator = fleet
+
+    class Relay(socketserver.BaseRequestHandler):
+        def handle(self):
+            with socket.create_connection(
+                ("127.0.0.1", coordinator.server.server_port), timeout=3
+            ) as upstream:
+                endpoints = (self.request, upstream)
+                while ready := select.select(endpoints, (), (), 3)[0]:
+                    for source in ready:
+                        chunk = source.recv(65536)
+                        if not chunk:
+                            return
+                        (upstream if source is self.request else self.request).sendall(chunk)
+
+    class LocalForward(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+    forward = LocalForward(("127.0.0.1", 0), Relay)
+    thread = threading.Thread(target=forward.serve_forever, daemon=True)
+    thread.start()
+    try:
+        invite = coordinator.issue_invite([project["id"]])
+        invite["base_url"] = f"https://127.0.0.1:{forward.server_address[1]}"
+        client = FleetClient(tmp_path / "forwarded-device", invite)
+        assert client.credentials["fingerprint"] == invite["fingerprint"]
+        assert [item["id"] for item in client.projects()] == [project["id"]]
+        assert other["id"] not in client.credentials["project_ids"]
+    finally:
+        forward.shutdown()
+        thread.join(timeout=3)
+        forward.server_close()
+
+
+def test_lost_claim_reply_is_reconciled_before_another_claim(fleet, tmp_path, monkeypatch):
+    """A committed remote claim cannot be repeated after its reply is lost."""
+    owner, project, _, _ = fleet
+    client = mapped(fleet, tmp_path)
+    employee = client.register_employee(project["id"], "Remote", "codex")
+    first = owner.create_task(project["id"], "First", "Synthetic", employee["id"])
+    second = owner.create_task(project["id"], "Second", "Synthetic", employee["id"])
+    original = client._request
+    lost = []
+
+    def drop_claim_reply(method, path, *args, **kwargs):
+        response = original(method, path, *args, **kwargs)
+        if path == "/v1/tasks/claim" and not lost:
+            lost.append(response)
+            raise WorkbenchError("network_error", "Reply lost after coordinator commit")
+        return response
+
+    monkeypatch.setattr(client, "_request", drop_claim_reply)
+    with pytest.raises(WorkbenchError) as error:
+        client.claim(project["id"], wait=0)
+    assert error.value.code == "network_error"
+    assert owner.get_task(first["id"])["status"] == "starting"
+    assert owner.get_task(second["id"])["status"] == "queued"
+    assert len(client.store.update_maintenance()["pending_claims"]) == 1
+
+    monkeypatch.setattr(client, "_request", original)
+    with pytest.raises(WorkbenchError) as blocked:
+        client.claim(project["id"], wait=0)
+    assert blocked.value.code == "claim_unconfirmed"
+    active = client.active_runs()
+    assert [task["id"] for task in active] == [first["id"]]
+    assert client.store.update_maintenance()["pending_claims"] == []
+    assert client.claim(project["id"], wait=0) is None  # one active run per remote worker
+    client.receipt(
+        first["id"],
+        active[0]["run_id"],
+        "interrupted",
+        error={"code": "CLAIM_UNCONFIRMED", "message": "Result was not delivered"},
+    )
+    assert client.claim(project["id"], wait=0)["id"] == second["id"]
 
 
 def test_pair_response_loss_recovers_same_home_proof_without_plaintext_server_secret(
@@ -46,6 +128,60 @@ def test_pair_response_loss_recovers_same_home_proof_without_plaintext_server_se
     assert client.projects() == [{"id": project["id"], "name": "Shared"}]
     assert not attempt_path.exists()
     assert attempt["pair_token"] not in coordinator.state_path.read_text()
+
+
+def test_definite_pair_refusal_does_not_block_next_invite(fleet, tmp_path):
+    _, project, _, coordinator = fleet
+    root = tmp_path / "re-pair"
+    first = FleetClient(root, coordinator.issue_invite([project["id"]]))
+    device_id = first.credentials["device_id"]
+    first.credentials_path.unlink()
+    rejected_invite = coordinator.issue_invite([project["id"]])
+
+    with pytest.raises(WorkbenchError) as rejected:
+        FleetClient(root, rejected_invite)
+    assert rejected.value.code == "permission_denied"
+    assert not (root / "workbench/fleet/pair-attempt.json").exists()
+
+    coordinator.revoke_device(device_id)
+    replacement = FleetClient(root, coordinator.issue_invite([project["id"]]))
+    assert replacement.projects() == [{"id": project["id"], "name": "Shared"}]
+
+
+def test_paired_device_can_follow_same_coordinator_at_new_address(fleet, tmp_path):
+    _, project, _, coordinator = fleet
+    client = paired(fleet, tmp_path)
+    before = dict(client.credentials)
+    new_address = before["base_url"].replace("127.0.0.1", "localhost")
+
+    moved = FleetClient(client.store.root, {**before, "base_url": new_address})
+
+    assert moved.projects() == [{"id": project["id"], "name": "Shared"}]
+    assert moved.credentials == {**before, "base_url": new_address}
+    assert json.loads(moved.credentials_path.read_text()) == moved.credentials
+    assert private_access(moved.credentials_path, 0o600)
+    assert moved.device()["coordinator"]["id"] == coordinator.store.local_node()["id"]
+
+
+def test_paired_device_rejects_wrong_coordinator_identity_without_saving_address(
+    fleet, tmp_path, monkeypatch
+):
+    client = paired(fleet, tmp_path)
+    before = client.credentials_path.read_bytes()
+    alternate = client.base_url.replace("127.0.0.1", "localhost")
+    original = FleetClient._request
+
+    def wrong_identity(self, method, path, *args, **kwargs):
+        result = original(self, method, path, *args, **kwargs)
+        if path == "/v1/device":
+            result["coordinator"]["id"] = "another-coordinator"
+        return result
+
+    monkeypatch.setattr(FleetClient, "_request", wrong_identity)
+    with pytest.raises(WorkbenchError) as error:
+        FleetClient(client.store.root, {**client.credentials, "base_url": alternate})
+    assert error.value.code == "permission_denied"
+    assert client.credentials_path.read_bytes() == before
 
 
 def test_pair_proof_survives_client_credential_save_failure(fleet, tmp_path, monkeypatch):

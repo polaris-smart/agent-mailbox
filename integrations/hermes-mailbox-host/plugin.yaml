@@ -1,0 +1,5 @@
+name: agent-mailbox-host
+version: 0.0.1
+description: Receive project mail notifications in an explicitly bound existing Gateway session.
+provides_hooks:
+  - pre_llm_call

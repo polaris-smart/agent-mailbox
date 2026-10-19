@@ -13,6 +13,8 @@ import urllib.request
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("source_subprocess_imports")
+
 from agent_mailbox.workbench import WorkbenchHTTP
 from agent_mailbox.workbench_engine import WorkbenchEngine
 from agent_mailbox.workbench_remote import RemoteWorker
@@ -149,6 +151,151 @@ def remote(tmp_path, monkeypatch):
             server.close()
         for thread in threads:
             thread.join(timeout=2)
+
+
+def test_paired_device_relocates_coordinator_address_through_workbench(remote):
+    owner_http, device_http, project, _, _ = remote
+    before = dict(device_http.remote_client.credentials)
+    new_address = owner_http.fleet.base_url.replace("127.0.0.1", "localhost")
+
+    result = request(device_http, "fleet/relocate", {"base_url": new_address})
+
+    assert result["remote"]["paired"] is True
+    assert result["remote"]["base_url"] == new_address
+    assert result["saved_pairing"] is True
+    assert result["remote"]["projects"] == [{"id": project["id"], "name": "Shared"}]
+    assert device_http.remote_client.credentials == {**before, "base_url": new_address}
+    assert "token" not in json.dumps(result)
+    # A startup restore retry must not overwrite a successful manual move.
+    restored = device_http.join_fleet(before, restore=True)
+    assert restored["remote"]["base_url"] == new_address
+    assert device_http.remote_client.credentials["base_url"] == new_address
+
+
+def test_relocate_rejects_running_task_without_changing_saved_address(remote):
+    owner, device, _, _, _ = remote
+    task = dispatch(remote, "wait")
+    await_task(owner.store, task["id"], "running")
+    credentials_path = device.store.root / "workbench/fleet/client.json"
+    before = credentials_path.read_bytes()
+    old_worker = device.remote_worker
+    new_address = owner.fleet.base_url.replace("127.0.0.1", "localhost")
+
+    with pytest.raises(WorkbenchError) as caught:
+        device.relocate_fleet(new_address)
+
+    assert caught.value.code == "DEVICE_BUSY"
+    assert credentials_path.read_bytes() == before
+    assert device.remote_worker is old_worker
+    assert owner.store.get_task(task["id"])["status"] == "running"
+    request(owner, f"tasks/{task['id']}/cancel", {})
+    await_task(owner.store, task["id"], "cancelled")
+
+
+@pytest.mark.parametrize("record", ["active-runs.json", "terminal-receipts.json"])
+def test_relocate_rejects_durable_unsettled_run_without_live_worker(remote, record):
+    owner, device, _, _, _ = remote
+    device.remote_worker.close()
+    device.remote_worker = None
+    credentials_path = device.store.root / "workbench/fleet/client.json"
+    before = credentials_path.read_bytes()
+    (credentials_path.parent / record).write_text(json.dumps({"unsettled": "run-1"}))
+    new_address = owner.fleet.base_url.replace("127.0.0.1", "localhost")
+
+    with pytest.raises(WorkbenchError) as caught:
+        device.relocate_fleet(new_address)
+
+    assert caught.value.code == "DEVICE_BUSY"
+    assert credentials_path.read_bytes() == before
+
+
+def test_relocate_pauses_claim_that_has_not_sent_its_request(remote, monkeypatch):
+    owner, device, project, _, _ = remote
+    original_worker = device.remote_worker
+    original_worker.close()
+    client = device.remote_client
+    entered = threading.Event()
+    proceed = threading.Event()
+    original_device = client.device
+
+    def paused_device():
+        entered.set()
+        assert proceed.wait(10)
+        return original_device()
+
+    monkeypatch.setattr(client, "device", paused_device)
+    worker = RemoteWorker(client, bridge_command=original_worker.execution.command)
+    device.remote_worker = worker
+    worker.start_project(project["id"])
+    assert entered.wait(5)
+    new_address = owner.fleet.base_url.replace("127.0.0.1", "localhost")
+    outcome = {}
+
+    def relocate():
+        try:
+            outcome["result"] = device.relocate_fleet(new_address)
+        except WorkbenchError as exc:
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=relocate)
+    thread.start()
+    deadline = time.monotonic() + 5
+    while worker.claim_admission.is_set() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    try:
+        assert not worker.claim_admission.is_set()
+    finally:
+        proceed.set()
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    assert "error" not in outcome
+    assert outcome["result"]["remote"]["base_url"] == new_address
+    assert not owner.store.update_maintenance()["pending_claims"]
+
+
+def test_disconnect_pauses_claim_that_has_not_sent_its_request(remote, monkeypatch):
+    _, device, project, _, _ = remote
+    original_worker = device.remote_worker
+    original_worker.close()
+    client = device.remote_client
+    entered = threading.Event()
+    proceed = threading.Event()
+    original_device = client.device
+
+    def paused_device():
+        entered.set()
+        assert proceed.wait(10)
+        return original_device()
+
+    monkeypatch.setattr(client, "device", paused_device)
+    worker = RemoteWorker(client, bridge_command=original_worker.execution.command)
+    device.remote_worker = worker
+    worker.start_project(project["id"])
+    assert entered.wait(5)
+    outcome = {}
+
+    def disconnect():
+        try:
+            outcome["result"] = device.leave_fleet()
+        except WorkbenchError as exc:
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=disconnect)
+    thread.start()
+    deadline = time.monotonic() + 5
+    while worker.claim_admission.is_set() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    try:
+        assert not worker.claim_admission.is_set()
+    finally:
+        proceed.set()
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    assert "error" not in outcome
+    assert outcome["result"] == {"disconnected": True}
+    assert device.remote_client is None
+    assert not client.credentials_path.exists()
+    assert not device.store.update_maintenance()["pending_claims"]
 
 
 def dispatch(remote, prompt):
@@ -334,8 +481,8 @@ def test_stopped_worker_cannot_execute_a_late_claim_response(remote, monkeypatch
     claimed, release, executed = threading.Event(), threading.Event(), threading.Event()
     real_claim = client.claim
 
-    def delayed_claim(project_id, wait=30):
-        result = real_claim(project_id, wait=0)
+    def delayed_claim(project_id, wait=30, admission=None):
+        result = real_claim(project_id, wait=0, admission=admission)
         claimed.set()
         assert release.wait(timeout=3)
         return result

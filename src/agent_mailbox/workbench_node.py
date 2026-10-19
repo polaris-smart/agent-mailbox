@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .workbench_fleet import FleetClient, _write_private
+from .workbench_fleet import FleetClient
 from .workbench_lock import WorkbenchLock
 from .workbench_private import private_access
 from .workbench_remote import RemoteWorker
@@ -97,16 +97,10 @@ def _client(home, invite=None, coordinator_url=None):
         raise WorkbenchError(
             "permission_denied", "This home is already paired with another coordinator."
         )
-    client = FleetClient(home, saved)
-    if coordinator_url and coordinator_url != client.base_url:
-        dial_url, host, port = _url(coordinator_url)
-        client.base_url, client.host, client.port = dial_url, host, port
-        metadata = client.device()  # Pin and bearer identity are checked at the new address first.
-        if metadata["coordinator"]["id"] != saved.get("coordinator_id"):
-            raise WorkbenchError("permission_denied", "The coordinator identity does not match.")
-        client.credentials = {**client.credentials, "base_url": dial_url}
-        _write_private(saved_path, json.dumps(client.credentials).encode("utf-8"))
-    return client
+    # Use the same pinned-certificate, device-identity, project-access and
+    # atomic-save path as the workbench when an SSH dial address changes.
+    dial_url = _url(coordinator_url)[0] if coordinator_url else saved["base_url"]
+    return FleetClient(home, {**saved, "base_url": dial_url})
 
 
 def run_node(client, projects=None, stopping=None, bridge_command=None):

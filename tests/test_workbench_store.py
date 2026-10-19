@@ -40,6 +40,158 @@ def running(store, project, employee):
     return store.set_status(task["id"], "running")
 
 
+def test_one_employee_identity_joins_two_projects_without_a_second_mailbox(
+    store, project, tmp_path
+):
+    other_directory = tmp_path / "other-project"
+    other_directory.mkdir()
+    other = store.create_project("Other", other_directory)
+    cli = store.create_employee("Codex CLI", "codex", project["id"], connection_type="cli")
+
+    same_cli = store.create_employee("Codex CLI", "codex", other["id"], connection_type="cli")
+    assert same_cli["id"] == cli["id"]
+    assert set(same_cli["project_ids"]) == {project["id"], other["id"]}
+    assert len(store.snapshot()["employees"]) == 1
+    first = store.send_message(project["id"], "First project", "synthetic", recipient_id=cli["id"])
+    second = store.send_message(other["id"], "Second project", "synthetic", recipient_id=cli["id"])
+    assert {
+        message["id"]
+        for message in store.snapshot()["messages"]
+        if message["recipient_id"] == cli["id"]
+    } == {first["id"], second["id"]}
+    assert [
+        message["id"] for message in store.employee_messages(project["id"], cli["id"])["messages"]
+    ] == [first["id"]]
+    assert [
+        message["id"] for message in store.employee_messages(other["id"], cli["id"])["messages"]
+    ] == [second["id"]]
+
+    with pytest.raises(WorkbenchError) as error:
+        store.create_employee("Codex CLI", "codex", other["id"], connection_type="app")
+    assert error.value.code == "IDENTITY_CONNECTION_CONFLICT"
+
+    desktop = store.create_employee("Codex Desktop", "codex", other["id"], connection_type="app")
+    assert desktop["id"] != cli["id"]
+    assert len(store.snapshot()["employees"]) == 2
+
+
+def test_managed_task_creation_request_is_idempotent_under_concurrent_retries(
+    store, project, employee
+):
+    def submit(prompt="Do one bounded read"):
+        return store.create_task(
+            project["id"], "Handoff", prompt, employee["id"], request_id="handoff-001"
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(lambda _: submit(), range(4)))
+    assert len({task["id"] for task in results}) == 1
+    assert len({task["run_id"] for task in results}) == 1
+    assert len(store.snapshot()["tasks"]) == 1
+    with pytest.raises(WorkbenchError) as error:
+        submit("Different work")
+    assert error.value.code == "TASK_REQUEST_CONFLICT"
+    assert len(store.snapshot()["tasks"]) == 1
+
+
+def test_schema16_upgrade_adds_task_request_ledger_without_losing_tasks(store, project, employee):
+    task = queued(store, project, employee)
+    with sqlite3.connect(store.db_path) as db:
+        db.execute("DROP TABLE task_requests")
+        db.execute("PRAGMA user_version=16")
+    upgraded = WorkbenchStore(store.root)
+    assert upgraded.get_task(task["id"])["id"] == task["id"]
+    assert upgraded.migration_backup_path.is_file()
+    with upgraded._transaction(readonly=True) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert db.execute("SELECT 1 FROM sqlite_master WHERE name='task_requests'").fetchone()
+        assert db.execute("PRAGMA foreign_key_check").fetchone() is None
+
+
+def test_managed_delivery_notifies_explicit_project_reviewer_once(store, project, employee):
+    from agent_mailbox.workbench_mail_notifications import pending_ids
+
+    reviewer = store.create_employee("Reviewer", "claude", project["id"])
+    task = queued(store, project, employee, review_recipient_id=reviewer["id"])
+    assert task["review_recipient_id"] == reviewer["id"]
+    assert store.claim_task(store.local_node()["id"])["id"] == task["id"]
+    store.set_status(task["id"], "running")
+
+    result = "Synthetic result\nPROVIDER_DIAGNOSTIC_DO_NOT_FORWARD"
+    delivered = store.finish_task(task["id"], "review", result)
+    assert delivered["status"] == "review"
+    messages = [m for m in store.list_messages(project["id"]) if m["source_task_id"] == task["id"]]
+    assert len(messages) == 1
+    assert messages[0]["recipient_id"] == reviewer["id"]
+    assert messages[0]["sender_id"] == employee["id"]
+    assert f"Task: {task['id']}" in messages[0]["body"]
+    assert "project_delivery" in messages[0]["body"]
+    assert "PROVIDER_DIAGNOSTIC_DO_NOT_FORWARD" not in messages[0]["body"]
+    assert pending_ids(store, reviewer["id"]) == [messages[0]["id"]]
+    assert store.get_task(task["id"])["status"] == "review"
+    from agent_mailbox.workbench_execution_resources import project_task_delivery
+
+    assert project_task_delivery(store, project["id"], task["id"])["summary"] == result
+
+    with pytest.raises(WorkbenchError):
+        store.finish_task(task["id"], "review", "Duplicate")
+    assert (
+        len([m for m in store.list_messages(project["id"]) if m["source_task_id"] == task["id"]])
+        == 1
+    )
+
+
+def test_managed_reviewer_must_be_another_local_project_member(store, project, employee, tmp_path):
+    with pytest.raises(WorkbenchError):
+        queued(store, project, employee, review_recipient_id=employee["id"])
+    other = store.create_project("Other", tmp_path)
+    outsider = store.create_employee("Outsider", "claude", other["id"])
+    with pytest.raises(WorkbenchError):
+        queued(store, project, employee, review_recipient_id=outsider["id"])
+    assert store.snapshot()["tasks"] == []
+
+
+def test_managed_delivery_survives_reviewer_removal_without_leaking_result(
+    store, project, employee
+):
+    reviewer = store.create_employee("Reviewer", "claude", project["id"])
+    task = queued(store, project, employee, review_recipient_id=reviewer["id"])
+    assert store.claim_task(store.local_node()["id"])["id"] == task["id"]
+    store.set_status(task["id"], "running")
+    store.remove_project_member(project["id"], reviewer["id"])
+
+    assert store.finish_task(task["id"], "review", "Private result")["status"] == "review"
+    assert not [m for m in store.list_messages(project["id"]) if m["source_task_id"] == task["id"]]
+    events = store.task_detail(task["id"])["events"]
+    assert any(e["type"] == "review_notification_blocked" for e in events)
+
+
+def test_managed_long_delivery_still_notifies_reviewer(store, project, employee):
+    reviewer = store.create_employee("Reviewer", "claude", project["id"])
+    task = store.create_task(
+        project["id"],
+        "🔔" * 75,
+        "Read",
+        employee["id"],
+        review_recipient_id=reviewer["id"],
+    )
+    store.claim_task(store.local_node()["id"])
+    store.set_status(task["id"], "running")
+    result = "x" * (1024 * 1024)
+
+    assert store.finish_task(task["id"], "review", result)["status"] == "review"
+    messages = [
+        message
+        for message in store.list_messages(project["id"])
+        if message["source_task_id"] == task["id"]
+    ]
+    assert len(messages) == 1
+    assert messages[0]["recipient_id"] == reviewer["id"]
+    assert "project_delivery" in messages[0]["body"]
+    assert "x" * 100 not in messages[0]["body"]
+    assert store.get_task(task["id"])["result"] == result
+
+
 def test_new_store_private_and_stable(store):
     assert private_access(store.directory, 0o700)
     assert private_access(store.db_path, 0o600)

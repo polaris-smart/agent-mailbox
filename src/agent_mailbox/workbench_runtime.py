@@ -345,7 +345,9 @@ def discover_employees() -> list[dict]:
     found = []
     auth_deadline = time.monotonic() + 8
     for kind in KNOWN_AGENTS:
-        entries = cli_entries("wb" if kind == "workbuddy" else kind)
+        # `wb` is also the unrelated Weights & Biases CLI. Never infer a
+        # WorkBuddy employee from that ambiguous command name.
+        entries = cli_entries(kind)
         if (
             not entries
             and kind == "codex"

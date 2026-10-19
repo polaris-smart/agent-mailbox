@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -26,6 +28,42 @@ from agent_mailbox.workbench_private import private_access
 from agent_mailbox.workbench_store import WorkbenchStore
 
 
+def _verify_package_notices(unpacked_app: Path, manifest: dict) -> int:
+    """Verify the extracted distribution contains every declared text notice."""
+    resources = (
+        unpacked_app / "Contents/Resources" if manifest["platform"] == "darwin"
+        else unpacked_app / "_internal"
+    )
+    root = resources / "licenses/python-dependencies"
+    inventory_file = root / "inventory.json"
+    if not inventory_file.is_file():
+        raise RuntimeError("package notice inventory missing")
+    expected = manifest.get("python_dependency_notice_inventory")
+    actual = json.loads(inventory_file.read_text(encoding="utf-8"))
+    if not isinstance(expected, list) or not expected or actual != expected:
+        raise RuntimeError("package notice inventory mismatch")
+    count = 0
+    resolved_root = root.resolve()
+    for distribution in expected:
+        paths = distribution.get("notices")
+        if not isinstance(paths, list) or not paths:
+            raise RuntimeError("package notice inventory has an empty distribution")
+        for name in paths:
+            relative = Path(name)
+            path = (root / relative).resolve()
+            if relative.is_absolute() or not path.is_relative_to(resolved_root) or not path.is_file():
+                raise RuntimeError(f"package notice file missing: {name}")
+            with path.open("rb") as stream:
+                sample = stream.read(8192)
+            if not sample or b"\0" in sample or sample.startswith(
+                (b"\x7fELF", b"MZ", b"\xfe\xed\xfa\xce", b"\xce\xfa\xed\xfe",
+                 b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe")
+            ):
+                raise RuntimeError(f"package contains binary notice: {name}")
+            count += 1
+    return count
+
+
 def check(manifest_path, output_path):
     manifest = json.loads(manifest_path.read_text())
     assert manifest["version"] == __version__
@@ -37,19 +75,41 @@ def check(manifest_path, output_path):
     name = f"Agent-Mailbox-{__version__}-{platform}-{arch}"
     if platform == "darwin":
         archive = archive_dir / (name + ".zip")
-        subprocess.run(["ditto", "-c", "-k", "--keepParent", str(app), str(archive)], check=True)
+        subprocess.run(
+            ["ditto", "-c", "-k", "--norsrc", "--keepParent", str(app), str(archive)],
+            check=True,
+        )
+        with zipfile.ZipFile(archive) as source:
+            assert source.testzip() is None
+            assert not any(
+                "__MACOSX" in Path(name).parts or Path(name).name.startswith("._")
+                for name in source.namelist()
+            ), "The macOS archive contains AppleDouble metadata files"
     elif platform == "win32":
         archive = Path(shutil.make_archive(str(archive_dir / name), "zip", app.parent, app.name))
     else:
         archive = archive_dir / (name + ".tar.gz")
         with tarfile.open(archive, "w:gz") as target:
             target.add(app, arcname=app.name)
-    with tempfile.TemporaryDirectory(prefix="agent-mailbox-package-") as temporary:
+    # Unix-domain sockets on macOS have a short pathname limit. Keep the
+    # receiver's isolated HOME short even when the system TMPDIR is deep.
+    with (tempfile.TemporaryDirectory(prefix="agent-mailbox-package-") as temporary,
+          tempfile.TemporaryDirectory(prefix="amh-", dir="/private/tmp" if platform == "darwin" else None)
+          as host_home_name):
         root = Path(temporary)
         unpack = root / "unpack"
         unpack.mkdir()
         if platform == "darwin":
             subprocess.run(["ditto", "-x", "-k", str(archive), str(unpack)], check=True)
+            verified = subprocess.run(
+                ["codesign", "--verify", "--deep", "--strict", str(unpack / app.name)],
+                capture_output=True, text=True, check=False,
+            )
+            if verified.returncode:
+                raise RuntimeError(
+                    "Extracted macOS App has an invalid signature: "
+                    + verified.stderr.strip()[:400]
+                )
         elif platform == "win32":
             with zipfile.ZipFile(archive) as source:
                 assert source.testzip() is None
@@ -57,6 +117,7 @@ def check(manifest_path, output_path):
         else:
             with tarfile.open(archive) as source:
                 source.extractall(unpack, filter="data")
+        notice_count = _verify_package_notices(unpack / app.name, manifest)
         relative = Path(manifest["executable"]).relative_to(app)
         executable = unpack / app.name / relative
         home = root / "fresh-home"
@@ -77,11 +138,16 @@ def check(manifest_path, output_path):
         revision = fixture.capture_resource_version(mail_project["id"], resource["id"], "Fixture")
         fixture.approve_resource_version(mail_project["id"], resource["id"], revision["id"])
         with (root / "launch.log").open("wb") as log:
+            # The receiver IPC root follows Path.home(), independently of
+            # --home. Keep package probes out of the operator's real HOME.
+            host_home = Path(host_home_name)
+            host_home.chmod(0o700)
             process = subprocess.Popen(
                 [str(executable), "--home", str(home), "--no-browser"],
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=log,
+                env={**os.environ, "HOME": str(host_home)},
             )
             try:
                 instance = home / "workbench/instance.json"
@@ -92,6 +158,17 @@ def check(manifest_path, output_path):
                     time.sleep(0.1)
                 owner = json.loads(instance.read_text())
                 assert private_access(instance, 0o600)
+                if platform == "darwin":
+                    key = hashlib.sha256(os.fsencode(home.resolve())).hexdigest()[:16]
+                    activity_socket = host_home / ".agent-mailbox-hosts" / key / "idle.sock"
+                    end = time.monotonic() + 10
+                    while not activity_socket.exists() and time.monotonic() < end:
+                        if process.poll() is not None:
+                            raise RuntimeError("Packaged host-activity listener exited")
+                        time.sleep(0.05)
+                    info = activity_socket.lstat()
+                    assert stat.S_ISSOCK(info.st_mode) and info.st_uid == os.getuid()
+                    assert not info.st_mode & 0o077, "Packaged host-activity socket is not private"
 
                 def api(route, data=None, token=None):
                     request = urllib.request.Request(
@@ -123,6 +200,37 @@ def check(manifest_path, output_path):
                         owner["endpoint"] + "/workbench-assets/" + filename, timeout=10
                     ) as response:
                         assert marker in response.read().decode()
+                # This must exercise the extracted package, not the source tree:
+                # a previous installed App predates the Human portal assets.
+                for route, marker, content_type in (
+                    ("/human", b'id="enroll-form"', "text/html"),
+                    ("/workbench-assets/human.css", b".entry", "text/css"),
+                    ("/workbench-assets/human.js", b"enroll-form", "text/javascript"),
+                ):
+                    with urllib.request.urlopen(owner["endpoint"] + route, timeout=10) as response:
+                        assert response.status == 200
+                        assert content_type in response.headers["Content-Type"]
+                        assert marker in response.read(), f"Missing packaged Human asset: {route}"
+                forwarded = api("human-forward/start", {})
+                assert forwarded["enabled"] and 0 < forwarded["port"] <= 65535
+                human_endpoint = f"http://127.0.0.1:{forwarded['port']}"
+                try:
+                    with urllib.request.urlopen(human_endpoint + "/human", timeout=10) as response:
+                        assert response.status == 200 and b'id="enroll-form"' in response.read()
+                    try:
+                        urllib.request.urlopen(
+                            urllib.request.Request(
+                                human_endpoint + "/api/workbench/bootstrap",
+                                headers={"Authorization": "Bearer " + owner["token"]},
+                            ),
+                            timeout=10,
+                        )
+                    except urllib.error.HTTPError as error:
+                        assert error.code == 404
+                    else:
+                        raise AssertionError("Human forward exposed the owner API")
+                finally:
+                    assert api("human-forward/stop", {}) == {"stopped": True}
                 api(
                     f"projects/{mail_project['id']}/members/{mail_employees[1]['id']}/role",
                     {"role": "Fixture reviewer"},
@@ -180,6 +288,7 @@ def check(manifest_path, output_path):
                                 "project_tasks",
                                 "project_task_accept",
                                 "project_task_submit",
+                                "project_message_open",
                             } <= {tool.name for tool in tools.tools}
                             return await action(session, call)
 
@@ -218,6 +327,23 @@ def check(manifest_path, output_path):
                         inbox = await call(session, "project_messages", {})
                         assert not inbox["viewing_acknowledges"]
                         assert outgoing["id"] in {message["id"] for message in inbox["messages"]}
+                        for message_id in (outgoing["id"], mail_task["request_message_id"]):
+                            opened = await call(
+                                session, "project_message_open", {"message_id": message_id}
+                            )
+                            assert opened["accepts_task"] is False
+                            assert opened["message"]["read_receipt"]["reader_id"] == mail_employees[1]["id"]
+                        with fixture._transaction(readonly=True) as db:
+                            for message_id in (outgoing["id"], mail_task["request_message_id"]):
+                                alert = db.execute(
+                                    "SELECT status,attempts FROM notifications "
+                                    "WHERE kind='mailbox_wake' AND state_hash=?",
+                                    (message_id,),
+                                ).fetchone()
+                                assert (alert["status"], alert["attempts"]) == (
+                                    "recipient_opened", 0,
+                                )
+                        assert fixture.get_task(mail_task["id"])["status"] == "queued"
                         approved = await call(
                             session, "project_resource_read", {"resource_id": resource["id"]}
                         )
@@ -252,6 +378,43 @@ def check(manifest_path, output_path):
                         assert submitted["status"] == "review"
 
                     await connect(configurations[1], recipient)
+
+                    cancelled_task = api(
+                        "mail-tasks",
+                        {
+                            "project_id": mail_project["id"],
+                            "title": "Cancellation fixture",
+                            "prompt": "Open this request, then wait for cancellation",
+                            "assignee_id": mail_employees[1]["id"],
+                        },
+                    )
+
+                    async def open_before_cancel(session, call):
+                        opened = await call(
+                            session,
+                            "project_message_open",
+                            {"message_id": cancelled_task["request_message_id"]},
+                        )
+                        assert opened["accepts_task"] is False
+
+                    await connect(configurations[1], open_before_cancel)
+                    assert api("tasks/" + cancelled_task["id"] + "/cancel", {})["status"] == "cancelled"
+
+                    async def receive_cancel(session, call):
+                        inbox = await call(session, "project_messages", {})
+                        notices = [
+                            message for message in inbox["messages"]
+                            if message["request_id"] == "mailbox_cancel:" + cancelled_task["id"]
+                        ]
+                        assert len(notices) == 1
+                        opened = await call(
+                            session, "project_message_open", {"message_id": notices[0]["id"]}
+                        )
+                        assert opened["accepts_task"] is False
+                        assert opened["message"]["read_receipt"]["reader_id"] == mail_employees[1]["id"]
+
+                    await connect(configurations[1], receive_cancel)
+                    assert fixture.get_task(cancelled_task["id"])["status"] == "cancelled"
 
                 async def bounded_mailbox_check():
                     await asyncio.wait_for(existing_sessions_mcp(), timeout=30)
@@ -325,7 +488,10 @@ def check(manifest_path, output_path):
         "architecture": arch,
         "archive": str(archive),
         "archive_extracted_and_launched": True,
+        "python_dependency_notice_files_verified": notice_count,
         "owner_authentication": True,
+        "human_assets_http_verified": True,
+        "human_forward_owner_surface_denied": True,
         "private_permissions": True,
         "frozen_required_mcp_tools_verified": True,
         "context_note_probe_verified": True,
@@ -334,6 +500,7 @@ def check(manifest_path, output_path):
         "approved_resource_read": True,
         "employee_mail_exchange_session_attributed": True,
         "mail_task_explicit_accept_submit": True,
+        "mail_task_cancel_after_open_notice": True,
         "mail_task_human_review_separate": True,
         "mail_task_wrong_assignee_denied": True,
         "project_responsibility_visible": True,

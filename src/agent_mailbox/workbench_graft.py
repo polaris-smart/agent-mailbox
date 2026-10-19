@@ -47,7 +47,7 @@ def graft_ask(project_path: str | Path, task: str) -> dict:
             "provenance": {},
             "error": {"code": "BAD_ARGUMENT", "message": "请给出要问的问题（非空）"},
         }
-    args = ["ask", question, "--json"]
+    args = ["ask", question, "--json", "--no-refresh"]
     root = cq.resolve_project_root(project_path)
     raw = cq.run(
         "graft",
@@ -71,7 +71,7 @@ def graft_callers(project_path: str | Path, symbol: str) -> dict:
             "provenance": {},
             "error": {"code": "BAD_ARGUMENT", "message": "请给出符号名（非空）"},
         }
-    args = ["callers", name]
+    args = ["callers", name, "--json", "--no-refresh"]
     root = cq.resolve_project_root(project_path)
     raw = cq.run(
         "graft",

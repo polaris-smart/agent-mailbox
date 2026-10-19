@@ -28,3 +28,16 @@ def test_duplicates_grouped_with_keeper_and_reference_counts(tmp_path):
     assert {r["id"] for r in groups["dsh"]["rows"]} == {a["id"], b["id"]}
     assert all("references" in r for r in groups["dsh"]["rows"])
     assert "reference_breakdown" in report
+
+
+def test_distinct_gui_and_cli_agents_are_not_duplicate_mailboxes(tmp_path):
+    store = WorkbenchStore(tmp_path / "home")
+    store.create_project("P", tmp_path)
+    cli = store.create_employee("DSH", "deepseek", None, connection_type="cli")
+    app = store.create_employee("DSH App", "deepseek", None, connection_type="app")
+
+    report = store.duplicate_employee_report()
+
+    assert cli["id"] != app["id"]
+    assert report["ok"] is True
+    assert report["duplicate_groups"] == []

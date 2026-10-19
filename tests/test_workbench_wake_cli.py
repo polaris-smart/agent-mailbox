@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 import pytest
 
 from agent_mailbox import workbench_wake as wk
-from agent_mailbox.workbench_wake import PLIST_LABEL, cli_main, load_state
+from agent_mailbox.workbench_wake import PLIST_LABEL, cli_main, load_state, save_state, state_lock
 
 
 def test_status_and_toggle_only_touch_our_own_state(tmp_path):
@@ -17,6 +18,36 @@ def test_status_and_toggle_only_touch_our_own_state(tmp_path):
     assert load_state(tmp_path)["enabled"] is False, "disable must be respected"
     assert cli_main(["--enable"], home=tmp_path) == 0
     assert load_state(tmp_path)["enabled"] is True
+
+
+def test_toggle_waits_for_wake_lock_and_preserves_new_delivery_state(tmp_path):
+    """A toggle must not replace a worker's newer wake watermark or backup view."""
+    started = threading.Event()
+    done = threading.Event()
+    result = []
+
+    def disable():
+        started.set()
+        try:
+            result.append(cli_main(["--disable"], home=tmp_path))
+        finally:
+            done.set()
+
+    worker = threading.Thread(target=disable, daemon=True)
+    with state_lock(tmp_path):
+        worker.start()
+        assert started.wait(1)
+        assert not done.wait(0.1), "toggle must wait for the same lock as delivery and backup"
+        state = load_state(tmp_path)
+        state["cold_done"] = True
+        state["employees"] = {"e1": {"seen": ["new-message"], "wakes": [123.0]}}
+        save_state(tmp_path, state)
+    worker.join(2)
+    assert not worker.is_alive()
+    assert result == [0]
+    state = load_state(tmp_path)
+    assert state["enabled"] is False
+    assert state["employees"]["e1"] == {"seen": ["new-message"], "wakes": [123.0]}
 
 
 def test_install_and_uninstall_are_opt_in_and_idempotent(tmp_path, monkeypatch):
@@ -89,6 +120,7 @@ def test_cold_then_warm_transition_via_cli(tmp_path, monkeypatch):
     fake_store = SimpleNamespace(
         _transaction=lambda **_kw: _Ctx(_Mail([])),
         snapshot=lambda: {"employees": [{"id": "e1", "lifecycle": "active"}]},
+        update_maintenance=lambda: {"paused": False},
     )
     assert cli_main(["--once"], home=tmp_path, store=fake_store) == 0
     assert load_state(tmp_path).get("cold_done") is True, "cold pass must persist the flag"
@@ -116,8 +148,12 @@ class _Ctx:
         mail = self.mail
 
         class _Db:
-            def execute(self, *_args, **_kwargs):
-                return _Rows([{"id": i} for i in mail.ids])
+            def execute(self, sql, *_args, **_kwargs):
+                if "FROM notifications" in sql:
+                    return _Rows([])  # Legacy mail fixture has no native intents.
+                return _Rows(
+                    [{"id": i, "status": None, "cancel_requested": None} for i in mail.ids]
+                )
 
         return _Db()
 
@@ -131,22 +167,24 @@ def _store(mail):
     return SimpleNamespace(
         _transaction=lambda **_kw: _Ctx(mail),
         snapshot=lambda: {"employees": [{"id": "e1", "lifecycle": "active"}]},
+        update_maintenance=lambda: {"paused": False},
     )
 
 
-def test_warm_pass_wakes_when_there_is_new_mail(tmp_path):
+def test_warm_pass_without_binding_preserves_pending_not_host_success(tmp_path):
     from agent_mailbox.workbench_wake import cli_main, state_dir
 
     mail = _Mail(["m1"])
     store = _store(mail)
-    cli_main(["--once"], home=tmp_path, store=store)  # 冷启动：记 m1 为已见 ✓ 不叫 ✓
-    assert not (state_dir(tmp_path) / "wake-outbox").exists(), "cold pass must not wake"
-    mail.ids.insert(0, "m2")  # ← A 发来新信 ✓
-    cli_main(["--once"], home=tmp_path, store=store)  # 常温 ⇒ 必须叫 ✓
-    markers = list((state_dir(tmp_path) / "wake-outbox").glob("wake-e1-*.json"))
-    assert markers, "the round after new mail must wake and leave an auditable marker"
-    cli_main(["--once"], home=tmp_path, store=store)  # 同一封信 ⇒ 不得重复叫 ✓
-    assert len(list((state_dir(tmp_path) / "wake-outbox").glob("wake-e1-*.json"))) == 1
+    cli_main(["--once"], home=tmp_path, store=store)
+    store.root = tmp_path
+    mail.ids.insert(0, "m2")
+    cli_main(["--once"], home=tmp_path, store=store)
+    assert (state_dir(tmp_path) / "claims/m2.pending").read_text() == "e1"
+    assert not list((state_dir(tmp_path) / "wake-outbox").glob("*.json"))
+    assert not load_state(tmp_path)["employees"]["e1"].get("wakes")
+    cli_main(["--once"], home=tmp_path, store=store)
+    assert not list((state_dir(tmp_path) / "wake-outbox").glob("*.json"))
 
 
 def test_status_shows_pending_and_unknown(tmp_path, capsys):
@@ -167,6 +205,8 @@ def test_status_shows_pending_and_unknown(tmp_path, capsys):
     )
     (home / "wake" / "claims" / "m-beta.unknown").write_text("employee_demo", encoding="utf-8")
 
+    # A prior not_received marker can remain when the next attempt becomes unknown.
+    (home / "wake" / "claims" / "m-beta.pending").write_text("employee_demo")
     assert cli_main(["--status"], home=home) == 0
     out = capsys.readouterr().out
     assert "未接通待办 1 封" in out, "未接通待办必须可见 ✓（AM-01）"

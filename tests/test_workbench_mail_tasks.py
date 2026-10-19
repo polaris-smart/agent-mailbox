@@ -64,6 +64,27 @@ def test_mail_task_complete_without_launch_or_execution_grant(team):
         submit_mail_task(store, a["token"], task["id"], "Overwrite acceptance")
 
 
+def test_offline_member_keeps_task_and_can_accept_after_project_connection(tmp_path):
+    store = WorkbenchStore(tmp_path / "home")
+    project = store.create_project("Offline handoff", str(tmp_path))
+    employee = store.create_employee("Later App", "codex", project["id"], connection_type="app")
+
+    task = create_mail_task(store, project["id"], "Read later", "Synthetic brief", employee["id"])
+    with store._transaction(readonly=True) as db:
+        message = db.execute(
+            "SELECT id,request_work FROM messages WHERE task_id=?", (task["id"],)
+        ).fetchone()
+        alert = db.execute(
+            "SELECT status FROM notifications WHERE kind='mailbox_wake' AND state_hash=?",
+            (message["id"],),
+        ).fetchone()
+    assert task["status"] == "queued" and message["request_work"] == 0
+    assert alert["status"] == "pending", "offline delivery remains durable"
+
+    session = create_session(store, employee["id"], project["id"], "Later App")
+    assert accept_mail_task(store, session["token"], task["id"])["status"] == "running"
+
+
 def test_accepted_task_keeps_approved_resource_version_when_project_changes(team, tmp_path):
     store, project, _, _, a, _ = team
     source = tmp_path / "PRD.md"
@@ -186,10 +207,38 @@ def test_cross_project_and_remote_mail_rejected(team, tmp_path):
     other = store.create_project("Other", str(tmp_path))
     store.add_project_member(other["id"], alice["id"])
     other_session = create_session(store, alice["id"], other["id"], "Other session")
-    with pytest.raises(WorkbenchError):
+    with pytest.raises(WorkbenchError) as cross_project:
         accept_mail_task(store, other_session["token"], task["id"])
+    assert cross_project.value.code == "PROJECT_MISMATCH"
     remote = store.upsert_device("remote-test", "Other device", "online")
     foreign = store.create_employee("Remote", "codex", other["id"], node_id=remote["id"])
     with pytest.raises(WorkbenchError) as error:
         create_mail_task(store, other["id"], "Impossible", "No", foreign["id"])
     assert error.value.code == "REMOTE_MAILBOX_UNAVAILABLE"
+
+
+def test_mail_task_denials_identify_safe_reason_without_task_content(team):
+    store, project, _, bob, _, b = team
+    mail = new_task(team)
+    managed = store.create_task(project["id"], "Managed", "Private prompt", bob["id"])
+
+    with pytest.raises(WorkbenchError) as wrong_assignee:
+        accept_mail_task(store, b["token"], mail["id"])
+    assert wrong_assignee.value.code == "ASSIGNEE_MISMATCH"
+    assert "Review the document" not in str(wrong_assignee.value)
+
+    with pytest.raises(WorkbenchError) as wrong_mode:
+        accept_mail_task(store, b["token"], managed["id"])
+    assert wrong_mode.value.code == "MODE_MISMATCH"
+    assert "Private prompt" not in str(wrong_mode.value)
+
+
+def test_foreign_employee_and_project_does_not_disclose_project_match(team, tmp_path):
+    store, _, _, bob, _, _ = team
+    mail = new_task(team)
+    other = store.create_project("Other", str(tmp_path))
+    store.add_project_member(other["id"], bob["id"])
+    foreign_session = create_session(store, bob["id"], other["id"], "Other project")
+    with pytest.raises(WorkbenchError) as denied:
+        accept_mail_task(store, foreign_session["token"], mail["id"])
+    assert denied.value.code == "UNAUTHORIZED"

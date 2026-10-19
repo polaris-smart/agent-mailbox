@@ -22,6 +22,8 @@ class RemoteWorker:
         self.threads = []
         self.workers = set()
         self.lock = getattr(client, "journal_lock", threading.RLock())
+        self.claim_admission = threading.Event()
+        self.claim_admission.set()
         self.errors = {}
         self.active_path = client.directory / "active-runs.json"
         self.active = {}
@@ -155,7 +157,10 @@ class RemoteWorker:
             self.client.claim_cancellation.event = self.stopping
         while not self.stopping.is_set():
             try:
-                task = self.client.claim(project_id, wait=30)
+                self.claim_admission.wait()
+                if self.stopping.is_set():
+                    break
+                task = self.client.claim(project_id, wait=30, admission=self.claim_admission)
                 self.errors.pop(project_id, None)
                 if task is None and self.client.store.update_maintenance()["paused"]:
                     if self.client.store.update_maintenance()["pending_claims"]:
@@ -181,6 +186,8 @@ class RemoteWorker:
                         self.workers.add(worker)
                     worker.start()
             except (WorkbenchError, OSError, ValueError) as exc:
+                if self.stopping.is_set():
+                    break
                 self.errors[project_id] = str(exc)
                 # Recover a lost claim response without repeating uncertain work.
                 try:
@@ -406,6 +413,7 @@ class RemoteWorker:
 
     def close(self):
         self.stopping.set()
+        self.claim_admission.set()
         if hasattr(self.client, "interrupt_claim"):
             self.client.interrupt_claim()
         self.receipt_ready.set()

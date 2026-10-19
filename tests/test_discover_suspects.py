@@ -54,4 +54,6 @@ def test_ui_shows_suspects_as_hints_only():
     assert "疑似 agent" in js, "UI 必须显示疑似提示 ✗"
     assert "不会自动登记" in js, "必须写明不会自动登记 ✗"
     assert "result.suspects" in js, "必须读后端的 suspects 字段 ✓"
-    assert 'data-action": "manual-employee"' in js, "提示必须指路手工登记（用户点了才登记 ✓）"
+    assert 'button(t("去登记", "Register"), "manual-employee"' in js, (
+        "提示必须指路手工登记（用户点了才登记 ✓）"
+    )

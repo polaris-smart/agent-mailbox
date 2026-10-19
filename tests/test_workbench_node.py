@@ -10,6 +10,8 @@ import time
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("source_subprocess_imports")
+
 from agent_mailbox.workbench import WorkbenchHTTP
 from agent_mailbox.workbench_engine import WorkbenchEngine
 from agent_mailbox.workbench_fleet import FleetCoordinator
@@ -336,6 +338,11 @@ def test_real_https_headless_worker_result_and_restart_without_replay(node):
         stopping.set()
         thread.join(timeout=10)
     assert not thread.is_alive()
+    # Closing can interrupt an in-flight long poll after the coordinator
+    # commits its claim. Reconcile that uncertainty before requesting another
+    # task; a direct claim must fail closed while its marker remains.
+    assert client.active_runs() == []
+    assert client.store.update_maintenance()["pending_claims"] == []
     # Simulate committed delivery without a journal before this node restarts.
     orphan = owner.create_task(project["id"], "Orphan", "complete", employee["id"])
     assert client.claim(project["id"], wait=0)["id"] == orphan["id"]

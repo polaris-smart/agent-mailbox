@@ -18,10 +18,15 @@ import webbrowser
 
 import objc
 from AppKit import (
+    NSAlert,
+    NSAlertFirstButtonReturn,
     NSApplication,
     NSApplicationActivationPolicyAccessory,
     NSBackingStoreBuffered,
+    NSEvent,
+    NSEventTypeApplicationDefined,
     NSImage,
+    NSMakePoint,
     NSMakeRect,
     NSMenu,
     NSMenuItem,
@@ -34,7 +39,7 @@ from AppKit import (
     NSWindowStyleMaskTitled,
 )
 from Foundation import NSURL, NSObject, NSURLRequest
-from PyObjCTools import AppHelper
+from PyObjCTools import AppHelper, MachSignals
 from WebKit import WKUserContentController, WKUserScript, WKWebView, WKWebViewConfiguration
 
 WINDOW_WIDTH = 1200
@@ -102,6 +107,7 @@ class _DesktopDelegate(NSObject):
         configuration = WKWebViewConfiguration.alloc().init()
         install_desktop_marker(configuration)  # AM-14：桌面标记 ✓ 只在此外壳里注入 ✓
         web_view = WKWebView.alloc().initWithFrame_configuration_(rect, configuration)
+        web_view.setUIDelegate_(self)
         window.setContentView_(web_view)
         window.setMinSize_(NSMakeRect(0, 0, 900, 600).size)
         request = NSURLRequest.requestWithURL_(NSURL.URLWithString_(self._url))
@@ -109,6 +115,23 @@ class _DesktopDelegate(NSObject):
         window.center()
         self._window = window
         return window
+
+    # -- WKUIDelegate ------------------------------------------------------
+    def webView_runJavaScriptConfirmPanelWithMessage_initiatedByFrame_completionHandler_(
+        self, _web_view, message, frame, completion_handler
+    ):
+        """Let App-hosted confirmation dialogs return a real choice to JavaScript."""
+        alert = NSAlert.alloc().init()
+        host = frame.request().URL().host() if frame is not None else None
+        alert.setMessageText_(str(host) if host else "Agent Mailbox")
+        alert.setInformativeText_(message)
+        alert.addButtonWithTitle_("确认")
+        alert.addButtonWithTitle_("取消")
+
+        def finish(response, _alert=alert):
+            completion_handler(response == NSAlertFirstButtonReturn)
+
+        alert.beginSheetModalForWindow_completionHandler_(self._window, finish)
 
     # -- NSApplicationDelegate --------------------------------------------
     def applicationDidFinishLaunching_(self, _notification):
@@ -162,7 +185,33 @@ class _DesktopDelegate(NSObject):
         webbrowser.open(self._url)
 
     def terminate_(self, _sender):
-        AppHelper.stopEventLoop()
+        _request_app_stop()
+
+
+def _request_app_stop():
+    """Leave app.run() so the Python owner can close its server and instance file."""
+    # stop_ is checked only after an NSEvent dispatch. A Mach signal or
+    # callAfter callback is not an NSEvent, so post one to finish the loop.
+    event = NSEvent.otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2_(
+        NSEventTypeApplicationDefined, NSMakePoint(0, 0), 0, 0.0, 0, None, 0, 0, 0
+    )
+    if event is None:
+        raise RuntimeError("Unable to create desktop quit event")
+    app = NSApplication.sharedApplication()
+    app.stop_(None)
+    app.postEvent_atStart_(event, True)
+
+
+def _install_quit_signal():
+    """Deliver SIGTERM through the Cocoa run loop while AppKit owns the main thread."""
+    previous_python = signal.getsignal(signal.SIGTERM)
+    previous_mach = MachSignals.signal(signal.SIGTERM, lambda _signum: _request_app_stop())
+
+    def restore():
+        MachSignals.signal(signal.SIGTERM, previous_mach)
+        signal.signal(signal.SIGTERM, previous_python)
+
+    return restore
 
 
 def run_desktop(url: str, *, service_stopped: threading.Event | None = None) -> None:
@@ -177,15 +226,15 @@ def run_desktop(url: str, *, service_stopped: threading.Event | None = None) -> 
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
     delegate = _DesktopDelegate.alloc().initWithURL_(url)
     app.setDelegate_(delegate)
-    previous_handler = signal.signal(signal.SIGTERM, lambda *_args: AppHelper.stopEventLoop())
+    restore_quit_signal = _install_quit_signal()
     if service_stopped is not None:
 
         def stop_when_service_ends():
             service_stopped.wait()
-            AppHelper.callAfter(AppHelper.stopEventLoop)
+            AppHelper.callAfter(_request_app_stop)
 
         threading.Thread(target=stop_when_service_ends, daemon=True).start()
     try:
         app.run()
     finally:
-        signal.signal(signal.SIGTERM, previous_handler)
+        restore_quit_signal()

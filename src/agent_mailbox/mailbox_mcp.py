@@ -45,6 +45,10 @@ def build_server(session_file: str | Path) -> MCPServer:
     token = manifest["token"]
     if any(ord(char) < 33 or ord(char) > 126 for char in token):
         raise ToolError("MAILBOX_CONFIG_INVALID: Invalid mailbox credential.")
+    if token.startswith("amh1_"):
+        raise ToolError(
+            "MAILBOX_CONFIG_INVALID: Human sessions cannot open employee mailbox tools."
+        )
     home = Path(manifest["home"])
     if not home.is_absolute():
         raise ToolError("MAILBOX_CONFIG_INVALID: Mailbox home must be absolute.")
@@ -82,6 +86,12 @@ def build_server(session_file: str | Path) -> MCPServer:
                 "MAILBOX_TOOL_DENIED": "This tool is not available in an employee mailbox.",
                 "EXPLICIT_CONTENT_REQUIRED": "Provide proposal content explicitly.",
                 "invalid_field": "Check the mailbox tool arguments.",
+                "MESSAGE_NOT_ACCESSIBLE": "This message is not in your current project inbox.",
+                "permission_denied": "This employee session is not authorized for that message or private thread.",
+                "UPDATE_PAUSED": "The workbench is preparing an update. Keep your work and retry after service resumes.",
+                "PROJECT_MISMATCH": "This task belongs to another project. Open that project's employee mailbox.",
+                "ASSIGNEE_MISMATCH": "This task is not assigned to the current employee.",
+                "MODE_MISMATCH": "This is not a mailbox task. Use its managed execution workflow.",
             }
             try:
                 failure = json.loads(exc.read(65537))
@@ -105,12 +115,23 @@ def build_server(session_file: str | Path) -> MCPServer:
         "agent-mailbox-project",
         instructions=(
             "Use project_context first. This connection belongs to one employee session and project. "
-            "After accepting a task, read its resource_manifest with explicit version_id to use the pinned instructions. Read approved shared resources by default. Ordinary mail and replies never start tasks. "
+            "project_task_accept returns the task's frozen resource_manifest; project_tasks returns it for accepted tasks. Read each listed approved resource with project_resource_read(resource_id, version_id) before task work. There is no separate task_resource_manifest tool. Ordinary mail and replies never start tasks. "
             "Viewing mail is not acknowledgment or completion. Human acceptance is separate. "
+            "Use project_message_open to explicitly open one received message and record first-open evidence. "
+            "Listing messages or receiving a host notification does not record this evidence; opening never accepts a task or sends an ACK. "
             "Never share this session file or tools with subagents; subagents report to you. "
             "Authorship identifies the registered session, not independently verified internal authorship."
         ),
     )
+
+    @server.tool()
+    def project_identity() -> dict:
+        """Check current connection identity without reading project content.
+
+        For connection diagnostics only. Task work still starts with project_context.
+        No mail read receipt, task acceptance or model call is created.
+        """
+        return call("identity", {})
 
     @server.tool()
     def project_context() -> dict:
@@ -121,6 +142,15 @@ def build_server(session_file: str | Path) -> MCPServer:
     def project_messages(folder: str = "inbox", limit: int = 100) -> dict:
         """Read my mailbox without marking messages read or starting work."""
         return call("messages", {"folder": folder, "limit": limit})
+
+    @server.tool()
+    def project_message_open(message_id: str) -> dict:
+        """Open one received message and record first-open evidence visible to its sender.
+
+        This writes a read receipt, never accepts a task or sends an ACK notification.
+        Folder listing and host notification do not mark messages read.
+        """
+        return call("message_open", {"message_id": message_id})
 
     @server.tool()
     def project_message(
@@ -196,12 +226,12 @@ def build_server(session_file: str | Path) -> MCPServer:
 
     @server.tool()
     def project_tasks() -> dict:
-        """Read tasks assigned to me for handling in my existing App/CLI."""
+        """Read my tasks, including frozen resource_manifest for accepted tasks."""
         return call("tasks", {})
 
     @server.tool()
     def project_task_accept(task_id: str) -> dict:
-        """Explicitly accept my mailbox task; reading alone never accepts it."""
+        """Accept my task and return its frozen resource_manifest for version-pinned reads."""
         return call("task_accept", {"task_id": task_id})
 
     @server.tool()

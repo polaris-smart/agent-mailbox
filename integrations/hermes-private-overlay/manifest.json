@@ -1,0 +1,91 @@
+{
+  "format": "agent-mailbox-hermes-private-host-candidate-v1",
+  "upstream_license": "MIT",
+  "license_sha256": "821556e6336796450ab852d375117b48a4887e71d255794fd6318d99982a5ab6",
+  "modules": [
+    {
+      "module": "hermes_cli.plugins",
+      "relative_path": "hermes_cli/plugins.py",
+      "old_sha256": "b0f09d0004890ff0b2c07d17ee7c5688709162da4fd43d404cabbe13f1d9f59d",
+      "patched_sha256": "b67ff8526d79e06b5673845245f587598d2205dba5a5ed5f1db2e234ac1ce4d4",
+      "bytes": 129278
+    },
+    {
+      "module": "hermes_cli.plugins_injection",
+      "relative_path": "hermes_cli/plugins_injection.py",
+      "old_sha256": "ee162e06bef52f0cbacb5b234ee72498fb85399f34e0d050a8cda59ebdf5f0c6",
+      "patched_sha256": "4155f6b4f82368839e67b4f7491f99c628dace04d0ec08d628c3572231c22ae1",
+      "bytes": 3431
+    },
+    {
+      "module": "gateway.run_plugin_injection",
+      "relative_path": "gateway/run_plugin_injection.py",
+      "old_sha256": "fbac49a8dead1c3f1e665d89345ba2366ead90525ca16ae3d6f02ba441315bed",
+      "patched_sha256": "74f46767be1120262cb729c83bef4f62157ccb8c937e053bc467040bd39fb02c",
+      "bytes": 14591
+    },
+    {
+      "module": "gateway.run_turn",
+      "relative_path": "gateway/run_turn.py",
+      "old_sha256": "14b326c34e15fac2951efc471bb5c34f63ccda6f6c4a6c2156cbed4375cd726b",
+      "patched_sha256": "2166596c5f2f9ae07c37c81dacd51d24167310443ac2f8e71c1a8656e2a7e6a0",
+      "bytes": 263374
+    },
+    {
+      "module": "gateway.run_busy",
+      "relative_path": "gateway/run_busy.py",
+      "old_sha256": "e4baf0d89c3d035660be743543fc0504348619d17d7df2ddb28dfe066b666ddb",
+      "patched_sha256": "e02ebfe061f65e760a8a95e647d1cae4445572eaed6e758aebf6955cd4c9c171",
+      "bytes": 77647
+    },
+    {
+      "module": "gateway.run_inbound",
+      "relative_path": "gateway/run_inbound.py",
+      "old_sha256": "baed959927ffe88d75452bb0561703579ebd26cf4b06e0f2f0a2ea74bcc3cc32",
+      "patched_sha256": "6ebee29aea7fc91275bff5653fd604125887b9581739e976b834a68929706903",
+      "bytes": 117526
+    },
+    {
+      "module": "gateway.reply_policy",
+      "relative_path": "gateway/reply_policy.py",
+      "old_sha256": null,
+      "patched_sha256": "7241c2263e52b56d044f97346e045f9dfdcbfeae53c8579c447216b19e1802a7",
+      "bytes": 3727
+    },
+    {
+      "module": "gateway.platforms.event",
+      "relative_path": "gateway/platforms/event.py",
+      "old_sha256": "8f204f1ab872437583d693bb53476a8a388f9fae3d52dd0c819de0521a361668",
+      "patched_sha256": "d3fc11d5b691f194a99ed965679b23033f0b78a35cee60fa9854e4bf574e6d01",
+      "bytes": 7799
+    },
+    {
+      "module": "gateway.platforms.base",
+      "relative_path": "gateway/platforms/base.py",
+      "old_sha256": "015b34fcef10fec1ba5632325e51c601a0f3277b06cb19e9380baf64ed73e1db",
+      "patched_sha256": "34541fbd80101b06cb68d93df6e22858b21f85914d74d0811d50e5035d3d6eb4",
+      "bytes": 281880
+    },
+    {
+      "module": "gateway.turn_context",
+      "relative_path": "gateway/turn_context.py",
+      "old_sha256": "6407cde162aac5b07005f2351a6f0d1d1a3ff2404fbb05b05bd545070ef3db91",
+      "patched_sha256": "e58da05fa18cb82b500473b1462edd5f6482b92a3db2a115d82c393482d6c64c",
+      "bytes": 5042
+    },
+    {
+      "module": "plugins.platforms.feishu.adapter",
+      "relative_path": "plugins/platforms/feishu/adapter.py",
+      "old_sha256": "2dcbaa98e9801c2ac0e10b4cf7436e778f6d38fe98d5a585e995700f80147afc",
+      "patched_sha256": "72d9e86c47d7484d6cc410ee1e16ef4a6fb05d2a276395fb42efa2d44ed45920",
+      "bytes": 225770
+    },
+    {
+      "module": "plugins.platforms.feishu.feishu_comment",
+      "relative_path": "plugins/platforms/feishu/feishu_comment.py",
+      "old_sha256": "a96c076a9468d8548629cf93493128308c6ba66208ec27c9a1822ee847f79e4b",
+      "patched_sha256": "20fa061a63fca6b91b066751e1c4b90976eb8fc0c344706a9109bff117480ee5",
+      "bytes": 41450
+    }
+  ]
+}

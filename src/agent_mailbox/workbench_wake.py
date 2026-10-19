@@ -26,6 +26,7 @@ from .workbench_private import private_mode
 
 DEFAULT_COOLDOWN_SECONDS = 900  # 同员工 15 分钟内不重复叫 ✓
 MAX_WAKES_PER_HOUR = 4  # 每小时最多 1 次 ✓（老板要"立刻"✗ 但不要"风暴"✗）
+MAX_MAIL_EVENTS_PER_HOUR = 60  # Native notifications: bounded, without reminder cooldown.
 STATE_FILENAME = "wake-state.json"
 WAKE_DIRNAME = "wake"
 
@@ -205,7 +206,13 @@ def _entry(state: dict[str, Any], employee_id: str) -> dict[str, Any]:
     return state["employees"].setdefault(employee_id, {"seen": [], "wakes": []})
 
 
-def _gates_allow(state: dict[str, Any], employee_id: str, now: float | None = None) -> bool:
+def _gates_allow(
+    state: dict[str, Any],
+    employee_id: str,
+    now: float | None = None,
+    *,
+    event_driven: bool = False,
+) -> bool:
     """**与 `decide` 同源**的三道闸门 ✓（Codex：补投不得绕过关闭/冷却/小时上限 ✗）。
 
     刻意复用同一批常量与同一批状态字段 ✓（`enabled` ✓ `wakes` ✓）——
@@ -216,9 +223,10 @@ def _gates_allow(state: dict[str, Any], employee_id: str, now: float | None = No
     entry = (state.get("employees") or {}).get(employee_id) or {}
     wakes = list(entry.get("wakes") or [])
     moment = time.time() if now is None else now
-    if wakes and moment - max(wakes) < DEFAULT_COOLDOWN_SECONDS:
+    if not event_driven and wakes and moment - max(wakes) < DEFAULT_COOLDOWN_SECONDS:
         return False
-    return len([t for t in wakes if moment - t < 3600]) < MAX_WAKES_PER_HOUR
+    limit = MAX_MAIL_EVENTS_PER_HOUR if event_driven else MAX_WAKES_PER_HOUR
+    return len([t for t in wakes if moment - t < 3600]) < limit
 
 
 def cold_start(state: dict[str, Any], employee_id: str, known_ids: Iterable[str]) -> int:
@@ -232,7 +240,12 @@ def cold_start(state: dict[str, Any], employee_id: str, known_ids: Iterable[str]
 
 
 def decide(
-    state: dict[str, Any], employee_id: str, unread_ids: Iterable[str], now: float | None = None
+    state: dict[str, Any],
+    employee_id: str,
+    unread_ids: Iterable[str],
+    now: float | None = None,
+    *,
+    event_driven: bool = False,
 ) -> dict[str, Any] | None:
     """该不该叫醒这个员工？✓ 返回 None（不叫 ✓）或 {reason, fresh, unread} ✓。
 
@@ -241,19 +254,13 @@ def decide(
     """
     if not state.get("enabled", True):
         return None
-    moment = time.time() if now is None else now
     entry = _entry(state, employee_id)
     seen = set(entry.get("seen") or [])
     ids = [str(i) for i in unread_ids]
     fresh = [i for i in ids if i not in seen]
     if not fresh:
         return None
-    wakes = [float(t) for t in (entry.get("wakes") or [])]
-    last = max(wakes) if wakes else None
-    if last is not None and moment - last < DEFAULT_COOLDOWN_SECONDS:
-        return None
-    recent = [t for t in wakes if moment - t < 3600]
-    if len(recent) >= MAX_WAKES_PER_HOUR:
+    if not _gates_allow(state, employee_id, now, event_driven=event_driven):
         return None
     return {"reason": "new_mail", "fresh": sorted(fresh), "unread": len(ids)}
 
@@ -269,7 +276,7 @@ def record_wake(
     entry["seen"] = sorted(seen)
     wakes = [float(t) for t in (entry.get("wakes") or [])]
     wakes.append(moment)
-    entry["wakes"] = [t for t in wakes if moment - t < 86400][-50:]
+    entry["wakes"] = [t for t in wakes if moment - t < 86400][-max(50, MAX_MAIL_EVENTS_PER_HOUR) :]
 
 
 def unread_ids_for_employee(store: Any, employee_id: str, limit: int = 200) -> list[str]:
@@ -279,16 +286,30 @@ def unread_ids_for_employee(store: Any, employee_id: str, limit: int = 200) -> l
     ⇒ 新信一多就落在窗口外 ⇒ **永不判"新"** ⇒ 永远不叫 ✗✗（e2e 实测抓到 ✓）
     ⇒ 这里直接按收件人查 id ✓；"哪封是新的"完全交给**水位线**判 ✓（不看未读数 ✓）。
     """
+    from .workbench_mail_notifications import host_effect_possible
+
     ids: list[str] = []
     offset = 0
     page = int(limit)
     with store._transaction(readonly=True) as db:
         while True:  # A3：分页取全 ✗（只取前 N 条 ⇒ 更老的信永不进水位线 ✓）
             rows = db.execute(
-                "SELECT id FROM messages WHERE recipient_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                "SELECT m.id,n.status,t.cancel_requested FROM messages m "
+                "JOIN memberships p ON p.employee_id=m.recipient_id AND p.project_id=m.project_id "
+                "LEFT JOIN notifications n "
+                "ON n.state_hash=m.id AND n.target_id=m.recipient_id AND n.kind='mailbox_wake' "
+                "LEFT JOIN tasks t ON t.id=m.task_id AND t.request_message_id=m.id "
+                "AND t.execution_mode='mailbox' "
+                "WHERE m.recipient_id=? "
+                "ORDER BY m.created_at DESC LIMIT ? OFFSET ?",
                 (employee_id, page, offset),
             ).fetchall()
-            ids.extend(str(row["id"]) for row in rows)
+            ids.extend(
+                str(row["id"])
+                for row in rows
+                if row["status"] != "cancelled"
+                and (not row["cancel_requested"] or host_effect_possible(store.root, row["id"]))
+            )
             if len(rows) < page:
                 break
             offset += page
@@ -317,6 +338,10 @@ def run_once(
     employee_ids: Iterable[str],
     now: float | None = None,
     cold_started: bool = False,
+    pending_provider: Any = None,
+    acknowledge: Any = None,
+    event_driven: bool = False,
+    paused_provider: Any = None,
 ) -> dict[str, Any]:
     """一轮轮询 ✓ **整轮持排他锁** ✗（A1 ✓）。
 
@@ -325,6 +350,13 @@ def run_once(
     """
     try:
         with state_lock(home):
+            if paused_provider is not None and paused_provider():
+                return {
+                    "cold": False,
+                    "woke": [],
+                    "skipped": list(employee_ids),
+                    "deferred": "update_paused",
+                }
             return _run_once_locked(
                 store,
                 home,
@@ -333,6 +365,9 @@ def run_once(
                 employee_ids=employee_ids,
                 now=now,
                 cold_started=cold_started,
+                pending_provider=pending_provider,
+                acknowledge=acknowledge,
+                event_driven=event_driven,
             )
     except WakeLockBusy as exc:
         print(f"⚠ {exc}")
@@ -349,6 +384,9 @@ def _run_once_locked(
     employee_ids: Iterable[str],
     now: float | None = None,
     cold_started: bool = False,
+    pending_provider: Any = None,
+    acknowledge: Any = None,
+    event_driven: bool = False,
 ) -> dict[str, Any]:
     """跑一次轮询 ✓（依赖全部注入 ⇒ 可单测 ✓）。
 
@@ -356,6 +394,7 @@ def _run_once_locked(
     （冷启动会把在途未读记成"已见"⇒ 静默吞信 ✗）⇒ 按"已初始化、无水印"继续 ✓
     ⇒ 在途未读会被当新信**叫醒** ✓（宁可多叫一次 ✓ 不可吞一封信 ✓）。
     """
+    employee_ids = list(employee_ids)
     degraded: str | None = None
     try:
         state = load_state(home)
@@ -369,31 +408,59 @@ def _run_once_locked(
     if (not cold_started) and not state.get("cold_done"):
         state["cold_done"] = True
         for employee_id in employee_ids:
-            cold_start(state, employee_id, unread_provider(store, employee_id))
+            pending = set(pending_provider(store, employee_id) if pending_provider else [])
+            cold_start(
+                state,
+                employee_id,
+                [mid for mid in unread_provider(store, employee_id) if mid not in pending],
+            )
         save_state(home, state)
-        return {"cold": True, "woke": [], "skipped": list(employee_ids), "degraded": degraded}
+        if pending_provider is None:
+            return {"cold": True, "woke": [], "skipped": list(employee_ids), "degraded": degraded}
     for employee_id in employee_ids:
         unread = unread_provider(store, employee_id)
-        decision = decide(state, employee_id, unread, now=now)
+        durable = set(pending_provider(store, employee_id) if pending_provider else [])
+        if event_driven:
+            # Only committed notification intents enter the native event stream.
+            # Merely reading old mail must not replay historical notifications.
+            unread = [mid for mid in unread if mid in durable]
+        if not delivery_available(home, employee_id):
+            # A missing hook is already represented by .pending. Do not create
+            # another outbox file every recovery pass while still disconnected.
+            durable -= set(_pending_for(Path(home), employee_id))
+        if durable:
+            # A saved intent outranks a stale watermark (including a crash between
+            # host receipt and DB acknowledgement). Hook claims still deduplicate.
+            entry = _entry(state, employee_id)
+            entry["seen"] = sorted(set(entry.get("seen") or []) - durable)
+        decision = decide(state, employee_id, unread, now=now, event_driven=event_driven)
         # **AM-01 入口层修复** ✗（Codex：外层"没有新信"就直接跳过 ⇒ 进不到内层补投 ✓）
         # 水位线已推进 ⇒ decide 认为无新信 ✓ ⇒ 但**有本员工的未接通待办且 hook 可执行**时，
         # 必须把补投当作**本轮要投递** ✓（否则"接通后补发"永远走不到 ✓）
         _recover = _pending_for(Path(home), employee_id)
+        if event_driven:
+            _recover = [mid for mid in _recover if mid in durable]
         if (
             decision is None
             and _recover
-            and _gates_allow(state, employee_id, now)  # **闸门复用** ✓ 不再绕 ✗
-            and hook_command(home) is not None
+            and _gates_allow(state, employee_id, now, event_driven=event_driven)
+            and delivery_available(home, employee_id)
         ):
             decision = dict(decision or {})  # decide 返回 None（无新信）也要能补投 ✓
             decision.update({"wake": True, "reason": "recover_pending", "fresh": _recover})
         if decision is None:
             skipped.append(employee_id)
             continue
-        if deliver(employee_id, decision):
-            record_wake(state, employee_id, decision["fresh"], now=now)
+        success = deliver(employee_id, decision)
+        confirmed = decision.get("delivered_ids", decision["fresh"] if success else [])
+        if confirmed:
+            if acknowledge is not None:
+                acknowledge(store, employee_id, confirmed)
+            record_wake(state, employee_id, confirmed, now=now)
             woke.append(employee_id)
         else:
+            skipped.append(employee_id)
+        if not success:
             # A persisted pending marker can safely move the seen watermark,
             # but must not consume cooldown or count as a successful wake.
             pending = set(_pending_for(Path(home), employee_id))
@@ -401,7 +468,6 @@ def _run_once_locked(
             if recorded:
                 entry = _entry(state, employee_id)
                 entry["seen"] = sorted(set(entry.get("seen") or []).union(recorded))
-            skipped.append(employee_id)
     save_state(home, state)
     return {"cold": False, "woke": woke, "skipped": skipped, "degraded": degraded}
 
@@ -447,7 +513,13 @@ def hook_command(home: Path) -> list[str] | None:
     return None
 
 
-RECEIPT_DIRNAME = "receipts"  # 宿主回执目录 ✓（AM-02：证明"上次真的执行了" ✓）
+def delivery_available(home: Path, employee_id: str) -> bool:
+    from .workbench_host_transport import configured
+
+    return hook_command(home) is not None or configured(home, employee_id)
+
+
+RECEIPT_DIRNAME = "receipts"  # Adapter receipt, never proof of Agent execution.
 OUTBOX_DIRNAME = "wake-outbox"
 PLIST_LABEL = "com.polaris-smart.agent-mailbox-wake"
 
@@ -532,11 +604,15 @@ def _has_unknown(home: Path, employee_id: str) -> bool:
 
 def _pending_for(home: Path, employee_id: str) -> list[str]:
     """这封待办**归谁** ✓：只返回本员工的未接通信 id ✓（按 `.pending` 里写的 id 归属 ✓）。"""
+    from .workbench_reauthorization_holds import held
+
     claims = state_dir(Path(home)) / "claims"
     if not claims.is_dir():
         return []
     out = []
     for path in sorted(claims.glob("*.pending")):
+        if held(home, path.name[: -len(".pending")]):
+            continue  # Reauthorization does not implicitly carry old mail forward.
         if (claims / path.name[: -len(".pending")]).with_suffix(".unknown").exists():
             continue  # 未知交付不是"待投递" ✓ 不得再纳入补投 ✓
         try:
@@ -563,8 +639,84 @@ def _mark_delivered(path: Path) -> None:
         pass
 
 
-def hook_deliver(home: Path, *, runner: Any = None, timeout: int = 30) -> Any:
-    """B 侧的**叫醒动作** ✓（宿主无关 ✗：每个宿主接自己的 hook ✓）。
+def _host_receipt(
+    base: Path, employee_id: str, delivery_id: str, fresh: list[str], binding=None
+) -> str | None:
+    """Validate a trusted local adapter's receipt, not Agent task acceptance."""
+    if (
+        not delivery_id
+        or Path(delivery_id).name != delivery_id
+        or not delivery_id.startswith("wake-")
+    ):
+        return None
+    try:
+        receipt = json.loads((base / RECEIPT_DIRNAME / delivery_id).read_text(encoding="utf-8"))
+        if not isinstance(receipt, dict):
+            return None
+        if (
+            receipt.get("protocol") != "agent-mailbox.host-receipt.v1"
+            or receipt.get("delivery_id") != delivery_id
+            or receipt.get("employee_id") != employee_id
+            or receipt.get("message_ids") != fresh
+        ):
+            return None
+        if binding is not None and any(
+            receipt.get(key) != binding[field]
+            for key, field in (
+                ("binding_id", "id"),
+                ("project_id", "project_id"),
+                ("host_kind", "host_kind"),
+                ("host_session_id", "host_session_id"),
+            )
+        ):
+            return None
+        status = receipt.get("status")
+        if status == "not_received":
+            return status
+        session = receipt.get("host_session_id")
+        if status == "received" and isinstance(session, str) and session.strip():
+            return status
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _claim_receipt(base: Path, employee_id: str, claim: Path, binding=None) -> bool:
+    try:
+        delivery_id = claim.read_text(encoding="utf-8").strip()
+        if (
+            not delivery_id
+            or Path(delivery_id).name != delivery_id
+            or not delivery_id.startswith("wake-")
+        ):
+            return False
+        payload = json.loads((base / OUTBOX_DIRNAME / f"{delivery_id}.json").read_text())
+        return (
+            isinstance(payload, dict)
+            and payload.get("employee_id") == employee_id
+            and claim.name.removesuffix(".unknown") in payload.get("fresh", [])
+            and _host_receipt(base, employee_id, delivery_id, payload["fresh"], binding)
+            == "received"
+        )
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def hook_deliver(
+    home: Path,
+    *,
+    runner: Any = None,
+    timeout: int = 30,
+    require_receipt: bool = False,
+    binding_resolver: Any = None,
+    expected_binding: Any = None,
+    include_pending: bool = True,
+    cutoff_checked: bool = False,
+) -> Any:
+    """Host delivery; workbench and CLI require receipts; legacy callers may opt out.
+
+    Event-driven callers supply durable notification IDs and disable legacy
+    pending expansion, so enabling a receiver cannot replay historical mail.
 
     **路径钉死** ✓：`home` 必须是 **store home** ✓ —— hook 与 outbox 一律取 `<store home>/wake/…` ✓
     **绝不跟随 `--state-dir`** ✗（否则"改个参数就执行任意脚本"✓ eng-verify C1 ✓）
@@ -585,6 +737,8 @@ def hook_deliver(home: Path, *, runner: Any = None, timeout: int = 30) -> Any:
     base = state_dir(Path(home))
 
     def deliver(employee_id: str, decision: dict[str, Any]) -> bool:
+        from .workbench_reauthorization_holds import gated, held, reauthorization_required
+
         claims = base / "claims"
         try:
             claims.mkdir(parents=True, exist_ok=True)
@@ -593,23 +747,147 @@ def hook_deliver(home: Path, *, runner: Any = None, timeout: int = 30) -> Any:
         except OSError as exc:
             print(f"⚠ 认领目录不可用（{exc}）⇒ 放弃本轮 ✓ 水位线不动 ✓ 下轮补叫 ✓：{claims}")
             return False
+        if binding_resolver is not None:
+            pending = _pending_for(home, employee_id) if include_pending else []
+            work = list(dict.fromkeys([*(decision.get("fresh") or []), *pending]))
+            routes, missing = binding_resolver(employee_id, work)
+            for mid in missing:
+                _mark_pending(claims / mid, employee_id)
+            delivered = not missing
+            decision["delivered_ids"] = []
+            for route in routes:
+                binding = route["binding"]
+                if gated(home, binding["id"]):
+                    delivered = False
+                    continue
+                # The CLI still offers all durable intents, unlike the native
+                # readiness provider. An unknown effect must block only its
+                # own message, never another letter in the same route batch.
+                safe = []
+                for mid in route["messages"]:
+                    if held(home, mid):
+                        delivered = False
+                        continue
+                    unknown = claims / f"{mid}.unknown"
+                    if unknown.is_file() and not _claim_receipt(
+                        base, employee_id, unknown, binding
+                    ):
+                        delivered = False
+                    else:
+                        safe.append(mid)
+                if not safe:
+                    continue
+                send = hook_deliver(
+                    home,
+                    runner=runner,
+                    timeout=timeout,
+                    require_receipt=True,
+                    expected_binding=binding,
+                    include_pending=include_pending,
+                    cutoff_checked=True,
+                )
+                ok = send(employee_id, {**decision, "fresh": safe})
+                if ok:
+                    decision["delivered_ids"].extend(safe)
+                delivered = delivered and ok
+            return delivered and bool(work)
         command = hook_command(home)
+        from .workbench_host_transport import (
+            configured_for_binding,
+            endpoint_for,
+            query_existing_hermes_delivery,
+        )
+        from .workbench_host_transport import deliver as deliver_native
+
+        native_socket = endpoint_for(home, expected_binding) if require_receipt else None
+        if expected_binding is not None and gated(home, expected_binding["id"]):
+            return False
+        if (
+            expected_binding is not None
+            and binding_resolver is None
+            and not cutoff_checked
+            and reauthorization_required(home, expected_binding["id"])
+        ):
+            return False  # A direct path cannot prove each message is post-cutover.
+        if require_receipt and expected_binding and configured_for_binding(home, expected_binding):
+            command = None  # A configured native receiver never falls back to a shell.
         hook = base / (WINDOWS_HOOK_FILENAME if sys.platform == "win32" else HOOK_FILENAME)
-        hook_ready = command is not None
+        hook_ready = command is not None or native_socket is not None
         claimed: list[Path] = []
-        # **AM-02 三轮** ✗：`.unknown` 是终态；它可能**不在本轮 work 里**（被 _pending_for 排除 ✓）
+        # AM-02: unknown stays blocked without new, independently validated host evidence.
+        # It can also be outside this round's work (excluded by _pending_for).
         # ⇒ 必须**循环之前**就算出"本员工有未知交付" ✓ 否则会 return True ⇒ 被记成"叫过"✗
-        blocked_unknown = _has_unknown(base.parent, employee_id)
-        blocked_pending = bool(_pending_for(base.parent, employee_id))
+        work = list(decision.get("fresh") or [])
+        # A late, fully bound host receipt is NEW evidence, not permission to retry.
+        # Reconcile only the current route; legacy/unbound unknowns stay terminal.
+        if require_receipt and expected_binding is not None:
+            for message_id in work:
+                unknown = claims / f"{message_id}.unknown"
+                if (
+                    unknown.is_file()
+                    and native_socket is not None
+                    and expected_binding.get("host_kind") == "hermes"
+                    and not _claim_receipt(base, employee_id, unknown, expected_binding)
+                ):
+                    # Query only the exact OLD delivery journal. Never resend an
+                    # unknown envelope: host DB loss must remain unknown.
+                    try:
+                        delivery_id = unknown.read_text(encoding="utf-8").strip()
+                        if (
+                            delivery_id.startswith("wake-")
+                            and Path(delivery_id).name == delivery_id
+                        ):
+                            marker = base / OUTBOX_DIRNAME / f"{delivery_id}.json"
+                            payload = json.loads(marker.read_text(encoding="utf-8"))
+                            if (
+                                isinstance(payload, dict)
+                                and payload.get("delivery_id") == delivery_id
+                                and payload.get("employee_id") == employee_id
+                                and payload.get("binding") == expected_binding
+                                and message_id in (payload.get("fresh") or [])
+                            ):
+                                query_existing_hermes_delivery(
+                                    home,
+                                    native_socket,
+                                    payload,
+                                    timeout=min(timeout, 2),
+                                )
+                    except (OSError, ValueError, TypeError):
+                        pass  # No fresh evidence: preserve unknown, never reinject.
+                if unknown.is_file() and _claim_receipt(
+                    base, employee_id, unknown, expected_binding
+                ):
+                    try:
+                        claim = claims / str(message_id)
+                        unknown.replace(claim)
+                        _mark_delivered(claim)
+                        _clear_pending(claim)
+                    except OSError:
+                        return False
+        blocked_unknown = (
+            any((claims / f"{mid}.unknown").exists() for mid in work)
+            if expected_binding is not None
+            else _has_unknown(base.parent, employee_id)
+        )
+        if require_receipt and blocked_unknown:
+            return False
+        pending = _pending_for(base.parent, employee_id)
+        blocked_pending = bool(
+            set(work).intersection(pending)
+            if expected_binding is not None or not include_pending
+            else pending
+        )
         # **AM-01 补投** ✓（Codex 复现：水位线已推进 ⇒ fresh 不再包含这封信 ✗）
         # ⇒ 只要此刻**有可执行 hook** ✓ 就把本员工的未接通待办**重新纳入本轮** ✓
-        work = list(decision.get("fresh") or [])
-        if hook_ready:
+        if include_pending and hook_ready and expected_binding is None:
             for message_id in _pending_for(base.parent, employee_id):
                 if message_id not in work:
                     work.append(message_id)
         for message_id in work:
             name = str(message_id)
+            if held(home, name):
+                blocked_pending = True
+                continue
             if (
                 claims / f"{name}.unknown"
             ).is_file():  # **AM-02 二轮** ✗：未知交付**终态** ✓ 永不重投 ✗
@@ -617,6 +895,13 @@ def hook_deliver(home: Path, *, runner: Any = None, timeout: int = 30) -> Any:
                 blocked_unknown = True
                 continue
             if (claims / f"{name}.ok").is_file():
+                if require_receipt and not _claim_receipt(
+                    base, employee_id, claims / name, expected_binding
+                ):
+                    (claims / f"{name}.unknown").touch(mode=0o600)
+                    for path in claimed:
+                        _release_claim(path)
+                    return False
                 continue
             try:
                 fd = os.open(claims / name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -628,12 +913,18 @@ def hook_deliver(home: Path, *, runner: Any = None, timeout: int = 30) -> Any:
                     #     （Codex 复现：盲重投 ⇒ **2 次外部效果** ✗；原则：未知交付不盲重试 ✓）
                     receipt = _receipt_path(base, name)  # 按**投递 id**查 ✓（宿主持有的是它 ✗）
                     try:
-                        if receipt.is_file():
-                            (claims / name).replace(claims / f"{name}.stale")
+                        received = (
+                            _claim_receipt(base, employee_id, claims / name, expected_binding)
+                            if require_receipt
+                            else receipt.is_file()
+                        )
+                        if received:
+                            if not require_receipt:
+                                (claims / name).replace(claims / f"{name}.stale")
                             _mark_delivered(claims / name)
                             _clear_pending(claims / name)
                             print(
-                                f"· {name} 超租约但**有宿主回执** ⇒ 确认已执行 ✓ 记已交付 ✓（不重投 ✗）"
+                                f"· {name} 超租约但有宿主接收回执 ⇒ 记已接收，不重投（不等于 Agent 接单）"
                             )
                             continue
                         (claims / name).replace(claims / f"{name}.unknown")
@@ -675,6 +966,11 @@ def hook_deliver(home: Path, *, runner: Any = None, timeout: int = 30) -> Any:
             marker.write_text(
                 _json.dumps(
                     {
+                        "receipt_protocol": "agent-mailbox.host-receipt.v1"
+                        if require_receipt
+                        else None,
+                        "delivery_id": marker.stem,
+                        "binding": expected_binding,
                         "employee_id": employee_id,
                         "reason": decision.get("reason"),
                         "unread": decision.get("unread"),
@@ -699,6 +995,49 @@ def hook_deliver(home: Path, *, runner: Any = None, timeout: int = 30) -> Any:
                 _mark_pending(path, employee_id)
             return False
         run = runner or _subprocess.run
+        if require_receipt:
+            # Persist the exact delivery identity before invoking external code.
+            try:
+                for path in claimed:
+                    path.write_text(marker.stem, encoding="utf-8")
+            except OSError:
+                for path in claimed:
+                    _release_claim(path)
+                return False
+
+        def settle_receipt() -> bool:
+            status = _host_receipt(
+                base, employee_id, marker.stem, [p.name for p in claimed], expected_binding
+            )
+            for path in claimed:
+                if status == "received":
+                    _mark_delivered(path)
+                    _clear_pending(path)
+                elif status == "not_received":
+                    _mark_pending(path, employee_id)
+                    _release_claim(path)
+                else:
+                    # The hook may have forwarded before failing. Never blindly retry.
+                    path.replace(Path(f"{path}.unknown"))
+            if status is None:
+                print("⚠ 宿主回执缺失或不匹配：未知交付，不计已接收，不自动重投，需人核")
+            if status == "received":
+                decision["delivered_ids"] = [path.name for path in claimed]
+            return status == "received"
+
+        if native_socket is not None:
+            try:
+                deliver_native(
+                    home,
+                    native_socket,
+                    _json.loads(marker.read_text(encoding="utf-8")),
+                    timeout=timeout,
+                )
+            except (OSError, ValueError):
+                # Never fall through to the legacy hook after possible admission.
+                pass
+            return settle_receipt()
+
         try:
             done = run(
                 [*command, employee_id, marker.stem],
@@ -706,6 +1045,8 @@ def hook_deliver(home: Path, *, runner: Any = None, timeout: int = 30) -> Any:
                 timeout=timeout,
             )  # 最后一参=投递 id ✓（hook 的第二个数据参数）
         except _subprocess.TimeoutExpired:
+            if require_receipt:
+                return settle_receipt()
             print(f"⚠ hook 超时（{timeout}s）：{hook} ⇒ 本轮**不推进水位线** ✓ 下轮会补叫 ✓")
             print("  若持续出现 ⇒ 检查该 hook 是否卡住 ✓（原则：宁可补叫 ✓ 不可漏叫 ✓）")
             try:
@@ -716,10 +1057,19 @@ def hook_deliver(home: Path, *, runner: Any = None, timeout: int = 30) -> Any:
             for path in claimed:
                 _release_claim(path)
             return False
-        except (OSError, _subprocess.SubprocessError):
+        except OSError:
+            # Process could not start, so no external delivery occurred.
             for path in claimed:
                 _release_claim(path)
             return False
+        except _subprocess.SubprocessError:
+            if require_receipt:
+                return settle_receipt()
+            for path in claimed:
+                _release_claim(path)
+            return False
+        if require_receipt:
+            return settle_receipt()
         returncode = getattr(done, "returncode", 1)
         if returncode != 0:
             print(f"⚠ 宿主 hook 返回非 0（{returncode}）：{hook} ⇒ 未确认接收，本轮未交付")
@@ -729,6 +1079,7 @@ def hook_deliver(home: Path, *, runner: Any = None, timeout: int = 30) -> Any:
         for path in claimed:  # 阶段二 ✓：成功之后才盖"已交付" ✓
             _mark_delivered(path)
             _clear_pending(path)  # 补投成功 ⇒ 撤待办 ✓
+        decision["delivered_ids"] = [path.name for path in claimed]
         return True
 
     return deliver
@@ -809,6 +1160,44 @@ def active_employee_ids(store: Any) -> list[str]:
 
 def cli_main(argv: list[str], *, home: Path, store: Any = None) -> int:
     """`agent-mailbox wake …` 的实现 ✓（返回退出码 ✓ 逻辑在此 ⇒ 可单测 ✓）。"""
+    if any(flag in argv for flag in ("--bind", "--unbind", "--bindings")):
+        import argparse
+
+        from .workbench_host_bindings import load_bindings, set_binding
+        from .workbench_store import WorkbenchError
+
+        parser = argparse.ArgumentParser(prog="agent-mailbox wake")
+        action = parser.add_mutually_exclusive_group(required=True)
+        action.add_argument("--bind", metavar="EMPLOYEE")
+        action.add_argument("--unbind", metavar="EMPLOYEE")
+        action.add_argument("--bindings", action="store_true")
+        parser.add_argument("--project")
+        parser.add_argument("--host")
+        parser.add_argument("--session")
+        args = parser.parse_args(argv)
+        try:
+            if args.bindings:
+                print(json.dumps(load_bindings(home), ensure_ascii=False, indent=2))
+                return 0
+            if store is None or not args.project:
+                raise ValueError("需要本机工作台与 --project")
+            if args.bind and (not args.host or not args.session):
+                raise ValueError("绑定需要 --host 和既有 --session；不会自动创建聊天")
+            if args.unbind and (args.host or args.session):
+                raise ValueError("解绑不接受 --host/--session")
+            set_binding(
+                store,
+                args.bind or args.unbind,
+                args.project,
+                host_kind=args.host,
+                host_session_id=args.session,
+            )
+            print("宿主绑定已保存（接收能力仍需验证）" if args.bind else "宿主绑定已撤销")
+            store.mail_wake_event.set()
+            return 0
+        except (ValueError, OSError, WorkbenchError) as exc:
+            print(f"宿主绑定未更改：{exc}")
+            return 2
     once = "--once" in argv
     status = "--status" in argv
     install = "--install" in argv
@@ -823,20 +1212,36 @@ def cli_main(argv: list[str], *, home: Path, store: Any = None) -> int:
     for index, item in enumerate(argv):
         if item == "--plist-dir" and index + 1 < len(argv):
             plist_dir = Path(argv[index + 1])
-    try:
-        state = load_state(state_home)
-    except WakeStateError as exc:
-        # 响亮 ✓ 但**继续跑** ✓（不静默冷启动 ✗ —— 那会吞在途未读 ✓）⇒ 未读会被叫醒 ✓
-        print(f"⚠ {exc}")
-        print("⚠ 已按「已初始化、无水印」继续 ✓：在途未读会被叫醒（宁多叫一次 ✗ 不吞一封信 ✓）")
-        state = empty_state()
-        state["cold_done"] = True
-        state["degraded"] = "state_unreadable"
+
+    def load_for_cli():
+        try:
+            return load_state(state_home)
+        except WakeStateError as exc:
+            # Never treat unread mail as a fresh-install cold start.
+            print(f"⚠ {exc}")
+            print("⚠ 已按「已初始化、无水印」继续 ✓：在途未读会被叫醒（宁多叫一次 ✗ 不吞一封信 ✓）")
+            state = empty_state()
+            state["cold_done"] = True
+            state["degraded"] = "state_unreadable"
+            return state
+
     if enable or disable:
-        state["enabled"] = bool(enable and not disable)
-        save_state(state_home, state)
+        try:
+            # The worker and update backup hold this lock. Read only after
+            # acquiring it, or a stale CLI snapshot can erase new deliveries.
+            with state_lock(state_home):
+                if store is not None and store.update_maintenance()["paused"]:
+                    print("更新准备期间暂停修改唤醒设置；请先恢复接单。")
+                    return 2
+                state = load_for_cli()
+                state["enabled"] = bool(enable and not disable)
+                save_state(state_home, state)
+        except WakeLockBusy as exc:
+            print(f"⚠ {exc}；唤醒设置未更改")
+            return 2
         print("唤醒已" + ("开启 ✓" if state["enabled"] else "关闭 ✓（判定只读 ✓ 信不会丢 ✓）"))
         return 0
+    state = load_for_cli()
     if install:
         if sys.platform != "darwin":
             print("launchd 安装仅支持 macOS；本平台未创建单元文件")
@@ -868,17 +1273,36 @@ def cli_main(argv: list[str], *, home: Path, store: Any = None) -> int:
         )
         for employee_id, entry in sorted(employees.items()):
             wakes = len(entry.get("wakes") or [])
-            print(f"  · {employee_id}：已见 {len(entry.get('seen') or [])} 封 ✓ 叫过 {wakes} 次 ✓")
+            print(
+                f"  · {employee_id}：已见 {len(entry.get('seen') or [])} 封 · 宿主确认接收 {wakes} 次（不等于 Agent 接单）"
+            )
         claims_dir = state_dir(Path(home)) / "claims"
-        pending_n = len(list(claims_dir.glob("*.pending"))) if claims_dir.is_dir() else 0
+        pending_n = (
+            sum(not p.with_suffix(".unknown").exists() for p in claims_dir.glob("*.pending"))
+            if claims_dir.is_dir()
+            else 0
+        )
         unknown_n = len(list(claims_dir.glob("*.unknown"))) if claims_dir.is_dir() else 0
         if pending_n:
             print(
-                f"  ⚠ 未接通待办 {pending_n} 封 ✓（宿主 hook 未配置 ⇒ 记了待办、没人被叫 ✗；接通后会自动补投 ✓）"
+                f"  ⚠ 未接通待办 {pending_n} 封 ✓（绑定或宿主未接通/明确未接收；接通后按闸门补投）"
             )
         if unknown_n:
             print(
                 f"  ⚠ 未知交付 {unknown_n} 封 ✓（宿主可能已执行但回执缺失 ⇒ **不自动重投** ✗ 需人核 ✓）"
+            )
+        from .workbench_host_retractions import status_counts, status_counts_file
+
+        retractions = status_counts(store) if store is not None else status_counts_file(home)
+        if retractions is None:
+            print("  ⚠ 已读提醒撤队账不可确认（不以零代替；请核对工作库状态）")
+        elif any(retractions.get(key, 0) for key in ("pending", "unknown", "binding_changed")):
+            print(
+                "  ⚠ 已读提醒撤队："
+                f"待处理 {retractions.get('pending', 0)} · "
+                f"结果不确定 {retractions.get('unknown', 0)} · "
+                f"绑定变化 {retractions.get('binding_changed', 0)}"
+                "（只影响过时宿主提醒；不代表邮件未到或任务已接）"
             )
         if not once:
             print(
@@ -889,22 +1313,35 @@ def cli_main(argv: list[str], *, home: Path, store: Any = None) -> int:
         print("缺 store ⇒ 无法轮询 ✗")
         return 2
     employee_ids = active_employee_ids(store)
+    from .workbench_host_bindings import resolve_routes
+    from .workbench_mail_notifications import mark_host_received, pending_ids
+
     cold = not state.get("cold_done")  # 显式标志 ✓ 不用"状态为空"推断 ✗（实测会永远判冷启动 ✓）
     result = run_once(
         store,
         state_home,
         unread_provider=unread_ids_for_employee,
-        deliver=hook_deliver(home),  # 钉死 store home ✗（eng-verify C1 ✓）
+        deliver=hook_deliver(
+            home,
+            require_receipt=True,
+            binding_resolver=lambda eid, mids: resolve_routes(store, eid, mids),
+        ),
         employee_ids=employee_ids,
         cold_started=not cold,
+        pending_provider=pending_ids,
+        acknowledge=mark_host_received,
+        paused_provider=lambda: store.update_maintenance()["paused"],
     )
+    if result.get("deferred") == "update_paused":
+        print("更新准备期间暂停通知投递；本轮未执行，请恢复接单后重试。")
+        return 2
     if result["cold"]:
         print(
             f"冷启动归零 ✓ 已把 {len(employee_ids)} 位员工现有信记为已见 ✓ **本轮不叫任何人** ✗（防刷历史 ✓）"
         )
     else:
         print(
-            f"本轮叫醒 {len(result['woke'])} 位 ✓（跳过 {len(result['skipped'])} ✓）"
+            f"本轮宿主确认接收 {len(result['woke'])} 位（跳过 {len(result['skipped'])}，不等于 Agent 接单）"
             + (f"：{result['woke']}" if result["woke"] else "")
         )
     return 0

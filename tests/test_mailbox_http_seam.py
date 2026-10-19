@@ -78,6 +78,7 @@ def test_owner_export_and_two_existing_sessions(tmp_path):
                 await a.initialize()
                 await b.initialize()
                 assert not (await a.call_tool("project_context", {})).is_error
+                assert not (await b.call_tool("project_context", {})).is_error
                 read = await b.call_tool("project_resource_read", {"resource_id": resource["id"]})
                 assert not read.is_error and "Approved project instructions" in json.dumps(
                     read.model_dump()
@@ -97,6 +98,21 @@ def test_owner_export_and_two_existing_sessions(tmp_path):
                 assert message["source_task_id"] is None
                 inbox = await b.call_tool("project_messages", {})
                 assert message["id"] in json.dumps(inbox.model_dump())
+                assert json.loads(inbox.content[0].text)["messages"][0]["read_receipt"] is None
+                opened = await b.call_tool("project_message_open", {"message_id": message["id"]})
+                assert not opened.is_error
+                receipt = json.loads(opened.content[0].text)["message"]["read_receipt"]
+                assert receipt["reader_id"] == bob["id"]
+                assert not json.loads(opened.content[0].text)["accepts_task"]
+                owner_messages = request("bootstrap")["messages"]
+                assert (
+                    next(m for m in owner_messages if m["id"] == message["id"])["read_receipt"]
+                    == receipt
+                )
+                sent = await a.call_tool("project_messages", {"folder": "sent"})
+                assert json.loads(sent.content[0].text)["messages"][0]["read_receipt"] == receipt
+                denied = await a.call_tool("project_message_open", {"message_id": message["id"]})
+                assert denied.is_error and "MESSAGE_NOT_ACCESSIBLE" in str(denied.content)
                 reply = await b.call_tool(
                     "project_message",
                     {
@@ -115,6 +131,10 @@ def test_owner_export_and_two_existing_sessions(tmp_path):
                 request("mailbox/sessions/" + exports[0]["id"], method="DELETE")
                 assert (await a.call_tool("project_context", {})).is_error
                 assert not (await b.call_tool("project_context", {})).is_error
+                request("mailbox/sessions/" + exports[1]["id"], method="DELETE")
+                assert (
+                    await b.call_tool("project_message_open", {"message_id": message["id"]})
+                ).is_error
 
         asyncio.run(exchange())
     finally:

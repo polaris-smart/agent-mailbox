@@ -22,7 +22,7 @@ from uuid import uuid4
 
 from . import __version__
 from .workbench_private import private_mode
-from .workbench_store import WorkbenchError, raw_connect
+from .workbench_store import UPDATE_FREEZE_CLAIM, WorkbenchError, raw_connect
 
 REPOSITORY = "polaris-smart/agent-mailbox"
 RELEASES_URL = f"https://github.com/{REPOSITORY}/releases"
@@ -198,6 +198,24 @@ def _remote_blockers(store):
 
 
 def private_backup(store):
+    # Wake claims and receipts live beside workbench/, not inside it. Use the
+    # same lock order as run_once (wake directory, then SQLite) so the backup
+    # cannot capture a database acknowledgement without its claim state.
+    from .workbench_wake import WakeLockBusy, state_lock
+
+    wake = store.root / "wake"
+    if wake.is_symlink():
+        raise WorkbenchError("UPDATE_UNSAFE_FILE", "唤醒目录是符号链接，请先检查数据目录。")
+    try:
+        with state_lock(store.root):
+            return _private_backup_locked(store)
+    except WakeLockBusy as exc:
+        raise WorkbenchError(
+            "UPDATE_WAKE_BUSY", "唤醒状态正在使用，无法安全备份；请稍后重试。"
+        ) from exc
+
+
+def _private_backup_locked(store):
     parent = store.root / "update-backups"
     if parent.is_symlink():
         raise WorkbenchError("UPDATE_UNSAFE_FILE", "备份目录是符号链接，请先检查数据目录。")
@@ -209,19 +227,48 @@ def private_backup(store):
     total = 0
     entries = []
     try:
-        # Pause and quiescence were established before this call. The DB write
-        # transaction prevents new claims and gives a consistent SQLite snapshot.
-        with store._transaction() as db:
+        # Commit the freeze before snapshotting: SQLite's backup API uses a
+        # separate connection and cannot see an uncommitted marker. Once the
+        # marker is durable, every other Store writer is fenced.
+        with store._transaction(allow_paused=True, allow_frozen=True) as db:
             if not db.execute("SELECT paused FROM update_settings WHERE id=1").fetchone()[0]:
                 raise WorkbenchError("UPDATE_NOT_PAUSED", "请先暂停接单，再准备升级。")
             if (
                 db.execute(
-                    "SELECT 1 FROM tasks WHERE status IN ('starting','running','waiting_approval') LIMIT 1"
+                    "SELECT 1 FROM tasks WHERE status IN ('starting','running','waiting_approval') "
+                    "AND COALESCE(execution_mode,'managed')!='mailbox' LIMIT 1"
                 ).fetchone()
-                or db.execute("SELECT 1 FROM update_claims LIMIT 1").fetchone()
+                or db.execute(
+                    "SELECT 1 FROM update_claims WHERE id!=? LIMIT 1", (UPDATE_FREEZE_CLAIM,)
+                ).fetchone()
                 or _remote_blockers(store)
             ):
                 raise WorkbenchError("UPDATE_BUSY", "仍有执行或领取请求未结束，请等待后重试。")
+            db.execute(
+                "INSERT OR IGNORE INTO update_claims(id,created_at) VALUES(?,?)",
+                (UPDATE_FREEZE_CLAIM, _now()),
+            )
+        # Hold the DB write lock while copying. Recheck the marker in case a
+        # separate owner resumed between the two transactions.
+        with store._transaction(allow_paused=True, allow_frozen=True) as db:
+            if (
+                not db.execute("SELECT paused FROM update_settings WHERE id=1").fetchone()[0]
+                or not db.execute(
+                    "SELECT 1 FROM update_claims WHERE id=?", (UPDATE_FREEZE_CLAIM,)
+                ).fetchone()
+            ):
+                raise WorkbenchError("UPDATE_NOT_PAUSED", "更新备份冻结已解除，请重新准备升级。")
+            if (
+                db.execute(
+                    "SELECT 1 FROM tasks WHERE status IN ('starting','running','waiting_approval') "
+                    "AND COALESCE(execution_mode,'managed')!='mailbox' LIMIT 1"
+                ).fetchone()
+                or db.execute(
+                    "SELECT 1 FROM update_claims WHERE id!=? LIMIT 1", (UPDATE_FREEZE_CLAIM,)
+                ).fetchone()
+                or _remote_blockers(store)
+            ):
+                raise WorkbenchError("UPDATE_BUSY", "冻结后仍有执行或领取请求，请先核查。")
             folder = target / "workbench"
             folder.mkdir(mode=0o700)
             private_mode(folder, 0o700)
@@ -238,6 +285,11 @@ def private_backup(store):
                 closing(sqlite3.connect(path)) as dst,
             ):
                 src.backup(dst)
+                # The live freeze is an update-session lock, not user data. An
+                # older rollback App cannot clear this new reserved claim; omit
+                # it from the restored snapshot while keeping paused=1.
+                dst.execute("DELETE FROM update_claims WHERE id=?", (UPDATE_FREEZE_CLAIM,))
+                dst.commit()
                 if dst.execute("PRAGMA journal_mode=DELETE").fetchone()[0] != "delete":
                     raise WorkbenchError("UPDATE_BACKUP_INVALID", "备份数据库无法转为独立文件。")
                 if (
@@ -250,72 +302,89 @@ def private_backup(store):
             if path.stat().st_size > MAX_FILE:
                 raise WorkbenchError("UPDATE_BACKUP_LIMIT", "数据库备份过大，请检查数据目录。")
             candidates = [path]
-            for base, dirs, files in os.walk(store.directory, followlinks=False):
-                base = Path(base)
-                for name in list(dirs):
-                    item = base / name
-                    if item.is_symlink():
-                        raise WorkbenchError(
-                            "UPDATE_UNSAFE_FILE", "数据目录包含符号链接，无法安全备份。"
-                        )
-                    if name in {"runtime", "__pycache__", "knowledge-cache", "cache"}:
-                        dirs.remove(name)
-                for name in files:
-                    item = base / name
-                    if item.is_symlink():
-                        raise WorkbenchError(
-                            "UPDATE_UNSAFE_FILE", "数据目录包含符号链接，无法安全备份。"
-                        )
-                    if name in {
-                        "state.db",
-                        "state.db-wal",
-                        "state.db-shm",
-                        "instance.json",
-                        "instance.lock",
-                    } or name.endswith((".sqlite", ".log")):
-                        continue
-                    relative = item.relative_to(store.directory)
-                    destination = folder / relative
-                    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                    private_mode(destination.parent, 0o700)
-                    fd = os.open(item, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-                    with os.fdopen(fd, "rb") as source:
-                        info = os.fstat(source.fileno())
-                        if (
-                            not stat.S_ISREG(info.st_mode)
-                            or info.st_size > MAX_FILE
-                            or total + info.st_size > MAX_BACKUP
-                        ):
+            wake = store.root / "wake"
+            for source_root, destination_root in (
+                (store.directory, folder),
+                (wake, target / "wake"),
+            ):
+                destination_root.mkdir(mode=0o700, exist_ok=True)
+                private_mode(destination_root, 0o700)
+                for base, dirs, files in os.walk(source_root, followlinks=False):
+                    base = Path(base)
+                    for name in list(dirs):
+                        item = base / name
+                        if item.is_symlink():
                             raise WorkbenchError(
-                                "UPDATE_BACKUP_LIMIT", "备份文件过大或格式不支持，请检查数据目录。"
+                                "UPDATE_UNSAFE_FILE", "数据目录包含符号链接，无法安全备份。"
                             )
-                        outfd = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-                        with os.fdopen(outfd, "wb") as output:
-                            private_mode(destination, 0o600)
-                            remaining = info.st_size
-                            while remaining:
-                                chunk = source.read(min(remaining, 1024 * 1024))
-                                if not chunk:
+                        if source_root == store.directory and name in {
+                            "runtime",
+                            "__pycache__",
+                            "knowledge-cache",
+                            "cache",
+                        }:
+                            dirs.remove(name)
+                    for name in files:
+                        item = base / name
+                        if item.is_symlink():
+                            raise WorkbenchError(
+                                "UPDATE_UNSAFE_FILE", "数据目录包含符号链接，无法安全备份。"
+                            )
+                        if name in {
+                            "state.db",
+                            "state.db-wal",
+                            "state.db-shm",
+                            "instance.json",
+                            "instance.lock",
+                        } or name.endswith((".sqlite", ".log")):
+                            continue
+                        destination = destination_root / item.relative_to(source_root)
+                        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                        private_mode(destination.parent, 0o700)
+                        fd = os.open(item, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                        with os.fdopen(fd, "rb") as source:
+                            info = os.fstat(source.fileno())
+                            if (
+                                not stat.S_ISREG(info.st_mode)
+                                or info.st_size > MAX_FILE
+                                or total + info.st_size > MAX_BACKUP
+                            ):
+                                raise WorkbenchError(
+                                    "UPDATE_BACKUP_LIMIT",
+                                    "备份文件过大或格式不支持，请检查数据目录。",
+                                )
+                            mode = (
+                                0o700
+                                if source_root == wake and info.st_mode & stat.S_IXUSR
+                                else 0o600
+                            )
+                            outfd = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, mode)
+                            with os.fdopen(outfd, "wb") as output:
+                                private_mode(destination, mode)
+                                remaining = info.st_size
+                                while remaining:
+                                    chunk = source.read(min(remaining, 1024 * 1024))
+                                    if not chunk:
+                                        raise WorkbenchError(
+                                            "UPDATE_BACKUP_CHANGED", "备份期间文件改变，请重试。"
+                                        )
+                                    output.write(chunk)
+                                    remaining -= len(chunk)
+                                if (
+                                    source.read(1)
+                                    or os.fstat(source.fileno()).st_mtime_ns != info.st_mtime_ns
+                                ):
                                     raise WorkbenchError(
                                         "UPDATE_BACKUP_CHANGED", "备份期间文件改变，请重试。"
                                     )
-                                output.write(chunk)
-                                remaining -= len(chunk)
-                            if (
-                                source.read(1)
-                                or os.fstat(source.fileno()).st_mtime_ns != info.st_mtime_ns
-                            ):
-                                raise WorkbenchError(
-                                    "UPDATE_BACKUP_CHANGED", "备份期间文件改变，请重试。"
-                                )
-                            output.flush()
-                            os.fsync(output.fileno())
-                    candidates.append(destination)
-                    total += info.st_size
-                    if len(candidates) > MAX_FILES:
-                        raise WorkbenchError(
-                            "UPDATE_BACKUP_LIMIT", "备份文件数量过多，请检查数据目录。"
-                        )
+                                output.flush()
+                                os.fsync(output.fileno())
+                        candidates.append(destination)
+                        total += info.st_size
+                        if len(candidates) > MAX_FILES:
+                            raise WorkbenchError(
+                                "UPDATE_BACKUP_LIMIT", "备份文件数量过多，请检查数据目录。"
+                            )
             entries = [
                 {
                     "path": p.relative_to(target).as_posix(),
@@ -336,6 +405,8 @@ def private_backup(store):
                 "runtime/cache/logs",
                 "live owner token/lock",
                 "old migration backups",
+                "live update freeze marker",
+                "wake hook logs",
                 "external project files and provider sign-in",
             ],
         }
@@ -367,6 +438,12 @@ class UpdateService:
         self.check = None
         self.last_backup = None
 
+    def _maintenance(self):
+        state = self.store.update_maintenance()
+        # A local worker remains a backup blocker after its task becomes
+        # terminal, until delivery proof and employee status are committed.
+        return {**state, "finishing_workers": self.server.engine.active_worker_count()}
+
     def status(self):
         from .workbench_compatibility import compatibility_nodes
 
@@ -375,7 +452,7 @@ class UpdateService:
                 "current_version": __version__,
                 "channel": self.store.update_channel(),
                 "installation": installation(self.store),
-                "maintenance": self.store.update_maintenance(),
+                "maintenance": self._maintenance(),
                 "check": self.check,
                 "last_backup": self.last_backup,
                 "nodes": compatibility_nodes(self.store, self.server.fleet),
@@ -425,9 +502,14 @@ class UpdateService:
             self.last_backup = None
             self.store.pause_updates(True)
             self.server.ui_notify()
-            maintenance = self.store.update_maintenance()
+            maintenance = self._maintenance()
             blockers = _remote_blockers(self.store)
-            if maintenance["active_tasks"] or maintenance["pending_claims"] or blockers:
+            if (
+                maintenance["active_tasks"]
+                or maintenance["pending_claims"]
+                or maintenance["finishing_workers"]
+                or blockers
+            ):
                 return {
                     **self.status(),
                     "status": "waiting",
@@ -448,12 +530,13 @@ class UpdateService:
 
     def assert_can_quit(self):
         with self.lock:
-            maintenance = self.store.update_maintenance()
+            maintenance = self._maintenance()
             if not maintenance["paused"]:
                 return
             if (
                 maintenance["active_tasks"]
                 or maintenance["pending_claims"]
+                or maintenance["finishing_workers"]
                 or _remote_blockers(self.store)
             ):
                 raise WorkbenchError(

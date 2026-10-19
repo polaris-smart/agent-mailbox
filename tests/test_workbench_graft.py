@@ -29,8 +29,28 @@ def test_callers_passes_symbol_through(tmp_path, monkeypatch, python_cli):
     assert (
         out["ok"] is True
         and out["references"] == ["x.py"]
-        and out["args"] == ["callers", "create_task"]
+        and out["args"] == ["callers", "create_task", "--json", "--no-refresh"]
     )
+
+
+@pytest.mark.parametrize("action,value", [(g.graft_ask, "task"), (g.graft_callers, "symbol")])
+def test_queries_request_json_without_refreshing_index(
+    tmp_path, monkeypatch, python_cli, action, value
+):
+    marker = tmp_path / "index-refreshed"
+    script = python_cli(
+        "import json, pathlib, sys\n"
+        f"marker = pathlib.Path({str(marker)!r})\n"
+        "if '--no-refresh' not in sys.argv: marker.touch()\n"
+        "print(json.dumps({'files': ['result.py']}) if '--json' in sys.argv else 'human output')\n",
+        name="graft",
+    )
+    # The version probe has no indexing behavior in the actual CLI.
+    monkeypatch.setattr(g.cq, "tool_version", lambda *args: "test")
+    monkeypatch.setenv("AGENT_MAIL_GRAFT_BIN", str(script))
+    result = action(_repo(tmp_path), value)
+    assert result["ok"] is True and result["references"] == ["result.py"]
+    assert not marker.exists()
 
 
 def test_missing_graft_degrades_with_install_hint(tmp_path, monkeypatch):

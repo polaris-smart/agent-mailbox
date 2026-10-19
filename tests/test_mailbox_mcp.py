@@ -43,6 +43,7 @@ def connection(tmp_path):
 
         def do_POST(self):
             data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            state["last_port"] = self.server.server_port
             calls.append((self.path, self.headers.get("Authorization"), data))
             self.send_response(state["status"])
             if state["status"] == 302:
@@ -108,7 +109,9 @@ def test_real_stdio_port_change_duplicate_request_and_revocation(connection, mon
                 "project_aoci_status",
                 "project_aoci_check",
                 "project_context",
+                "project_identity",
                 "project_messages",
+                "project_message_open",
                 "project_message",
                 "project_note",
                 "project_memory_search",
@@ -127,8 +130,18 @@ def test_real_stdio_port_change_duplicate_request_and_revocation(connection, mon
             assert "content" in proposal.input_schema["required"]
             assert proposal.input_schema["properties"]["content"]["type"] == "string"
             assert not (await session.call_tool("project_context", {})).is_error
-            start()  # Same installed connection follows a new workbench port.
+            identity = await session.call_tool("project_identity", {})
+            assert not identity.is_error
+            assert json.loads(identity.content[0].text) == {"tool": "identity", "args": {}}
+            new_server = start()  # Same installed connection follows a new workbench port.
             assert not (await session.call_tool("project_messages", {})).is_error
+            assert state["last_port"] == new_server.server_port
+            opened = await session.call_tool("project_message_open", {"message_id": "msg-one"})
+            assert not opened.is_error
+            assert json.loads(opened.content[0].text) == {
+                "tool": "message_open",
+                "args": {"message_id": "msg-one"},
+            }
             args = {"title": "review", "body": "hello", "recipient_id": "bob", "request_id": "same"}
             for _ in range(2):
                 assert not (await session.call_tool("project_message", args)).is_error
@@ -189,6 +202,24 @@ def test_private_manifest_and_instance_required(connection):
         assert not calls
 
 
+def test_human_bearer_cannot_initialize_employee_mcp(tmp_path):
+    manifest = tmp_path / "session.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "token": "amh1_synthetic",
+                "home": str(tmp_path),
+                "employee_id": "alice",
+                "project_id": "project",
+                "session_id": "session",
+            }
+        )
+    )
+    private_mode(manifest, 0o600)
+    with pytest.raises(ToolError, match="Human sessions cannot open employee mailbox tools"):
+        build_server(manifest)
+
+
 def test_no_database_dependency_and_resource_default(connection):
     manifest, calls, _, _ = connection
     server = build_server(manifest)
@@ -238,6 +269,42 @@ def test_delivery_contract_and_safe_known_error(connection):
     state["response"] = {"error": {"code": "RESOURCE_NOT_APPROVED", "message": "employee-secret"}}
     with pytest.raises(ToolError, match="RESOURCE_NOT_APPROVED") as caught:
         asyncio.run(server.call_tool("project_resource_read", {"resource_id": "prd"}))
+    assert "employee-secret" not in str(caught.value)
+    state["response"] = {"error": {"code": "UPDATE_PAUSED", "message": "employee-secret"}}
+    with pytest.raises(ToolError, match="UPDATE_PAUSED") as paused:
+        asyncio.run(
+            server.call_tool("project_task_submit", {"task_id": "task-1", "result": "Ready"})
+        )
+    assert "retry after service resumes" in str(paused.value)
+    assert "employee-secret" not in str(paused.value)
+
+
+@pytest.mark.parametrize("code", ["PROJECT_MISMATCH", "ASSIGNEE_MISMATCH", "MODE_MISMATCH"])
+def test_task_denial_reason_survives_mcp_without_leaking_server_detail(connection, code):
+    manifest, _, state, _ = connection
+    server = build_server(manifest)
+    state["status"] = 403
+    state["response"] = {"error": {"code": code, "message": "employee-secret private detail"}}
+    with pytest.raises(ToolError, match=code) as caught:
+        asyncio.run(server.call_tool("project_task_accept", {"task_id": "task-1"}))
+    assert "employee-secret" not in str(caught.value)
+
+
+def test_private_thread_denial_is_not_reported_as_mailbox_outage(connection):
+    manifest, _, state, _ = connection
+    server = build_server(manifest)
+    state["status"] = 400
+    state["response"] = {
+        "error": {"code": "permission_denied", "message": "employee-secret private context"}
+    }
+    with pytest.raises(ToolError, match="permission_denied") as caught:
+        asyncio.run(
+            server.call_tool(
+                "project_message",
+                {"title": "review", "body": "hello", "recipient_id": "bob", "reply_to": "private"},
+            )
+        )
+    assert "MAILBOX_UNAVAILABLE" not in str(caught.value)
     assert "employee-secret" not in str(caught.value)
 
 

@@ -9,8 +9,11 @@ import ipaddress
 import json
 import os
 import pathlib
+import plistlib
+import re
 import secrets
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -51,9 +54,12 @@ def build_info(store) -> dict:
 
     assets_dir = pathlib.Path(__file__).with_name("workbench_assets")
     info: dict = {"version": VERSION, "revision": None, "built_at": None, "assets": {}}
+    code_path = pathlib.Path(__file__).resolve().as_posix()
+    packaged_runtime = bool(getattr(sys, "frozen", False) or ".app/Contents/" in code_path)
     # 闸门②（规范 §三）✓：我跑的是**成品**还是**工作树**✗ —— 今晚就是这一点坑了一整晚 ✓
     shipped = assets_dir / "build-info.json"
-    if shipped.is_file():
+    # 源码树可能留有前次构建写入的 manifest；只能让真正的成品读取它。
+    if packaged_runtime and shipped.is_file():
         try:
             info.update(json.loads(shipped.read_text(encoding="utf-8")))
         except (OSError, ValueError):
@@ -72,7 +78,14 @@ def build_info(store) -> dict:
         except (OSError, subprocess.SubprocessError):
             info["revision"] = None
     hashes = {}
-    for name in ("workbench.js", "index.html", "workbench.css"):
+    for name in (
+        "workbench.js",
+        "index.html",
+        "workbench.css",
+        "human.html",
+        "human.css",
+        "human.js",
+    ):
         candidate = assets_dir / name
         if candidate.is_file():
             hashes[name] = hashlib.sha256(candidate.read_bytes()).hexdigest()[:16]
@@ -86,7 +99,6 @@ def build_info(store) -> dict:
     info["home"] = str(store.root)
     # **AM-06 运行来源（三事实 ✓ Codex 口径）** ✗：`build-info.json` **只说明构建来源** ✓
     # 绝不单独拿它决定"运行形态" ✗（它进了源码树后，"文件存在"就没有区分力了 ✓）
-    code_path = pathlib.Path(__file__).resolve().as_posix()
     info["runtime"] = {
         "executable": sys.executable,
         "argv": list(sys.argv),
@@ -94,7 +106,7 @@ def build_info(store) -> dict:
         "frozen": bool(getattr(sys, "frozen", False)),
     }
     # 形态**只在代码路径能判定时**给出 ✓ 否则「未确认」✗（证据不足不做二分 ✗）
-    if getattr(sys, "frozen", False) or ".app/Contents/" in code_path:
+    if packaged_runtime:
         info["mode"] = "packaged"
     elif "/src/agent_mailbox/" in code_path:
         info["mode"] = "source"
@@ -133,14 +145,21 @@ def t_manual_detail(entrypoint: str) -> str:
     return f"手工登记（未被自动发现）· 入口：{entrypoint} · 是否可自动执行未验证"
 
 
-def wake_redeem_loop(store, home, *, interval: float = 5.0, stop: object | None = None) -> None:
-    """应用侧**兑现**：任何来源的新信 ⇒ 发现 ⇒ 叫醒 ✓（这就是"开着应用就自动"✓ 零配置 ✓）。
+def wake_redeem_loop(
+    store, home, *, interval: float | None = 5.0, stop: object | None = None
+) -> None:
+    """Deliver durable intents on commit signals; a bound host adapter is required.
 
-    · 低频（默认 5s ✓）· 只读判定 ✓ · 闸门全在 `run_once` 里（认领/水位线/冷却/上限 ✓）
-    · 安静失败 ✓：任何异常都不许把工作台带崩 ✗（下一轮再来 ✓）
+    Mailbox MCP requests cross HTTP into this store, whose commit signals the
+    worker. The timeout recovers missed signals, offline retries and direct DB
+    writers; ``None`` disables timeout scans for event-only integration tests.
+    Host receipt, message reading and task acceptance remain separate states.
     """
     import time as _time
 
+    from .workbench_host_bindings import load_bindings, resolve_routes
+    from .workbench_host_retractions import reconcile_opened_queue
+    from .workbench_mail_notifications import mark_host_received, ready_ids
     from .workbench_wake import (
         active_employee_ids,
         hook_deliver,
@@ -150,28 +169,79 @@ def wake_redeem_loop(store, home, *, interval: float = 5.0, stop: object | None 
     )
 
     while stop is None or not getattr(stop, "is_set", lambda: False)():
+        event = getattr(store, "mail_wake_event", None)
+        if event is not None:
+            event.clear()  # Before the query: commits during delivery stay signalled.
+        with store.mail_wake_ready_lock:
+            ready_threads = frozenset(store.mail_wake_ready_threads)
+            store.mail_wake_ready_threads.clear()
+            idle_waiters = [
+                waiter
+                for thread_id in ready_threads
+                for waiter in store.mail_wake_waiters.pop(thread_id, [])
+            ]
+        pass_completed = False
         try:
             state_home = home
             with state_lock(state_home):
                 pass
+            employee_ids = active_employee_ids(store)
+            if ready_threads:
+                try:
+                    priority = {
+                        binding["employee_id"]
+                        for binding in load_bindings(store.root)
+                        if binding["host_kind"] == "codex"
+                        and binding["host_session_id"] in ready_threads
+                    }
+                except (OSError, ValueError):
+                    priority = set()
+                employee_ids.sort(key=lambda employee_id: employee_id not in priority)
             result = run_once(
                 store,
                 state_home,
                 unread_provider=unread_ids_for_employee,
-                deliver=hook_deliver(state_home),
-                employee_ids=active_employee_ids(store),
+                deliver=hook_deliver(
+                    state_home,
+                    require_receipt=True,
+                    binding_resolver=lambda eid, mids: resolve_routes(store, eid, mids),
+                    include_pending=False,
+                ),
+                employee_ids=employee_ids,
                 # **AM-03 修复** ✗：**不替持久状态做决定** ✓
                 # （原来这里固定 `cold_started=True` ⇒ 空状态首启会**跳过冷启动归零** ✗
                 #   把历史未读当新信投递 ✓ Codex 实测 `cold_done=null` 且投递一次 ✓
                 #   ⇒ 现在交给 `_run_once_locked`：state 里没有 `cold_done` ⇒ 这一轮就是冷启动 ✓
                 #     先记「已见」不叫人 ✓ 并把 `cold_done=True` 持久化 ✓ 之后各轮才真正兑现 ✓）
                 cold_started=False,
+                pending_provider=lambda current, eid, ready_threads=ready_threads: ready_ids(
+                    current, eid, ready_threads=ready_threads
+                ),
+                acknowledge=mark_host_received,
+                event_driven=True,
+                paused_provider=lambda: store.update_maintenance()["paused"],
             )
             if result.get("woke"):
-                print(f"[wake] 已叫醒 {result['woke']}")
+                print(f"[wake] 宿主已确认接收 {result['woke']}（不等于 Agent 接单）")
+            # A recipient may open mail while its Host is busy and a prior
+            # notification is still queued. The read transaction signals this
+            # worker; reconcile only after the delivery pass under the same
+            # durable wake lock, never cancel the running Agent turn.
+            with state_lock(state_home):
+                reconcile_opened_queue(store, state_home)
+            # A lock or update-maintenance deferral is not an idle delivery
+            # pass. Do not release Desktop's completion frame as "processed"
+            # when durable mail has not been reconsidered yet.
+            pass_completed = not bool(result.get("deferred"))
         except Exception as exc:  # noqa: BLE001 —— 后台线程必须**绝不**带崩工作台 ✓
             print(f"[wake] 本轮跳过（{type(exc).__name__}: {str(exc)[:80]}）")
-        if stop is not None and getattr(stop, "wait", None):
+        finally:
+            for waiter in idle_waiters:
+                waiter["completed"] = pass_completed
+                waiter["event"].set()
+        if event is not None:
+            event.wait(interval)  # Bounded recovery for other-process commits/retries.
+        elif stop is not None and getattr(stop, "wait", None):
             stop.wait(interval)
         else:
             _time.sleep(interval)
@@ -180,7 +250,9 @@ def wake_redeem_loop(store, home, *, interval: float = 5.0, stop: object | None 
 class WorkbenchHTTP(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, store, port=0, engine=None, token=None):
+    def __init__(self, store, port=0, engine=None, token=None, ui_mode=None):
+        if ui_mode is not None and ui_mode not in ("desktop", "browser", "headless"):
+            raise ValueError("Invalid workbench UI mode.")
         self.store = store
         self.ui_condition = threading.Condition()
         self.ui_revision = 0
@@ -191,6 +263,13 @@ class WorkbenchHTTP(ThreadingHTTPServer):
         self.preview_lock = threading.Lock()
         self.previews = {}
         self.install_lock = threading.Lock()
+        self.fleet_join_lock = threading.Lock()
+        self.fleet_restore_cancel = threading.Event()
+        self.fleet_admin_lock = threading.RLock()
+        self.human_forward_lock = threading.Lock()
+        self.human_forward = None
+        self.human_forward_thread = None
+        self.human_forward_error = None
         self.install_status = None
         self.fleet = None
         self.remote_client = None
@@ -200,6 +279,10 @@ class WorkbenchHTTP(ThreadingHTTPServer):
         self.updates = UpdateService(self)
         self.closing = threading.Event()
         self.listener_path = store.root / "workbench/fleet-listener.json"
+        self.human_forward_path = store.root / "workbench/human-forward.json"
+        from .workbench_codex_cli_service import CodexCliManager
+
+        self.codex_cli = CodexCliManager(store)
         try:
             super().__init__(("127.0.0.1", port), Handler)
         except OSError:
@@ -208,9 +291,17 @@ class WorkbenchHTTP(ThreadingHTTPServer):
         self.endpoint = f"http://127.0.0.1:{self.server_port}"
         self.engine.endpoint = self.endpoint
         self.instance_path = store.root / "workbench/instance.json"
-        self.instance_path.write_text(json.dumps({"endpoint": self.endpoint, "token": self.token}))
+        instance = {"endpoint": self.endpoint, "token": self.token}
+        if ui_mode is not None:
+            instance["ui_mode"] = ui_mode
+        self.instance_path.write_text(json.dumps(instance))
         private_mode(self.instance_path, 0o600)
+        self.restore_human_forward()
         self.restore_connections()
+        try:
+            self.codex_cli.restore()
+        except (OSError, ValueError) as exc:
+            self.codex_cli.errors["restore"] = type(exc).__name__
 
     def server_bind(self):
         # This is a literal loopback listener. HTTPServer's reverse DNS lookup
@@ -239,7 +330,9 @@ class WorkbenchHTTP(ThreadingHTTPServer):
             return item[1]
 
     def close(self):
+        self.stop_human_forward(persist=False)
         self.closing.set()
+        self.codex_cli.close()
         self.ui_notify()
         self.engine.close()
         if self.remote_worker:
@@ -260,14 +353,103 @@ class WorkbenchHTTP(ThreadingHTTPServer):
         if self.fleet:
             self.fleet.notify()
 
+    def human_forward_status(self):
+        with self.human_forward_lock:
+            status = {
+                "enabled": self.human_forward is not None,
+                "port": self.human_forward.server_port if self.human_forward else None,
+            }
+            if self.human_forward_error:
+                status["error"] = self.human_forward_error
+            return status
+
+    def start_human_forward(self, port=0, *, persist=True):
+        if type(port) is not int or not 0 <= port <= 65535:
+            raise WorkbenchError("INVALID_REQUEST", "Invalid Human forward port.")
+        with self.human_forward_lock:
+            if self.human_forward is None:
+                listener = HumanForwardHTTP(self, port)
+                thread = threading.Thread(
+                    target=listener.serve_forever, daemon=True, name="mailbox-human-forward"
+                )
+                try:
+                    thread.start()
+                except Exception:
+                    listener.server_close()
+                    raise
+                try:
+                    if persist:
+                        from .workbench_fleet import _write_private
+
+                        _write_private(
+                            self.human_forward_path,
+                            json.dumps(
+                                {
+                                    "enabled": True,
+                                    "port": listener.server_port,
+                                }
+                            ).encode("utf-8"),
+                        )
+                except Exception:
+                    listener.stop_clients()
+                    listener.shutdown()
+                    thread.join(timeout=5)
+                    listener.server_close()
+                    raise
+                self.human_forward = listener
+                self.human_forward_thread = thread
+                self.human_forward_error = None
+            elif port and port != self.human_forward.server_port:
+                raise WorkbenchError("ALREADY_STARTED", "Human forward uses another local port.")
+            return {"enabled": True, "port": self.human_forward.server_port}
+
+    def stop_human_forward(self, *, persist=True):
+        with self.human_forward_lock:
+            if persist:
+                from .workbench_fleet import _write_private
+
+                _write_private(self.human_forward_path, b'{"enabled": false}')
+            listener, thread = self.human_forward, self.human_forward_thread
+            if listener is not None:
+                listener.stop_clients()
+                listener.shutdown()
+                thread.join(timeout=5)
+                listener.server_close()
+            self.human_forward = None
+            self.human_forward_thread = None
+            self.human_forward_error = None
+        return {"stopped": True}
+
+    def restore_human_forward(self):
+        if not self.human_forward_path.exists():
+            return
+        try:
+            config = json.loads(self.human_forward_path.read_text(encoding="utf-8"))
+            if not isinstance(config, dict) or type(config.get("enabled")) is not bool:
+                raise ValueError("Invalid saved Human forward state.")
+            if config["enabled"]:
+                port = config.get("port")
+                if type(port) is not int or not 1 <= port <= 65535:
+                    raise ValueError("Invalid saved Human forward port.")
+                self.start_human_forward(port, persist=False)
+        except (OSError, ValueError, WorkbenchError) as exc:
+            self.human_forward_error = {"code": "HUMAN_FORWARD_RESTORE_FAILED", "message": str(exc)}
+
     def fleet_status(self):
         return {
-            "listener": {"base_url": self.fleet.base_url, "fingerprint": self.fleet.fingerprint}
+            "listener": {
+                "base_url": self.fleet.base_url,
+                "fingerprint": self.fleet.fingerprint,
+                "lan_advertised": self.fleet.lan_advertiser is not None,
+                "lan_error": self.fleet.lan_error,
+            }
             if self.fleet
             else None,
             "error": self.fleet_error,
+            "saved_pairing": (self.store.root / "workbench/fleet/client.json").exists(),
             "remote": {
                 "paired": True,
+                "base_url": self.remote_client.base_url,
                 "projects": self.remote_projects,
                 "mappings": dict(self.remote_client.mappings),
                 "worker": self.remote_worker.status() if self.remote_worker else None,
@@ -276,7 +458,26 @@ class WorkbenchHTTP(ThreadingHTTPServer):
             else None,
         }
 
+    def fleet_connection_status(self):
+        with self.fleet_join_lock:
+            return {
+                "configured": self.remote_client is not None,
+                "saved_pairing": (self.store.root / "workbench/fleet/client.json").exists(),
+                "base_url": self.remote_client.base_url if self.remote_client else None,
+                "projects": [
+                    {"id": project["id"], "name": project["name"]}
+                    for project in self.remote_projects
+                ]
+                if self.remote_client
+                else [],
+                "mappings": dict(self.remote_client.mappings) if self.remote_client else {},
+            }
+
     def start_fleet(self, address="127.0.0.1", port=0):
+        with self.fleet_admin_lock:
+            return self._start_fleet(address, port)
+
+    def _start_fleet(self, address="127.0.0.1", port=0):
         from .workbench_fleet import FleetCoordinator
 
         try:
@@ -310,6 +511,37 @@ class WorkbenchHTTP(ThreadingHTTPServer):
         self.fleet_error = None
         return result
 
+    def stop_fleet(self):
+        with self.fleet_admin_lock:
+            if self.fleet:
+                self.fleet.stop()
+                self.fleet = None
+            self.listener_path.write_text(json.dumps({"enabled": False}))
+            private_mode(self.listener_path, 0o600)
+            return {"stopped": True}
+
+    def issue_project_fleet_invite(self, human_id, project_id):
+        with self.fleet_admin_lock:
+            if not self.fleet:
+                raise WorkbenchError(
+                    "LISTENER_DISABLED", "Enable this device's connection listener first."
+                )
+            return self.fleet.issue_invite([project_id], issuer_human_id=human_id)
+
+    def project_fleet_devices(self, human_id, project_id):
+        from .workbench_fleet import FleetCoordinator
+
+        with self.fleet_admin_lock:
+            fleet = self.fleet or FleetCoordinator(self.store)
+            return fleet.project_devices_for_human(human_id, project_id)
+
+    def revoke_project_fleet_device(self, human_id, project_id, device_id):
+        from .workbench_fleet import FleetCoordinator
+
+        with self.fleet_admin_lock:
+            fleet = self.fleet or FleetCoordinator(self.store)
+            return fleet.revoke_project_device_for_human(human_id, project_id, device_id)
+
     def restore_connections(self):
         # Restore durable connection settings, never regenerate paired identities.
         if self.listener_path.exists():
@@ -323,9 +555,9 @@ class WorkbenchHTTP(ThreadingHTTPServer):
         if credentials.exists():
 
             def restore():
-                while not self.closing.is_set():
+                while not self.closing.is_set() and not self.fleet_restore_cancel.is_set():
                     try:
-                        self.join_fleet(json.loads(credentials.read_text()))
+                        self.join_fleet(json.loads(credentials.read_text()), restore=True)
                         return
                     except (OSError, ValueError, WorkbenchError) as exc:
                         self.fleet_error = {"code": "DEVICE_RESTORE_FAILED", "message": str(exc)}
@@ -333,24 +565,144 @@ class WorkbenchHTTP(ThreadingHTTPServer):
 
             threading.Thread(target=restore, daemon=True).start()
 
-    def join_fleet(self, invite):
-        from .workbench_fleet import FleetClient
+    def join_fleet(self, invite, restore=False):
+        from .workbench_fleet import FleetClient, _load
         from .workbench_remote import RemoteWorker
 
-        client = FleetClient(self.store.root, invite)
-        projects = client.projects()
-        if self.closing.is_set():
-            raise WorkbenchError("WORKBENCH_CLOSED", "The workbench is closing.")
-        if self.remote_worker:
-            self.remote_worker.close()
-        self.remote_client = client
-        self.remote_projects = projects
-        self.remote_worker = RemoteWorker(client)
-        for project_id in client.mappings:
-            if project_id in {p["id"] for p in projects}:
-                self.remote_worker.start_project(project_id)
-        self.fleet_error = None
-        return self.fleet_status()
+        with self.fleet_join_lock:
+            if restore and self.fleet_restore_cancel.is_set():
+                return self.fleet_status()
+            if restore and self.remote_client is not None:
+                return self.fleet_status()
+            previous_worker = self.remote_worker
+            if previous_worker and not restore:
+                # An idle long-poll may hold the admission gate for 30 seconds.
+                # Interrupt only that claim transport; a delivered claim is
+                # still registered before the gate becomes available.
+                previous_worker.claim_admission.clear()
+                previous_worker.client.interrupt_claim()
+            claim_lock = (
+                previous_worker.client.claim_lock if previous_worker and not restore else None
+            )
+            if claim_lock and not claim_lock.acquire(timeout=5):
+                previous_worker.claim_admission.set()
+                raise WorkbenchError("DEVICE_BUSY", "设备正在确认任务领取，请稍后重试更换连接。")
+            try:
+                if not restore:
+                    # The claim lock also covers its durable journal write.
+                    # Once admission is closed, no new claim can start behind
+                    # this check, even if its loop passed the earlier wait.
+                    if previous_worker and self.store.update_maintenance()["pending_claims"]:
+                        previous_worker.client.active_runs()
+                    if previous_worker:
+                        with previous_worker.lock:
+                            if (
+                                previous_worker.workers
+                                or previous_worker.active
+                                or previous_worker.outbox
+                            ):
+                                raise WorkbenchError(
+                                    "DEVICE_BUSY", "设备还有运行中任务或待确认回执，不能更换连接。"
+                                )
+                    directory = self.store.root / "workbench/fleet"
+                    for name in ("active-runs.json", "terminal-receipts.json"):
+                        pending = _load(directory / name, {})
+                        if not isinstance(pending, dict):
+                            raise WorkbenchError(
+                                "storage_error", "设备任务记录格式无效，请恢复备份。"
+                            )
+                        if pending:
+                            raise WorkbenchError(
+                                "DEVICE_BUSY", "设备还有运行中任务或待确认回执，不能更换连接。"
+                            )
+                    if self.store.update_maintenance()["pending_claims"]:
+                        raise WorkbenchError(
+                            "DEVICE_BUSY", "设备仍有未确认的任务领取，不能更换连接。"
+                        )
+                client = FleetClient(self.store.root, invite)
+                projects = client.projects()
+                if self.closing.is_set():
+                    raise WorkbenchError("WORKBENCH_CLOSED", "The workbench is closing.")
+                if previous_worker:
+                    previous_worker.stopping.set()
+            finally:
+                if claim_lock:
+                    claim_lock.release()
+                if previous_worker and not restore:
+                    previous_worker.claim_admission.set()
+            if previous_worker:
+                previous_worker.close()
+            self.remote_client = client
+            self.remote_projects = projects
+            self.remote_worker = RemoteWorker(client)
+            for project_id in client.mappings:
+                if project_id in {p["id"] for p in projects}:
+                    self.remote_worker.start_project(project_id)
+            self.fleet_error = None
+            return self.fleet_status()
+
+    def relocate_fleet(self, base_url):
+        from .workbench_fleet import FleetClient
+
+        return self.join_fleet(FleetClient.saved_connection(self.store.root, base_url))
+
+    def leave_fleet(self):
+        from .workbench_fleet import _load
+
+        with self.fleet_join_lock:
+            directory = self.store.root / "workbench/fleet"
+            previous_worker = self.remote_worker
+
+            def assert_idle(*, after_stop=False):
+                if self.remote_worker:
+                    with self.remote_worker.lock:
+                        if (
+                            self.remote_worker.workers
+                            or self.remote_worker.active
+                            or self.remote_worker.outbox
+                        ):
+                            raise WorkbenchError(
+                                "DEVICE_BUSY", "设备还有运行中任务或待确认回执，不能断开配对。"
+                            )
+                for name in ("active-runs.json", "terminal-receipts.json"):
+                    pending = _load(directory / name, {})
+                    if not isinstance(pending, dict):
+                        raise WorkbenchError("storage_error", "设备任务记录格式无效，请恢复备份。")
+                    if pending:
+                        raise WorkbenchError(
+                            "DEVICE_BUSY", "设备还有运行中任务或待确认回执，不能断开配对。"
+                        )
+                if after_stop and self.store.update_maintenance()["pending_claims"]:
+                    raise WorkbenchError("DEVICE_BUSY", "设备还有未确认的任务领取，不能断开配对。")
+
+            if previous_worker:
+                previous_worker.claim_admission.clear()
+                previous_worker.client.interrupt_claim()
+            claim_lock = previous_worker.client.claim_lock if previous_worker else None
+            if claim_lock and not claim_lock.acquire(timeout=5):
+                previous_worker.claim_admission.set()
+                raise WorkbenchError("DEVICE_BUSY", "设备正在确认任务领取，请稍后重试断开。")
+            try:
+                if previous_worker and self.store.update_maintenance()["pending_claims"]:
+                    previous_worker.client.active_runs()
+                assert_idle()
+                if previous_worker:
+                    previous_worker.stopping.set()
+            finally:
+                if claim_lock:
+                    claim_lock.release()
+                if previous_worker:
+                    previous_worker.claim_admission.set()
+            if previous_worker:
+                previous_worker.close()
+            assert_idle(after_stop=True)
+            self.fleet_restore_cancel.set()
+            self.remote_worker = None
+            self.remote_client = None
+            self.remote_projects = []
+            for name in ("pair-attempt.json", "projects.json", "client.json"):
+                (directory / name).unlink(missing_ok=True)
+            return {"disconnected": True}
 
     def install_runtime(self):
         with self.install_lock:
@@ -428,6 +780,96 @@ class Handler(BaseHTTPRequestHandler):
             pass
         self.close_connection = True
 
+    def human_changes(self, token, human_id):
+        """Signal one Human's access, task, group-mail, or approved-resource changes.
+
+        The shared condition wakes this stream. Only changes within this
+        Human's access scope produce a frame; timeout checks also recover
+        commits made by another process. Revoked sessions get a final frame.
+        """
+        from .workbench_human_spaces import (
+            authenticate_human_session,
+            list_projects_for_human,
+            list_spaces_for_human,
+            visible_approved_resource_state_for_human,
+            visible_group_message_state_for_human,
+            visible_task_state_for_human,
+        )
+
+        def access_snapshot():
+            session = authenticate_human_session(self.server.store, token)
+            if session["human_id"] != human_id:
+                raise WorkbenchError("UNAUTHORIZED", "Human 会话无效或已失效。")
+            access = json.dumps(
+                {
+                    "spaces": list_spaces_for_human(self.server.store, human_id),
+                    "projects": list_projects_for_human(self.server.store, human_id),
+                },
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+            tasks = visible_task_state_for_human(self.server.store, human_id)
+            messages = visible_group_message_state_for_human(self.server.store, human_id)
+            resources = visible_approved_resource_state_for_human(self.server.store, human_id)
+            return access, tasks, messages, resources
+
+        with self.server.ui_condition:
+            revision = self.server.ui_revision
+        previous_access, previous_tasks, previous_messages, previous_resources = access_snapshot()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.end_headers()
+
+        def frame(value):
+            data = (json.dumps(value) + "\n").encode()
+            self.wfile.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
+            self.wfile.flush()
+
+        try:
+            frame({"ready": True})
+            while not self.server.closing.is_set():
+                with self.server.ui_condition:
+                    if revision == self.server.ui_revision:
+                        self.server.ui_condition.wait(timeout=30)
+                    revision = self.server.ui_revision
+                try:
+                    current_access, current_tasks, current_messages, current_resources = (
+                        access_snapshot()
+                    )
+                except WorkbenchError as error:
+                    if error.code == "UNAUTHORIZED":
+                        frame({"revoked": True})
+                    break
+                if current_access != previous_access:
+                    previous_access, previous_tasks, previous_messages, previous_resources = (
+                        current_access,
+                        current_tasks,
+                        current_messages,
+                        current_resources,
+                    )
+                    frame({"access_changed": True})
+                elif current_tasks != previous_tasks:
+                    previous_tasks = current_tasks
+                    previous_messages = current_messages
+                    previous_resources = current_resources
+                    frame({"tasks_changed": True})
+                elif current_messages != previous_messages:
+                    previous_messages = current_messages
+                    previous_resources = current_resources
+                    frame({"messages_changed": True})
+                elif current_resources != previous_resources:
+                    previous_resources = current_resources
+                    frame({"resources_changed": True})
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        self.close_connection = True
+
     def safe_origin(self):
         expected = {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}
         if self.headers.get("Host") not in expected:
@@ -482,16 +924,21 @@ class Handler(BaseHTTPRequestHandler):
             name = (
                 "index.html"
                 if path in {"/", "/workbench"}
+                else "human.html"
+                if path == "/human"
                 else path.removeprefix("/workbench-assets/").lstrip("/")
             )
             allowed = {
                 "index.html": "text/html; charset=utf-8",
+                "human.html": "text/html; charset=utf-8",
                 "LICENSE.txt": "text/plain; charset=utf-8",
                 "NOTICE.txt": "text/plain; charset=utf-8",
                 "MIT-Legacy.txt": "text/plain; charset=utf-8",
                 "workbench.js": "text/javascript; charset=utf-8",
                 "api.js": "text/javascript; charset=utf-8",
                 "workbench.css": "text/css; charset=utf-8",
+                "human.css": "text/css; charset=utf-8",
+                "human.js": "text/javascript; charset=utf-8",
             }
             if name not in allowed:
                 self.send_value(404, {"error": {"code": "NOT_FOUND", "message": "Page not found."}})
@@ -501,6 +948,8 @@ class Handler(BaseHTTPRequestHandler):
         bearer = self.headers.get("Authorization", "")
         token = bearer[7:] if bearer.startswith("Bearer ") else ""
         data = self.body() if self.command in {"POST", "DELETE"} else {}
+        if token.startswith("amh1_") and path in {PREFIX + "/notify", PREFIX + "/mailbox/tools"}:
+            raise WorkbenchError("UNAUTHORIZED", "Human 会话不能调用 Agent 通知或工具入口。")
         if path == PREFIX + "/notify" and self.command == "POST":
             if not self.server.store.validate_execution(
                 token,
@@ -520,6 +969,350 @@ class Handler(BaseHTTPRequestHandler):
             result = invoke(self.server.store, token, data["tool"], data["args"])
             self.server.ui_notify()
             return self.send_value(200, result)
+        if path.startswith(PREFIX + "/human/"):
+            from .workbench_human_spaces import (
+                add_space_member,
+                approved_resource_version_for_human,
+                authenticate_human_session,
+                claim_human_invitation,
+                create_managed_private_project,
+                create_shared_space,
+                grant_project,
+                grant_review_authority,
+                list_project_grants_for_human,
+                list_projects_for_human,
+                list_space_members_for_human,
+                list_spaces_for_human,
+                list_task_summaries_for_human,
+                list_team_messages_for_human,
+                move_project_to_shared_space,
+                recover_human_session,
+                resource_manifest_for_human,
+                review_material_for_human,
+                revoke_human_session,
+                revoke_project,
+                revoke_review_authority,
+                revoke_space_member,
+                rotate_human_session,
+                search_memories_for_human,
+                setup_human_recovery,
+                task_counts_for_human,
+            )
+
+            if self.command == "POST" and path == PREFIX + "/human/enroll":
+                if set(data) != {"invitation"}:
+                    raise WorkbenchError("INVALID_REQUEST", "Expected one invitation.")
+                return self.send_value(
+                    200, claim_human_invitation(self.server.store, data["invitation"])
+                )
+            if self.command == "POST" and path == PREFIX + "/human/recover":
+                if set(data) != {"human_id", "recovery_code"}:
+                    raise WorkbenchError(
+                        "INVALID_REQUEST", "Expected Human identity and recovery code."
+                    )
+                result = recover_human_session(
+                    self.server.store, data["human_id"], data["recovery_code"]
+                )
+                self.server.ui_notify()
+                return self.send_value(200, result)
+            human = authenticate_human_session(self.server.store, token)
+            if self.command == "GET" and path == PREFIX + "/human/self":
+                return self.send_value(
+                    200, {"human_id": human["human_id"], "display_name": human["display_name"]}
+                )
+            if self.command == "GET" and path == PREFIX + "/human/changes":
+                return self.human_changes(token, human["human_id"])
+            if self.command == "POST" and path == PREFIX + "/human/logout":
+                if data:
+                    raise WorkbenchError("INVALID_REQUEST", "Logout takes no request body.")
+                result = revoke_human_session(self.server.store, human["id"])
+                self.server.ui_notify()
+                return self.send_value(200, result)
+            if self.command == "POST" and path == PREFIX + "/human/session/renew":
+                if data:
+                    raise WorkbenchError("INVALID_REQUEST", "Renewal takes no request body.")
+                result = rotate_human_session(self.server.store, human["id"], human["human_id"])
+                self.server.ui_notify()
+                return self.send_value(200, result)
+            if self.command == "POST" and path == PREFIX + "/human/recovery/setup":
+                if data:
+                    raise WorkbenchError("INVALID_REQUEST", "Recovery setup takes no request body.")
+                return self.send_value(
+                    200, setup_human_recovery(self.server.store, human["human_id"])
+                )
+            if self.command == "GET" and path == PREFIX + "/human/spaces":
+                return self.send_value(
+                    200, {"spaces": list_spaces_for_human(self.server.store, human["human_id"])}
+                )
+            if self.command == "POST" and path == PREFIX + "/human/spaces":
+                if set(data) != {"name"}:
+                    raise WorkbenchError("INVALID_REQUEST", "Expected a space name.")
+                result = create_shared_space(self.server.store, human["human_id"], data["name"])
+                self.server.ui_notify()
+                return self.send_value(200, result)
+            if self.command == "GET" and path == PREFIX + "/human/projects":
+                return self.send_value(
+                    200, {"projects": list_projects_for_human(self.server.store, human["human_id"])}
+                )
+            if self.command == "POST" and path == PREFIX + "/human/projects":
+                if set(data) != {"name"}:
+                    raise WorkbenchError("INVALID_REQUEST", "Expected only a project name.")
+                result = create_managed_private_project(
+                    self.server.store, human["human_id"], data["name"]
+                )
+                self.server.ui_notify()
+                return self.send_value(200, result)
+            parts = path.removeprefix(PREFIX).strip("/").split("/")
+            if (
+                self.command == "POST"
+                and len(parts) == 5
+                and parts[1] == "projects"
+                and parts[3:] == ["fleet", "invites"]
+            ):
+                if data:
+                    raise WorkbenchError("INVALID_REQUEST", "Device invite takes no request body.")
+                device_owner = getattr(self.server, "owner", self.server)
+                return self.send_value(
+                    200, device_owner.issue_project_fleet_invite(human["human_id"], parts[2])
+                )
+            if len(parts) >= 5 and parts[1] == "projects" and parts[3:5] == ["fleet", "devices"]:
+                device_owner = getattr(self.server, "owner", self.server)
+                if self.command == "GET" and len(parts) == 5:
+                    return self.send_value(
+                        200,
+                        {
+                            "devices": device_owner.project_fleet_devices(
+                                human["human_id"], parts[2]
+                            )
+                        },
+                    )
+                if self.command == "POST" and len(parts) == 7 and parts[6] == "revoke":
+                    if data:
+                        raise WorkbenchError(
+                            "INVALID_REQUEST", "Device revocation takes no request body."
+                        )
+                    result = device_owner.revoke_project_fleet_device(
+                        human["human_id"], parts[2], parts[5]
+                    )
+                    device_owner.ui_notify()
+                    return self.send_value(200, result)
+            if (
+                self.command == "GET"
+                and len(parts) == 4
+                and parts[1] == "spaces"
+                and parts[3] == "members"
+            ):
+                return self.send_value(
+                    200,
+                    {
+                        "members": list_space_members_for_human(
+                            self.server.store, human["human_id"], parts[2]
+                        )
+                    },
+                )
+            if (
+                self.command == "POST"
+                and len(parts) == 4
+                and parts[1] == "spaces"
+                and parts[3] == "members"
+            ):
+                if set(data) != {"human_id"}:
+                    raise WorkbenchError("INVALID_REQUEST", "Expected a Human identity.")
+                add_space_member(self.server.store, human["human_id"], parts[2], data["human_id"])
+                self.server.ui_notify()
+                return self.send_value(200, {"space_id": parts[2], "human_id": data["human_id"]})
+            if (
+                self.command == "DELETE"
+                and len(parts) == 5
+                and parts[1] == "spaces"
+                and parts[3] == "members"
+            ):
+                if data:
+                    raise WorkbenchError("INVALID_REQUEST", "Member removal takes no body.")
+                revoke_space_member(self.server.store, human["human_id"], parts[2], parts[4])
+                self.server.ui_notify()
+                return self.send_value(200, {"removed": True})
+            if (
+                self.command == "POST"
+                and len(parts) == 4
+                and parts[1] == "projects"
+                and parts[3] == "share"
+            ):
+                if set(data) != {"space_id"}:
+                    raise WorkbenchError("INVALID_REQUEST", "Expected a destination space.")
+                move_project_to_shared_space(
+                    self.server.store, human["human_id"], parts[2], data["space_id"]
+                )
+                self.server.ui_notify()
+                return self.send_value(200, {"project_id": parts[2], "space_id": data["space_id"]})
+            if (
+                self.command == "POST"
+                and len(parts) == 4
+                and parts[1] == "projects"
+                and parts[3] == "grants"
+            ):
+                if set(data) != {"human_id", "role"}:
+                    raise WorkbenchError("INVALID_REQUEST", "Expected a Human and role.")
+                grant_project(
+                    self.server.store, human["human_id"], parts[2], data["human_id"], data["role"]
+                )
+                self.server.ui_notify()
+                return self.send_value(
+                    200,
+                    {"project_id": parts[2], "human_id": data["human_id"], "role": data["role"]},
+                )
+            if (
+                self.command == "GET"
+                and len(parts) == 4
+                and parts[1] == "projects"
+                and parts[3] == "grants"
+            ):
+                return self.send_value(
+                    200,
+                    {
+                        "grants": list_project_grants_for_human(
+                            self.server.store, human["human_id"], parts[2]
+                        )
+                    },
+                )
+            if (
+                self.command == "DELETE"
+                and len(parts) == 5
+                and parts[1] == "projects"
+                and parts[3] == "grants"
+            ):
+                if data:
+                    raise WorkbenchError("INVALID_REQUEST", "Grant revocation takes no body.")
+                revoke_project(self.server.store, human["human_id"], parts[2], parts[4])
+                self.server.ui_notify()
+                return self.send_value(200, {"revoked": True})
+            if (
+                self.command == "POST"
+                and len(parts) == 4
+                and parts[1] == "projects"
+                and parts[3] == "reviewers"
+            ):
+                if set(data) != {"human_id"}:
+                    raise WorkbenchError("INVALID_REQUEST", "Expected one Human identity.")
+                grant_review_authority(
+                    self.server.store, human["human_id"], parts[2], data["human_id"]
+                )
+                self.server.ui_notify()
+                return self.send_value(
+                    200, {"project_id": parts[2], "human_id": data["human_id"], "can_review": True}
+                )
+            if (
+                self.command == "DELETE"
+                and len(parts) == 5
+                and parts[1] == "projects"
+                and parts[3] == "reviewers"
+            ):
+                if data:
+                    raise WorkbenchError("INVALID_REQUEST", "Review removal takes no body.")
+                revoke_review_authority(self.server.store, human["human_id"], parts[2], parts[4])
+                self.server.ui_notify()
+                return self.send_value(200, {"revoked": True})
+            if (
+                len(parts) == 6
+                and parts[1] == "projects"
+                and parts[3] == "tasks"
+                and parts[5] == "review"
+            ):
+                if self.command == "GET":
+                    return self.send_value(
+                        200,
+                        review_material_for_human(
+                            self.server.store, human["human_id"], parts[2], parts[4]
+                        ),
+                    )
+                if self.command == "POST":
+                    if set(data) != {"decision", "note"}:
+                        raise WorkbenchError("INVALID_REQUEST", "Expected a decision and note.")
+                    result = self.server.store.review_task(
+                        parts[4],
+                        data["decision"],
+                        data["note"],
+                        human_id=human["human_id"],
+                        project_id=parts[2],
+                    )
+                    self.server.ui_notify()
+                    self.server.notify()
+                    return self.send_value(
+                        200, {"task_id": result["id"], "status": result["status"]}
+                    )
+            if (
+                self.command == "GET"
+                and len(parts) == 4
+                and parts[1] == "projects"
+                and parts[3] == "tasks"
+            ):
+                return self.send_value(
+                    200,
+                    {
+                        "tasks": list_task_summaries_for_human(
+                            self.server.store, human["human_id"], parts[2]
+                        )
+                    },
+                )
+            if (
+                self.command == "GET"
+                and len(parts) == 4
+                and parts[1] == "projects"
+                and parts[3] == "task-counts"
+            ):
+                return self.send_value(
+                    200, task_counts_for_human(self.server.store, human["human_id"], parts[2])
+                )
+            if (
+                self.command == "GET"
+                and len(parts) == 4
+                and parts[1] == "projects"
+                and parts[3] == "messages"
+            ):
+                return self.send_value(
+                    200,
+                    list_team_messages_for_human(self.server.store, human["human_id"], parts[2]),
+                )
+            if (
+                self.command == "GET"
+                and len(parts) == 5
+                and parts[1] == "projects"
+                and parts[3:] == ["memory", "search"]
+            ):
+                query = parse_qs(url.query, keep_blank_values=True)
+                if set(query) != {"q"} or len(query["q"]) != 1:
+                    raise WorkbenchError("INVALID_REQUEST", "Expected exactly one search query.")
+                return self.send_value(
+                    200,
+                    {
+                        "memories": search_memories_for_human(
+                            self.server.store, human["human_id"], parts[2], query["q"][0]
+                        )
+                    },
+                )
+            if (
+                self.command == "GET"
+                and len(parts) == 5
+                and parts[1] == "projects"
+                and parts[3:] == ["resources", "manifest"]
+            ):
+                return self.send_value(
+                    200, resource_manifest_for_human(self.server.store, human["human_id"], parts[2])
+                )
+            if (
+                self.command == "GET"
+                and len(parts) == 7
+                and parts[1] == "projects"
+                and parts[3] == "resources"
+                and parts[5] == "versions"
+            ):
+                return self.send_value(
+                    200,
+                    approved_resource_version_for_human(
+                        self.server.store, human["human_id"], parts[2], parts[4], parts[6]
+                    ),
+                )
+            raise WorkbenchError("NOT_FOUND", "Unknown Human action.")
         if not token or not hmac.compare_digest(token, self.server.token):
             self.send_value(
                 401,
@@ -534,12 +1327,539 @@ class Handler(BaseHTTPRequestHandler):
         store = self.server.store
         route = path.removeprefix(PREFIX).strip("/").split("/")
         method = self.command
+        from .workbench_human_spaces import legacy_owner_view_crosses_human_boundary
+
+        identity_route = (
+            (
+                method == "POST"
+                and route
+                in (
+                    ["humans"],
+                    ["human-invitations"],
+                    ["human-sessions"],
+                    ["human-sessions", "revoke-all"],
+                )
+            )
+            or (method == "DELETE" and len(route) == 2 and route[0] == "human-sessions")
+            or (
+                method == "POST"
+                and route
+                in (
+                    ["application", "quit"],
+                    ["updates", "prepare"],
+                    ["updates", "resume"],
+                    ["fleet", "start"],
+                    ["fleet", "stop"],
+                    ["fleet", "join"],
+                    ["fleet", "relocate"],
+                    ["fleet", "leave"],
+                    ["fleet", "map"],
+                    ["fleet", "employee"],
+                )
+            )
+            or (method == "GET" and route == ["human-forward", "status"])
+            or (method == "GET" and route == ["fleet", "status"])
+            or (method == "GET" and route == ["fleet", "discover"])
+            or (method == "GET" and route == ["fleet", "connection"])
+            or (method == "GET" and route == ["fleet", "available-employees"])
+            or (
+                method == "POST"
+                and route in (["human-forward", "start"], ["human-forward", "stop"])
+            )
+        )
+        if not identity_route and legacy_owner_view_crosses_human_boundary(store):
+            raise WorkbenchError(
+                "MULTI_HUMAN_SCOPED_REQUIRED",
+                "已有其他 Human 的项目；旧全库工作台入口不可继续读取或修改，请使用 Human 会话。",
+            )
         result = None
+        permission_decision = (
+            method == "POST"
+            and len(route) == 4
+            and route[0] == "tasks"
+            and route[2] == "permissions"
+        )
+        if (
+            method in {"POST", "DELETE"}
+            and route
+            not in (
+                ["updates", "prepare"],
+                ["updates", "resume"],
+                ["updates", "check"],
+                ["application", "quit"],
+            )
+            and not permission_decision
+            and store.update_maintenance()["paused"]
+        ):
+            raise WorkbenchError("UPDATE_PAUSED", "工作台正在准备更新；请恢复接单后再修改数据。")
+        if route == ["mailbox", "installers", "codex"] and method == "POST":
+            from .workbench_codex_installer import installation
+
+            if set(data) - {
+                "employee_id",
+                "project_id",
+                "action",
+                "thread_id",
+                "session_id",
+                "plan_id",
+                "confirmed",
+            }:
+                raise WorkbenchError("INVALID_REQUEST", "Unexpected installation argument.")
+            result = installation(
+                store,
+                data.get("employee_id", ""),
+                data.get("project_id", ""),
+                data.get("action", ""),
+                thread_id=data.get("thread_id"),
+                session_id=data.get("session_id"),
+                plan_id=data.get("plan_id"),
+                confirmed=data.get("confirmed", False),
+            )
+            return self.send_value(200, result)
+        if route == ["mailbox", "receivers", "native"] and method == "GET":
+            from .workbench_receiver_status import reception_status
+
+            query = parse_qs(url.query, keep_blank_values=True)
+            if set(query) != {"employee_id", "project_id"} or any(
+                len(v) != 1 for v in query.values()
+            ):
+                raise WorkbenchError("INVALID_REQUEST", "Choose one employee and project.")
+            employee_id, project_id = query["employee_id"][0], query["project_id"][0]
+            result = reception_status(store, employee_id, project_id)
+            if result["host_kind"] == "deepseek":
+                from .workbench_host_retractions import status_counts
+
+                counts = status_counts(store, employee_id=employee_id, project_id=project_id)
+                result["opened_alert_retractions"] = {
+                    key: counts.get(key, 0) for key in ("pending", "unknown", "binding_changed")
+                }
+            return self.send_value(200, result)
+        if route == ["mailbox", "receivers", "hermes", "reauthorization"] and method == "GET":
+            from .workbench_receiver_status import hermes_reauthorization_preview
+
+            query = parse_qs(url.query, keep_blank_values=True)
+            if set(query) != {"employee_id", "project_id"} or any(
+                len(v) != 1 for v in query.values()
+            ):
+                raise WorkbenchError("INVALID_REQUEST", "Choose one employee and project.")
+            return self.send_value(
+                200,
+                hermes_reauthorization_preview(
+                    store, query["employee_id"][0], query["project_id"][0]
+                ),
+            )
+        if (
+            route == ["mailbox", "receivers", "hermes", "reauthorization", "recovery"]
+            and method == "GET"
+        ):
+            from .workbench_hermes_recovery import inspect
+
+            query = parse_qs(url.query, keep_blank_values=True)
+            if set(query) != {"employee_id", "project_id", "profile_id"} or any(
+                len(v) != 1 for v in query.values()
+            ):
+                raise WorkbenchError(
+                    "INVALID_REQUEST", "Choose one Hermes member, project and profile."
+                )
+            return self.send_value(
+                200,
+                inspect(
+                    store, query["employee_id"][0], query["project_id"][0], query["profile_id"][0]
+                ),
+            )
+        if (
+            route == ["mailbox", "receivers", "hermes", "reauthorization", "restore-pre-pin"]
+            and method == "POST"
+        ):
+            from .workbench_hermes_recovery import restore_pre_pin
+
+            if (
+                set(data) != {"employee_id", "project_id", "plan_id", "profile_id", "confirmed"}
+                or data["confirmed"] is not True
+            ):
+                raise WorkbenchError(
+                    "INVALID_REQUEST", "Confirm one exact stopped Hermes recovery plan."
+                )
+            return self.send_value(
+                200,
+                restore_pre_pin(
+                    store,
+                    data["employee_id"],
+                    data["project_id"],
+                    data["plan_id"],
+                    data["profile_id"],
+                    confirmed=True,
+                ),
+            )
+        if (
+            route == ["mailbox", "receivers", "hermes", "reauthorization", "retry-restore-pre-pin"]
+            and method == "POST"
+        ):
+            from .workbench_hermes_recovery import retry_restore_pre_pin
+
+            if (
+                set(data) != {"employee_id", "project_id", "plan_id", "profile_id", "confirmed"}
+                or data["confirmed"] is not True
+            ):
+                raise WorkbenchError(
+                    "INVALID_REQUEST", "Confirm one exact Hermes restart retry plan."
+                )
+            return self.send_value(
+                200,
+                retry_restore_pre_pin(
+                    store,
+                    data["employee_id"],
+                    data["project_id"],
+                    data["plan_id"],
+                    data["profile_id"],
+                    confirmed=True,
+                ),
+            )
+        if (
+            route == ["mailbox", "receivers", "hermes", "reauthorization", "preview"]
+            and method == "POST"
+        ):
+            from .workbench_hermes_reauthorization import prepare
+
+            if set(data) != {"employee_id", "project_id"}:
+                raise WorkbenchError("INVALID_REQUEST", "Choose one employee and project.")
+            return self.send_value(200, prepare(store, data["employee_id"], data["project_id"]))
+        if (
+            route == ["mailbox", "receivers", "hermes", "reauthorization", "arm"]
+            and method == "POST"
+        ):
+            from .workbench_hermes_reauthorization import arm_old_mail
+
+            if (
+                set(data) != {"employee_id", "project_id", "plan_id", "profile_id", "confirmed"}
+                or type(data["confirmed"]) is not bool
+            ):
+                raise WorkbenchError(
+                    "INVALID_REQUEST", "Confirm one exact Hermes reauthorization plan."
+                )
+            return self.send_value(
+                200,
+                arm_old_mail(
+                    store,
+                    data["employee_id"],
+                    data["project_id"],
+                    data["plan_id"],
+                    data["profile_id"],
+                    confirmed=data["confirmed"],
+                ),
+            )
+        if (
+            route == ["mailbox", "receivers", "hermes", "reauthorization", "commit"]
+            and method == "POST"
+        ):
+            from .workbench_hermes_cutover import execute
+
+            if (
+                set(data) != {"employee_id", "project_id", "plan_id", "profile_id", "confirmed"}
+                or data["confirmed"] is not True
+            ):
+                raise WorkbenchError(
+                    "INVALID_REQUEST", "Confirm one exact Hermes reauthorization plan."
+                )
+            return self.send_value(
+                200,
+                execute(
+                    store,
+                    data["employee_id"],
+                    data["project_id"],
+                    data["plan_id"],
+                    data["profile_id"],
+                    confirmed=True,
+                ),
+            )
+        if (
+            route == ["mailbox", "receivers", "hermes", "reauthorization", "release"]
+            and method == "POST"
+        ):
+            from .workbench_hermes_reauthorization import release_new_route
+
+            if (
+                set(data) != {"employee_id", "project_id", "plan_id", "profile_id", "confirmed"}
+                or type(data["confirmed"]) is not bool
+            ):
+                raise WorkbenchError(
+                    "INVALID_REQUEST", "Confirm one exact Hermes reauthorization plan."
+                )
+            return self.send_value(
+                200,
+                release_new_route(
+                    store,
+                    data["employee_id"],
+                    data["project_id"],
+                    data["plan_id"],
+                    data["profile_id"],
+                    confirmed=data["confirmed"],
+                ),
+            )
+        if route == ["mailbox", "receivers", "hermes", "mcp-command"] and method == "POST":
+            from .workbench_hermes_mcp_cutover import operation
+
+            if (
+                set(data)
+                - {"employee_id", "project_id", "profile_id", "action", "plan_id", "confirmed"}
+                or any(
+                    key not in data for key in ("employee_id", "project_id", "profile_id", "action")
+                )
+                or "confirmed" in data
+                and type(data["confirmed"]) is not bool
+            ):
+                raise WorkbenchError("INVALID_REQUEST", "Choose one Hermes MCP migration action.")
+            return self.send_value(
+                200,
+                operation(
+                    store,
+                    data["employee_id"],
+                    data["project_id"],
+                    data["profile_id"],
+                    data["action"],
+                    plan_id=data.get("plan_id"),
+                    confirmed=data.get("confirmed", False),
+                ),
+            )
+        if route == ["mailbox", "receivers", "hermes", "profiles"] and method == "GET":
+            from .workbench_hermes_catalog import choices
+
+            query = parse_qs(url.query, keep_blank_values=True)
+            if set(query) != {"employee_id", "project_id"} or any(
+                len(v) != 1 for v in query.values()
+            ):
+                raise WorkbenchError("INVALID_REQUEST", "Choose one employee and project.")
+            return self.send_value(
+                200, choices(store, query["employee_id"][0], query["project_id"][0])
+            )
+        if route == ["mailbox", "receivers", "dsh", "profiles"] and method == "GET":
+            from .workbench_dsh_catalog import choices
+
+            query = parse_qs(url.query, keep_blank_values=True)
+            if set(query) != {"employee_id", "project_id"} or any(
+                len(v) != 1 for v in query.values()
+            ):
+                raise WorkbenchError("INVALID_REQUEST", "Choose one employee and project.")
+            return self.send_value(
+                200, choices(store, query["employee_id"][0], query["project_id"][0])
+            )
+        if route == ["mailbox", "receivers", "hermes", "grant"] and method == "POST":
+            from .workbench_hermes_grant import operation
+
+            if set(data) - {
+                "employee_id",
+                "project_id",
+                "profile_id",
+                "action",
+                "expected_binding_id",
+                "expected_config_sha256",
+                "confirmed",
+            } or any(
+                key not in data for key in ("employee_id", "project_id", "profile_id", "action")
+            ):
+                raise WorkbenchError("INVALID_REQUEST", "Choose one listed receiver profile.")
+            return self.send_value(
+                200,
+                operation(
+                    store,
+                    data["employee_id"],
+                    data["project_id"],
+                    data["action"],
+                    profile_id=data["profile_id"],
+                    expected_binding_id=data.get("expected_binding_id"),
+                    expected_config_sha256=data.get("expected_config_sha256"),
+                    confirmed=data.get("confirmed", False),
+                ),
+            )
+        if route == ["mailbox", "receivers", "hermes", "project-link"] and method == "POST":
+            from .workbench_hermes_project_link import operation
+
+            if set(data) - {
+                "employee_id",
+                "project_id",
+                "action",
+                "fingerprint",
+                "confirmed",
+            } or any(key not in data for key in ("employee_id", "project_id", "action")):
+                raise WorkbenchError("INVALID_REQUEST", "Choose one Hermes employee and project.")
+            try:
+                result = operation(
+                    store,
+                    data["employee_id"],
+                    data["project_id"],
+                    data["action"],
+                    expected_fingerprint=data.get("fingerprint"),
+                    confirmed=data.get("confirmed", False),
+                )
+            except (ValueError, OSError, TypeError) as exc:
+                raise WorkbenchError(
+                    "RECEIVER_LINK_UNCONFIRMED",
+                    "The project link could not be confirmed; refresh its state.",
+                ) from exc
+            return self.send_value(200, result)
+        if route == ["mailbox", "receivers", "hermes", "held-mail"] and method == "POST":
+            from .workbench_held_mail_release import list_held, operation
+
+            if set(data) - {
+                "employee_id",
+                "project_id",
+                "message_id",
+                "action",
+                "fingerprint",
+                "confirmed",
+            } or any(key not in data for key in ("employee_id", "project_id", "action")):
+                raise WorkbenchError("INVALID_REQUEST", "Choose one held Hermes mail alert.")
+            try:
+                if data["action"] == "list":
+                    if set(data) != {"employee_id", "project_id", "action"}:
+                        raise ValueError("invalid_held_mail_list")
+                    result = list_held(store, data["employee_id"], data["project_id"])
+                else:
+                    if "message_id" not in data:
+                        raise ValueError("held_mail_unavailable")
+                    result = operation(
+                        store,
+                        data["employee_id"],
+                        data["project_id"],
+                        data["message_id"],
+                        data["action"],
+                        expected_fingerprint=data.get("fingerprint"),
+                        confirmed=data.get("confirmed", False),
+                    )
+            except (ValueError, OSError, TypeError) as exc:
+                raise WorkbenchError(
+                    "HELD_MAIL_UNCONFIRMED",
+                    "Refresh and review this old mail alert before delivery.",
+                ) from exc
+            return self.send_value(200, result)
+        if route == ["mailbox", "installers", "hermes", "diagnostic"] and method == "POST":
+            from .workbench_hermes_installer import installation
+
+            if set(data) - {
+                "employee_id",
+                "project_id",
+                "action",
+                "profile_id",
+                "plan_id",
+                "confirmed",
+            }:
+                raise WorkbenchError(
+                    "INVALID_REQUEST", "Unexpected diagnostic preparation argument."
+                )
+            return self.send_value(
+                200,
+                installation(
+                    store,
+                    data.get("employee_id", ""),
+                    data.get("project_id", ""),
+                    data.get("action", ""),
+                    profile_id=data.get("profile_id"),
+                    plan_id=data.get("plan_id"),
+                    confirmed=data.get("confirmed", False),
+                ),
+            )
+        if route == ["mailbox", "installers", "hermes", "admission"] and method == "POST":
+            from .workbench_hermes_admission import admission
+
+            if data.get("action") in {"first_contact_status", "first_contact_reconcile"}:
+                from .workbench_hermes_admission_cutover import (
+                    inspect_first_contact,
+                    reconcile_first_contact,
+                )
+
+                if set(data) != {"employee_id", "project_id", "action", "plan_id"}:
+                    raise WorkbenchError(
+                        "INVALID_REQUEST", "Choose one first-contact plan to inspect."
+                    )
+                operation = (
+                    inspect_first_contact
+                    if data["action"] == "first_contact_status"
+                    else reconcile_first_contact
+                )
+                return self.send_value(
+                    200, operation(store, data["employee_id"], data["project_id"], data["plan_id"])
+                )
+            first_contact_mutations = {
+                "first_contact_execute": "execute_first_contact",
+                "first_contact_restore_before_pm": "restore_before_admission",
+                "first_contact_resume_committed": "resume_committed_admission",
+            }
+            if data.get("action") in first_contact_mutations:
+                from . import workbench_hermes_admission_cutover as first_contact
+
+                if (
+                    set(data) != {"employee_id", "project_id", "action", "plan_id", "confirmed"}
+                    or data["confirmed"] is not True
+                ):
+                    raise WorkbenchError(
+                        "INVALID_REQUEST", "Confirm one first-contact plan action."
+                    )
+                operation = getattr(first_contact, first_contact_mutations[data["action"]])
+                return self.send_value(
+                    200,
+                    operation(
+                        store,
+                        data["employee_id"],
+                        data["project_id"],
+                        data["plan_id"],
+                        confirmed=True,
+                    ),
+                )
+            if set(data) - {
+                "employee_id",
+                "project_id",
+                "action",
+                "profile_id",
+                "preparation_id",
+                "plan_id",
+                "confirmed",
+            }:
+                raise WorkbenchError("INVALID_REQUEST", "Unexpected diagnostic admission argument.")
+            return self.send_value(
+                200,
+                admission(
+                    store,
+                    data.get("employee_id", ""),
+                    data.get("project_id", ""),
+                    data.get("action", ""),
+                    profile_id=data.get("profile_id"),
+                    preparation_id=data.get("preparation_id"),
+                    plan_id=data.get("plan_id"),
+                    confirmed=data.get("confirmed", False),
+                ),
+            )
+        if route == ["mailbox", "receivers", "codex"] and method in {"GET", "POST"}:
+            from .workbench_codex_connection import connection
+
+            query = parse_qs(url.query)
+            args = (
+                data
+                if method == "POST"
+                else {key: query.get(key, [""])[0] for key in ("employee_id", "project_id")}
+            )
+            result = connection(
+                store,
+                args.get("employee_id", ""),
+                args.get("project_id", ""),
+                args.get("action", "status") if method == "POST" else "status",
+                thread_id=args.get("thread_id"),
+                expected_binding_id=args.get("expected_binding_id", ...),
+                confirmed=args.get("confirmed", False),
+                activate=self.server.codex_cli.activate,
+                retire=self.server.codex_cli.retire_stale,
+            )
+            return self.send_value(200, result)
         if method == "POST" and route == ["mail-tasks"]:
             from .workbench_mail_tasks import create_mail_task
 
             result = create_mail_task(
-                store, data["project_id"], data["title"], data["prompt"], data["assignee_id"]
+                store,
+                data["project_id"],
+                data["title"],
+                data["prompt"],
+                data["assignee_id"],
+                review_recipient_id=data.get("review_recipient_id"),
+                request_id=data.get("request_id"),
             )
             self.server.ui_notify()
             return self.send_value(200, result)
@@ -577,13 +1897,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_value(200, revoke_session(store, route[2]))
         if method == "GET" and route == ["changes"]:
             return self.changes()
-        if (
-            method in {"POST", "DELETE"}
-            and route
-            and route[0] == "fleet"
-            and store.update_maintenance()["paused"]
-        ):
-            raise WorkbenchError("UPDATE_PAUSED", "更新准备期间暂停设备配置变更，请先恢复接单。")
         if method == "POST" and route == ["application", "quit"]:
             self.server.updates.assert_can_quit()
             # Respond before shutting down this instance; main's finally owns
@@ -609,7 +1922,7 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and route == ["bootstrap"]:
             runtime = runtime_status(store.root)
             runtime["install"] = self.server.install_status
-            snapshot = store.snapshot()
+            snapshot = store.snapshot(owner_read_receipts=True)
             if self.server.fleet:
                 revoked = {d["id"]: d["revoked"] for d in self.server.fleet.public_devices()}
                 snapshot["devices"] = [
@@ -632,9 +1945,40 @@ class Handler(BaseHTTPRequestHandler):
                 "node": store.local_node(),
                 "runtime": runtime,
                 "fleet": self.server.fleet_status(),
+                "human_forward": self.server.human_forward_status(),
                 "update_maintenance": store.update_maintenance(),
                 "update_nodes": compatibility_nodes(store, self.server.fleet),
             }
+        elif method == "POST" and route == ["humans"]:
+            from .workbench_human_spaces import create_human
+
+            if set(data) != {"display_name"}:
+                raise WorkbenchError("INVALID_REQUEST", "Expected a Human display name.")
+            result = create_human(store, data["display_name"])
+        elif method == "POST" and route == ["human-invitations"]:
+            from .workbench_human_spaces import create_human_invitation
+
+            if set(data) != {"human_id"}:
+                raise WorkbenchError("INVALID_REQUEST", "Expected a Human identity.")
+            result = create_human_invitation(store, data["human_id"])
+        elif method == "POST" and route == ["human-sessions"]:
+            from .workbench_human_spaces import issue_local_owner_session
+
+            if set(data) not in (set(), {"human_id"}):
+                raise WorkbenchError("INVALID_REQUEST", "Expected no body or one Human identity.")
+            result = issue_local_owner_session(store, data.get("human_id"))
+        elif method == "POST" and route == ["human-sessions", "revoke-all"]:
+            from .workbench_human_spaces import revoke_all_human_sessions
+
+            if set(data) != {"human_id"}:
+                raise WorkbenchError("INVALID_REQUEST", "Expected a Human identity.")
+            result = revoke_all_human_sessions(store, data["human_id"])
+        elif method == "DELETE" and len(route) == 2 and route[0] == "human-sessions":
+            from .workbench_human_spaces import revoke_human_session
+
+            if data:
+                raise WorkbenchError("INVALID_REQUEST", "Session revocation takes no request body.")
+            result = revoke_human_session(store, route[1])
         elif method == "POST" and route == ["projects"]:
             result = store.create_project(data["name"], data["path"])
         elif len(route) >= 3 and route[0] == "projects" and route[2] == "members":
@@ -733,6 +2077,8 @@ class Handler(BaseHTTPRequestHandler):
                 data["assignee_id"],
                 data.get("permission_mode", "read-only"),
                 data.get("model"),
+                review_recipient_id=data.get("review_recipient_id"),
+                request_id=data.get("request_id"),
             )
             self.server.notify()
         elif (
@@ -897,13 +2243,50 @@ class Handler(BaseHTTPRequestHandler):
             }
         elif method == "POST" and route == ["fleet", "start"]:
             result = self.server.start_fleet(data.get("address", "127.0.0.1"), data.get("port", 0))
+        elif method == "GET" and route == ["fleet", "status"]:
+            listener = self.server.fleet
+            result = {
+                "enabled": listener is not None,
+                "base_url": listener.base_url if listener else None,
+                "lan_advertised": bool(listener and listener.lan_advertiser),
+                "lan_error": listener.lan_error if listener else None,
+            }
+        elif method == "GET" and route == ["fleet", "discover"]:
+            from .workbench_fleet_lan import discover_lan
+
+            result = {"devices": discover_lan(), "trusted": False}
+        elif method == "GET" and route == ["fleet", "connection"]:
+            result = self.server.fleet_connection_status()
+        elif method == "GET" and route == ["fleet", "available-employees"]:
+            from .workbench_contract import EXECUTION_KINDS
+
+            available = {}
+            for employee in discover_employees():
+                if (
+                    employee.get("kind") in EXECUTION_KINDS
+                    and employee.get("connection_type", "cli") == "cli"
+                    and employee.get("status") == "installed"
+                ):
+                    available.setdefault(
+                        employee["kind"],
+                        {
+                            "kind": employee["kind"],
+                            "name": employee["name"],
+                        },
+                    )
+            result = {"employees": list(available.values())}
+        elif method == "GET" and route == ["human-forward", "status"]:
+            result = self.server.human_forward_status()
+        elif method == "POST" and route == ["human-forward", "start"]:
+            if data:
+                raise WorkbenchError("INVALID_REQUEST", "Human forward start takes no body.")
+            result = self.server.start_human_forward()
+        elif method == "POST" and route == ["human-forward", "stop"]:
+            if data:
+                raise WorkbenchError("INVALID_REQUEST", "Human forward stop takes no body.")
+            result = self.server.stop_human_forward()
         elif method == "POST" and route == ["fleet", "stop"]:
-            if self.server.fleet:
-                self.server.fleet.stop()
-                self.server.fleet = None
-            self.server.listener_path.write_text(json.dumps({"enabled": False}))
-            private_mode(self.server.listener_path, 0o600)
-            result = {"stopped": True}
+            result = self.server.stop_fleet()
         elif method == "POST" and route == ["fleet", "invite"]:
             if not self.server.fleet:
                 raise WorkbenchError(
@@ -912,14 +2295,10 @@ class Handler(BaseHTTPRequestHandler):
             result = self.server.fleet.issue_invite(data["project_ids"])
         elif method == "POST" and route == ["fleet", "join"]:
             result = self.server.join_fleet(data["invite"])
+        elif method == "POST" and route == ["fleet", "relocate"]:
+            result = self.server.relocate_fleet(data["base_url"])
         elif method == "POST" and route == ["fleet", "leave"]:
-            if self.server.remote_worker:
-                self.server.remote_worker.close()
-            self.server.remote_worker = None
-            self.server.remote_client = None
-            self.server.remote_projects = []
-            (store.root / "workbench/fleet/client.json").unlink(missing_ok=True)
-            result = {"disconnected": True}
+            result = self.server.leave_fleet()
         elif method == "POST" and route == ["fleet", "map"]:
             if not self.server.remote_client:
                 raise WorkbenchError(
@@ -933,8 +2312,19 @@ class Handler(BaseHTTPRequestHandler):
                     "DEVICE_UNPAIRED", "Pair this device with its coordinator first."
                 )
             kind = data["kind"]
-            discovery = next((e for e in discover_employees() if e["kind"] == kind), None)
-            if not discovery or discovery["status"] == "unavailable":
+            discovery = next(
+                (
+                    e
+                    for e in discover_employees()
+                    if e.get("kind") == kind
+                    and e.get("connection_type", "cli") == "cli"
+                    and e.get("status") == "installed"
+                ),
+                None,
+            )
+            from .workbench_contract import EXECUTION_KINDS
+
+            if kind not in EXECUTION_KINDS or not discovery:
                 raise WorkbenchError(
                     "AGENT_UNAVAILABLE", "Install the supported employee on this device first."
                 )
@@ -960,11 +2350,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def dispatch(self):
         try:
-            self.handle_request()
+            if self.command in {"POST", "DELETE"}:
+                # Serialize HTTP writes with update preparation. A request that
+                # passed the pause check must finish before the backup starts.
+                with self.server.updates.lock:
+                    self.handle_request()
+            else:
+                self.handle_request()
         except WorkbenchError as exc:
             status = (
                 404
                 if exc.code.lower() == "not_found"
+                else 409
+                if exc.code == "MULTI_HUMAN_SCOPED_REQUIRED"
+                else 403
+                if exc.code
+                in {"HUMAN_ENROLLMENT_REQUIRED", "HUMAN_ALREADY_ENROLLED", "RECOVERY_ALREADY_SET"}
                 else 401
                 if exc.code == "UNAUTHORIZED"
                 else 400
@@ -1001,6 +2402,110 @@ class Handler(BaseHTTPRequestHandler):
 DESKTOP_BUNDLE_ID = "com.polaris-smart.agent-mailbox"
 
 
+def _desktop_bundle_id() -> str | None:
+    """Focus this frozen app, which may be installed beside another build."""
+    if not getattr(sys, "frozen", False):
+        return DESKTOP_BUNDLE_ID
+    try:
+        with (Path(sys.executable).parent.parent / "Info.plist").open("rb") as file:
+            info = plistlib.load(file)
+    except (OSError, ValueError):
+        return None
+    bundle_id = info.get("CFBundleIdentifier") if isinstance(info, dict) else None
+    return bundle_id if isinstance(bundle_id, str) and bundle_id else None
+
+
+class HumanForwardHandler(Handler):
+    """Human-only loopback endpoint intended for an authenticated SSH local forward."""
+
+    _forward_host = re.compile(r"^(?:127\.0\.0\.1|localhost):([0-9]{1,5})$")
+
+    def safe_origin(self):
+        host = self.headers.get("Host", "")
+        matched = self._forward_host.fullmatch(host)
+        if not matched or not 0 < int(matched.group(1)) <= 65535:
+            return False
+        origin = self.headers.get("Origin")
+        return not origin or origin == "http://" + host
+
+    def handle_request(self):
+        path = urlsplit(self.path).path
+        allowed = (
+            path == "/human"
+            or path in {"/workbench-assets/human.css", "/workbench-assets/human.js"}
+            or path.startswith(PREFIX + "/human/")
+        )
+        if not allowed:
+            self.send_value(404, {"error": {"code": "NOT_FOUND", "message": "Page not found."}})
+            return
+        super().handle_request()
+
+
+class HumanForwardHTTP(ThreadingHTTPServer):
+    """No owner bearer or management routes cross this SSH-forwarded boundary."""
+
+    daemon_threads = True
+
+    def __init__(self, owner: WorkbenchHTTP, port=0):
+        self.owner = owner
+        self.store = owner.store
+        self.ui_condition = owner.ui_condition
+        self.closing = threading.Event()
+        self.ui_notify = owner.ui_notify
+        self.notify = owner.notify
+        self.updates = owner.updates
+        self._client_lock = threading.Lock()
+        self._clients: set[socket.socket] = set()
+        self._accepting_clients = True
+        super().__init__(("127.0.0.1", port), HumanForwardHandler)
+        self.endpoint = f"http://127.0.0.1:{self.server_port}"
+
+    def process_request(self, request, client_address):
+        # Register before the worker thread starts, so stop_clients cannot
+        # miss a connection accepted during listener shutdown.
+        with self._client_lock:
+            accepting = self._accepting_clients
+            if accepting:
+                self._clients.add(request)
+        if not accepting:
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            with self._client_lock:
+                self._clients.discard(request)
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            with self._client_lock:
+                self._clients.discard(request)
+
+    def stop_clients(self):
+        with self._client_lock:
+            self._accepting_clients = False
+            clients = tuple(self._clients)
+        self.closing.set()
+        for client in clients:
+            try:
+                client.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        self.ui_notify()  # Wake long-lived Human change streams before joining handlers.
+
+    def server_bind(self):
+        # Match the owner listener: reverse DNS must not delay local startup.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+    @property
+    def ui_revision(self):
+        return self.owner.ui_revision
+
+
 def _desktop_wanted(args) -> bool:
     """Native macOS app builds show the workbench in an app-owned window.
 
@@ -1030,6 +2535,12 @@ def main(argv=None):
     )
     parser.add_argument("--home", type=Path, default=Path.home() / ".agent-mailbox")
     parser.add_argument("--port", type=int, default=0)
+    parser.add_argument(
+        "--human-forward-port",
+        type=int,
+        default=None,
+        help="Human-only loopback port for an authenticated SSH local forward",
+    )
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args(argv)
     # 2026-10-03 事故修复：默认不开浏览器标签（有人在反复调用 agent-mailbox ⇒ 每次都弹新标签）。
@@ -1044,8 +2555,30 @@ def main(argv=None):
     ):
         args.no_browser = True
     store = WorkbenchStore(args.home)
+    desktop_wanted = _desktop_wanted(args)
     try:
-        server = WorkbenchHTTP(store, args.port)
+        ui_mode = "desktop" if desktop_wanted else ("headless" if args.no_browser else "browser")
+        server = WorkbenchHTTP(store, args.port, ui_mode=ui_mode)
+        # The Codex transport can signal that an existing busy turn finished.
+        # The signal only prompts the normal, fully authorized delivery path;
+        # the periodic scan remains crash/offline recovery if IPC is unavailable.
+        try:
+            import atexit
+
+            from .workbench_codex_connection import _paths, _private
+            from .workbench_host_activity import start_host_activity_listener
+
+            _receiver_root, ipc = _paths(store.root)
+            ipc.parent.mkdir(mode=0o700, exist_ok=True)
+            _private(ipc.parent)
+            _private(ipc, create=True)
+            close_host_activity = start_host_activity_listener(store, ipc / "idle.sock")
+            atexit.register(close_host_activity)
+        except (OSError, ValueError) as exc:
+            print(
+                f"[wake] 宿主空闲事件不可用；保留持久待办与恢复扫描（{type(exc).__name__}）",
+                file=sys.stderr,
+            )
         # ⑤ 应用侧**兑现**（老板判据：开着应用就该自动叫 ✓ 零配置 ✓ 默认开 ✓）
         threading.Thread(target=wake_redeem_loop, args=(store, store.root), daemon=True).start()
     except WorkbenchError as exc:
@@ -1063,12 +2596,17 @@ def main(argv=None):
         if sys.stdout is not None:
             print(url, flush=True)
         if not args.no_browser:
+            if desktop_wanted and saved.get("ui_mode") in ("headless", "browser"):
+                # A background owner has no AppKit window to focus. Attach a
+                # separate native shell; quitting it leaves the owner running.
+                from .workbench_desktop import run_desktop
+
+                run_desktop(url)
+                return
             # A second launch of the native app focuses the existing in-app
             # window instead of stacking another browser window.
-            if (
-                _desktop_wanted(args)
-                and subprocess.run(["open", "-b", DESKTOP_BUNDLE_ID], check=False).returncode == 0
-            ):
+            bundle_id = _desktop_bundle_id() if desktop_wanted else None
+            if bundle_id and subprocess.run(["open", "-b", bundle_id], check=False).returncode == 0:
                 return
             webbrowser.open(url)
         return
@@ -1079,10 +2617,18 @@ def main(argv=None):
     if threading.current_thread() is threading.main_thread():
         signal.signal(signal.SIGTERM, stop_on_signal)
     server.engine.start()
+    if args.human_forward_port is not None:
+        try:
+            status = server.start_human_forward(args.human_forward_port)
+        except Exception:
+            server.close()  # A bad forward port must not strand the owner instance lock.
+            raise
+        if sys.stdout is not None:
+            print(f"Human SSH forward target: 127.0.0.1:{status['port']}", flush=True)
     url = server.endpoint + "/#token=" + server.token
     if sys.stdout is not None:
         print(url, flush=True)
-    if _desktop_wanted(args):
+    if desktop_wanted:
         # The AppKit event loop owns the main thread; the HTTP service keeps
         # serving from its own background threads until the desktop UI quits.
         from .workbench_desktop import run_desktop

@@ -65,7 +65,7 @@ def test_mailbox_server_matches_the_declaration(scene):
     server = mailbox_mcp.build_server(session_file)
     names = [tool.name for tool in _tools(server)]
     assert wt.validate("mailbox", names) == {"missing": [], "unexpected": []}
-    assert len(names) == 17
+    assert len(names) == 19
 
 
 def test_workspace_server_matches_the_declaration(scene):
@@ -115,7 +115,7 @@ def test_validate_flags_drift_both_ways():
 
 def test_contract_is_documented_for_every_tool():
     declared = wt.contract()
-    assert len(declared) == 19
+    assert len(declared) == 21
     for name, meta in declared.items():
         assert meta["purpose"], f"{name} 没有用途说明"
         assert meta["scopes"], f"{name} 没有作用域"
@@ -135,5 +135,5 @@ def test_remote_scope_excludes_unimplemented_tools():
     remote = wt.tools_for("remote")
     assert not (remote & wt.REMOTE_UNAVAILABLE), "远端声明不得包含未实现工具 ✗"
     assert len(remote) == 11, f"远端面应为 11（实测 10 个 project_* + team_message）: {len(remote)}"
-    assert len(wt.tools_for("workspace")) == 16 and len(wt.tools_for("mailbox")) == 17
+    assert len(wt.tools_for("workspace")) == 16 and len(wt.tools_for("mailbox")) == 19
     assert len(remote) < len(wt.tools_for("workspace"))

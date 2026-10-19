@@ -192,6 +192,8 @@ async function sessionFor(run, input) {
   if (shuttingDown || run.controller.signal.aborted) fail("CANCELLED", "Run cancelled before dispatch");
   const sandbox = input.sandbox ?? "read-only";
   if (!["read-only", "workspace-write"].includes(sandbox)) fail("INVALID_REQUEST", "Unsupported sandbox mode");
+  run.requestedSandbox = sandbox;
+  run.agent = input.agent;
   if (input.agent === "claude" && sandbox === "workspace-write" && !testCommand) {
     fail("SANDBOX_UNSUPPORTED", "Claude plan mode is available; a workspace OS sandbox is not provided by this adapter");
   }
@@ -318,6 +320,13 @@ async function waitPermissionDetails(run, toolCallId, signal) {
 }
 async function permission(run, request, { signal }) {
   await waitPermissionDetails(run, request.raw.toolCall.toolCallId, signal);
+  const toolCall = {
+    ...run.toolCalls.get(request.raw.toolCall.toolCallId), ...request.raw.toolCall,
+  };
+  // Claude read-only runs in native plan mode. Never approve the tool that
+  // would leave that boundary during this managed run.
+  if (run.agent === "claude" && run.requestedSandbox === "read-only"
+      && toolCall.name === "ExitPlanMode") return { outcome: "reject_once" };
   const requestId = randomUUID();
   return new Promise(resolve => {
     let timer;
@@ -333,9 +342,7 @@ async function permission(run, request, { signal }) {
     timer = setTimeout(() => finish({ outcome: "reject_once" }), run.permissionTimeout);
     if (signal.aborted || run.terminal) abort();
     else emit(run, "permission_required", { request_id: requestId, request: request.raw,
-      options: request.raw.options, tool_call: {
-        ...run.toolCalls.get(request.raw.toolCall.toolCallId), ...request.raw.toolCall,
-      },
+      options: request.raw.options, tool_call: toolCall,
       inferred_kind: request.inferredKind ?? null, timeout_ms: run.permissionTimeout });
   });
 }

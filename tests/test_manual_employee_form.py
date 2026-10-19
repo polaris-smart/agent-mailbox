@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from agent_mailbox.workbench_store import CONNECTION_TYPES, EMPLOYEE_KINDS
 
@@ -28,11 +32,24 @@ def test_form_options_come_from_the_backend_whitelist():
 
 def test_form_requires_a_real_executable_and_honest_copy():
     source = JS.read_text(encoding="utf-8")
-    assert "openManualEmployeeForm" in source and 'data-action": "manual-employee"' in source, (
-        "入口缺失 ✗"
-    )
+    assert (
+        '"manual-employee": () => openManualEmployeeForm()' in source
+        and 'button(t("手工登记", "Register manually"), "manual-employee"' in source
+    ), "入口缺失 ✗"
     assert "必须真实存在且可执行" in source, "前置条件必须写明（否则用户白填 ✗）"
     assert "执行未验证" in source, "成功后必须如实说未验证 ✗ 不假装已验证 ✓"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_manual_registration_form_submits_synthetic_employee():
+    result = subprocess.run(
+        ["node", str(JS.parents[3] / "tests" / "manual_employee_form_ui.cjs")],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_manual_form_can_join_the_current_project():

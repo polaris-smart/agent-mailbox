@@ -99,6 +99,12 @@ def test_membership_removal_revokes_only_one_project_and_cancels_queue(store, pr
     queued = store.create_task(project["id"], "Queued", "No execution", employee["id"])
     remaining = store.remove_project_member(project["id"], employee["id"])
     assert remaining["project_ids"] == [other["id"]]
+    assert any(
+        event["type"] == "employee_left"
+        and event["employee_id"] == employee["id"]
+        and event["project_id"] == project["id"]
+        for event in store.governance_events(project["id"])
+    )
     assert not store.validate_employee(first["token"], employee["id"], project["id"])
     assert store.validate_employee(second["token"], employee["id"], other["id"])
     assert store.get_task(queued["id"])["status"] == "cancelled"

@@ -29,6 +29,10 @@ def bundled_runtime() -> dict[str, str] | None:
 def main(argv: list[str] | None = None) -> None:
     arguments = list(sys.argv[1:] if argv is None else argv)
     bundled_runtime()
+    if arguments and arguments[0] == "codex-receiver-start":
+        from agent_mailbox.workbench_codex_shortcut import main as receiver_main
+
+        raise SystemExit(receiver_main(arguments[1:]))
     if arguments == ["--workspace-mcp"]:
         from agent_mailbox.workspace_mcp import main as workspace_main
 
@@ -36,7 +40,7 @@ def main(argv: list[str] | None = None) -> None:
     else:
         from agent_mailbox.cli import main as workbench_main
 
-        workbench_main(arguments)
+        raise SystemExit(workbench_main(arguments))
 
 
 if __name__ == "__main__":

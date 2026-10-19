@@ -63,7 +63,7 @@ def _cli(home: pathlib.Path, log: pathlib.Path | None = None) -> list[str]:
             "        stream.write(employee_id + '\\n')\n"
             "    time.sleep(0.5)\n"
             "    return True\n"
-            "wk.hook_deliver = lambda home: deliver\n"
+            "wk.hook_deliver = lambda home, **kwargs: deliver\n"
         )
     code += "from agent_mailbox.cli import main; raise SystemExit(main())"
     return [sys.executable, "-c", code, "wake", "--once", "--home", str(home)]

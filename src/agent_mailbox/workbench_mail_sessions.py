@@ -31,7 +31,9 @@ TOOLS = {
     "graft_callers": {"symbol"},
     "graft_ask": {"task"},
     "context": set(),
+    "identity": set(),
     "messages": {"folder", "limit"},
+    "message_open": {"message_id"},
     "message": {"title", "body", "recipient_id", "reply_to", "request_id"},
     "note": {"title", "body"},
     "memory_search": {"query"},
@@ -43,6 +45,22 @@ TOOLS = {
     "task_accept": {"task_id"},
     "task_submit": {"task_id", "result"},
 }
+
+_SESSION_READ_TOOLS = {
+    "identity",
+    "context",
+    "messages",
+    "memory_search",
+    "resource_read",
+    "resource_versions",
+    "delivery",
+    "tasks",
+}
+
+
+def _require_write_enabled(db):
+    if db.execute("SELECT paused FROM update_settings WHERE id=1").fetchone()[0]:
+        raise WorkbenchError("UPDATE_PAUSED", "工作台正在准备更新；保留当前内容，恢复接单后重试。")
 
 
 def _digest(value):
@@ -103,11 +121,52 @@ def _public(store, db, row):
     return store._scrub(db, result)
 
 
-def create_session(store, employee_id, project_id, label):
-    """Owner-only caller: issue once, store only a digest, expire after 30 days."""
+def create_session(
+    store, employee_id, project_id, label, *, reuse_label=False, rotate_label=False, on_issued=None
+):
+    """Owner-only caller: issue a private key, or reuse one named connection.
+
+    ``reuse_label`` is for the UI configuration export. It is checked while
+    holding the SQLite write lock, so concurrent clicks cannot issue two keys
+    for the same employee, project and connection label.
+    ``rotate_label`` replaces only that named connection. ``on_issued`` may
+    prepare its private manifest before the database commits the replacement.
+    """
     label = _text(label, "接入会话名称", 200).strip()
+    if reuse_label and rotate_label:
+        raise WorkbenchError("invalid_field", "不能同时复用和轮换同一个会话。")
     with store._transaction() as db:
         membership = _membership(store, db, employee_id, project_id)
+        existing = [
+            row
+            for row in db.execute(
+                "SELECT * FROM mailbox_sessions WHERE employee_id=? AND project_id=? "
+                "AND label=? AND revoked_at IS NULL AND expires_at>?",
+                (employee_id, project_id, label, _now()),
+            )
+            if hmac.compare_digest(row["membership_hash"], _digest(membership["secret_token"]))
+        ]
+        if reuse_label:
+            if len(existing) > 1:
+                raise WorkbenchError(
+                    "SESSION_LABEL_CONFLICT",
+                    "这个会话名称有多把有效钥匙。请先逐条撤销多余钥匙，再重新生成配置。",
+                )
+            if existing:
+                return {**_public(store, db, existing[0]), "reused": True}
+        elif existing and not rotate_label:
+            raise WorkbenchError(
+                "SESSION_LABEL_CONFLICT",
+                "这个连接名称已有有效钥匙；请明确复用或轮换，避免重复接入。",
+            )
+        if rotate_label:
+            # Replacement and revocation commit together: no two live keys
+            # survive an interruption between those two operations.
+            db.execute(
+                "UPDATE mailbox_sessions SET revoked_at=? WHERE employee_id=? "
+                "AND project_id=? AND label=? AND revoked_at IS NULL",
+                (_now(), employee_id, project_id, label),
+            )
         token = secrets.token_urlsafe(32)
         session_id = _id("mail_session")
         created_at = _now()
@@ -136,7 +195,12 @@ def create_session(store, employee_id, project_id, label):
             payload={"session_id": session_id},
         )
         result = _public(store, db, store._required(db, "mailbox_sessions", session_id))
-        return {**result, "token": token}
+        issued = {**result, "token": token}
+        if on_issued is not None:
+            # Enrolment must durably prepare its private manifest before the
+            # replacement transaction can revoke the previous usable key.
+            on_issued(issued)
+        return issued
 
 
 def list_sessions(store, employee_id, project_id):
@@ -173,7 +237,7 @@ def _bound_store(store, db):
     bound = copy.copy(store)
 
     @contextmanager
-    def connection(readonly: bool = False):
+    def connection(readonly: bool = False, *, allow_paused: bool = False):
         # 绑定态复用调用方已开的事务；readonly 在此无意义（事务已由外层决定），
         # 但必须接受该参数——否则读辅助统一改用 readonly=True 后会 TypeError
         yield db
@@ -198,8 +262,13 @@ def invoke(store, token, tool, args):
         raise WorkbenchError("MAILBOX_TOOL_DENIED", "邮箱接入不提供该操作。")
     if not isinstance(args, dict) or set(args) - TOOLS[tool]:
         raise WorkbenchError("MAILBOX_ARGUMENT_DENIED", "不能指定额外身份、项目或执行参数。")
-    with store._transaction() as db:
+    with store._transaction(allow_paused=True) as db:
         session = validate_session(store, db, token)
+        # Only intrinsic mailbox reads continue during maintenance. External
+        # diagnostics may write caches or ledgers even when advertised as
+        # read-only; new tools must opt in explicitly.
+        if tool not in _SESSION_READ_TOOLS:
+            _require_write_enabled(db)
         bound = _bound_store(store, db)
         project, employee = session["project_id"], session["employee_id"]
         args = _redact(args, token)
@@ -218,6 +287,15 @@ def invoke(store, token, tool, args):
                 }
                 result = dispatch[tool]()
 
+            elif tool == "identity":
+                # Connection diagnostics must not fetch project contents or mark
+                # mail read. Validation above is current, not manifest metadata.
+                result = {
+                    "protocol": "agent-mailbox.identity.v1",
+                    "employee_id": employee,
+                    "project_id": project,
+                    "session_id": session["id"],
+                }
             elif tool == "context":
                 result = bound.project_context(project, employee_id=employee)
                 result["mailbox_session"] = _public(store, db, session)
@@ -226,6 +304,10 @@ def invoke(store, token, tool, args):
                 result = bound.employee_messages(
                     project, employee, args.get("folder", "inbox"), args.get("limit", 100)
                 )
+            elif tool == "message_open":
+                from .workbench_message_reads import open_in
+
+                result = open_in(bound, db, session, args["message_id"])
             elif tool == "message":
                 # schema 只保证"参数存在"；空串/缺参必须在**真派发层**被拒，
                 # 否则 HTTP/fleet/invoke 三条真路径仍会把缺参翻译成"全项目群发"

@@ -148,6 +148,8 @@ class FleetCoordinator:
         self.thread = None
         self.base_url = ""
         self.fingerprint = ""
+        self.lan_advertiser = None
+        self.lan_error = None
         self.on_change = on_change
 
     def _save(self):
@@ -313,6 +315,16 @@ class FleetCoordinator:
                 target=server.serve_forever, name="mailbox-fleet-tls", daemon=True
             )
             self.thread.start()
+            # A multicast announcement is only an address hint. Failure must not
+            # disable the explicit TLS listener or its manual invitation path.
+            self.lan_error = None
+            try:
+                from .workbench_fleet_lan import FleetLanAdvertiser, _lan_ipv4
+
+                if _lan_ipv4(visible_host):
+                    self.lan_advertiser = FleetLanAdvertiser(self.base_url)
+            except Exception as exc:  # noqa: BLE001 - multicast is optional; TLS remains usable.
+                self.lan_error = type(exc).__name__
             return {
                 "base_url": self.base_url,
                 "fingerprint": self.fingerprint,
@@ -323,7 +335,13 @@ class FleetCoordinator:
         with self.lock:
             server, thread = self.server, self.thread
             self.server = self.thread = None
+            advertiser, self.lan_advertiser = self.lan_advertiser, None
             self.condition.notify_all()
+        if advertiser is not None:
+            try:
+                advertiser.close()
+            except Exception:  # noqa: BLE001 - listener shutdown must still complete.
+                self.lan_error = "withdraw_failed"
         if server is not None:
             server.shutdown()
             server.server_close()
@@ -337,7 +355,7 @@ class FleetCoordinator:
         if self.on_change is not None:
             self.on_change()
 
-    def issue_invite(self, project_ids, ttl=300):
+    def issue_invite(self, project_ids, ttl=300, *, issuer_human_id=None):
         if (
             not isinstance(project_ids, list)
             or not project_ids
@@ -350,6 +368,21 @@ class FleetCoordinator:
         with self.lock:
             if self.server is None:
                 raise WorkbenchError("invalid_state", "请先启动设备 TLS 监听。")
+            from .workbench_human_spaces import (
+                legacy_owner_view_crosses_human_boundary,
+                project_role,
+            )
+
+            if issuer_human_id is None:
+                if legacy_owner_view_crosses_human_boundary(self.store):
+                    raise WorkbenchError("permission_denied", "请由项目所有者签发设备邀请。")
+            else:
+                with self.store._transaction(readonly=True) as db:
+                    if any(
+                        project_role(db, issuer_human_id, project_id) != "owner"
+                        for project_id in project_ids
+                    ):
+                        raise WorkbenchError("PROJECT_NOT_FOUND", "项目不存在或没有访问权限。")
             available = {project["id"] for project in self.store.snapshot()["projects"]}
             if not set(project_ids) <= available:
                 raise WorkbenchError("not_found", "有项目已不存在，请刷新后重试。")
@@ -359,6 +392,7 @@ class FleetCoordinator:
             self.state["invites"][invite_id] = {
                 "secret_hash": _digest(secret),
                 "project_ids": scope,
+                "issuer_human_id": issuer_human_id,
                 "expires_at": expires,
                 "used": False,
             }
@@ -398,6 +432,22 @@ class FleetCoordinator:
             valid = hmac.compare_digest(expected, _digest(secret))
             if not invitation or not valid:
                 raise WorkbenchError("permission_denied", "邀请码验证失败。")
+            from .workbench_human_spaces import (
+                legacy_owner_view_crosses_human_boundary,
+                project_role,
+            )
+
+            issuer_human_id = invitation.get("issuer_human_id")
+            if issuer_human_id is None:
+                if legacy_owner_view_crosses_human_boundary(self.store):
+                    raise WorkbenchError("permission_denied", "旧设备邀请不适用于多 Human 项目。")
+            else:
+                with self.store._transaction(readonly=True) as db:
+                    if any(
+                        project_role(db, issuer_human_id, project_id) != "owner"
+                        for project_id in invitation["project_ids"]
+                    ):
+                        raise WorkbenchError("permission_denied", "签发者已失去项目所有权。")
             existing = self.state["devices"].get(device_id)
             if invitation["used"]:
                 if (
@@ -432,6 +482,7 @@ class FleetCoordinator:
                 "token_hash": _digest(token),
                 "pair_invite_id": invite_id if pair_token is not None else None,
                 "project_ids": invitation["project_ids"],
+                "issuer_human_id": issuer_human_id,
                 "paired_at": time.time(),
                 "revoked": False,
             }
@@ -459,6 +510,25 @@ class FleetCoordinator:
             valid = hmac.compare_digest(expected, _digest(token))
             if not device or not valid or device.get("revoked"):
                 raise WorkbenchError("permission_denied", "设备身份验证失败。")
+            from .workbench_human_spaces import (
+                legacy_owner_view_crosses_human_boundary,
+                project_role,
+            )
+
+            issuer_human_id = device.get("issuer_human_id")
+            if issuer_human_id is None:
+                if legacy_owner_view_crosses_human_boundary(self.store):
+                    raise WorkbenchError("permission_denied", "请由项目所有者重新授权此设备。")
+                authorized_projects = list(device["project_ids"])
+            else:
+                with self.store._transaction(readonly=True) as db:
+                    authorized_projects = [
+                        project_id
+                        for project_id in device["project_ids"]
+                        if project_role(db, issuer_human_id, project_id) == "owner"
+                    ]
+                if not authorized_projects:
+                    raise WorkbenchError("permission_denied", "设备项目授权已失效。")
             if "x-agent-mail-version" in headers or "x-agent-mail-protocol" in headers:
                 report = node_report(
                     headers.get("x-agent-mail-version"), headers.get("x-agent-mail-protocol")
@@ -469,7 +539,7 @@ class FleetCoordinator:
                 ):
                     device.update(report)
                     self._save()
-            return {**device, "project_ids": list(device["project_ids"]), "_request_token": token}
+            return {**device, "project_ids": authorized_projects, "_request_token": token}
 
     @staticmethod
     def _scope(device, project_id):
@@ -500,7 +570,7 @@ class FleetCoordinator:
         with self.condition:
             while True:
                 try:
-                    self._authenticate(headers)
+                    device = self._authenticate(headers)
                     self._permission_task(device, task_id, body)
                     permission = self.store.permission_decision(
                         task_id, request_id, body.get("run_id")
@@ -822,7 +892,7 @@ class FleetCoordinator:
                 deadline = time.monotonic() + wait
                 with self.condition:
                     while True:
-                        self._authenticate(headers)
+                        device = self._authenticate(headers)
                         task = self._task_scope(device, task_id, body.get("run_id"))
                         remaining = deadline - time.monotonic()
                         if (
@@ -872,6 +942,45 @@ class FleetCoordinator:
             self.store.upsert_device(device_id, record["name"], "offline")
         self.notify()
 
+    def _require_human_project_owner(self, human_id, project_id):
+        from .workbench_human_spaces import project_role
+
+        with self.store._transaction(readonly=True) as db:
+            if project_role(db, human_id, project_id) != "owner":
+                raise WorkbenchError("PROJECT_NOT_FOUND", "项目不存在或没有访问权限。")
+
+    def project_devices_for_human(self, human_id, project_id):
+        with self.lock:
+            self._require_human_project_owner(human_id, project_id)
+            return [
+                {key: device[key] for key in ("device_id", "name", "paired_at")}
+                for device in self.state["devices"].values()
+                if device.get("issuer_human_id") == human_id
+                and project_id in device["project_ids"]
+                and not device.get("revoked", False)
+            ]
+
+    def revoke_project_device_for_human(self, human_id, project_id, device_id):
+        with self.lock:
+            self._require_human_project_owner(human_id, project_id)
+            device = self.state["devices"].get(device_id)
+            if (
+                not device
+                or device.get("revoked", False)
+                or device.get("issuer_human_id") != human_id
+                or project_id not in device["project_ids"]
+            ):
+                raise WorkbenchError("DEVICE_NOT_FOUND", "设备不存在或没有访问权限。")
+            device["project_ids"] = [
+                value for value in device["project_ids"] if value != project_id
+            ]
+            if not device["project_ids"]:
+                device["revoked"] = True
+                self.store.upsert_device(device_id, device["name"], "offline")
+            self._save()
+        self.notify()
+        return {"revoked": True}
+
     @staticmethod
     def _compatible_claim(device):
         if device.get("protocol") not in {None, FLEET_PROTOCOL}:
@@ -901,6 +1010,13 @@ class FleetCoordinator:
 
 
 class FleetClient:
+    @staticmethod
+    def saved_connection(root: Path, base_url: str) -> dict:
+        credentials = _load(_directory(root) / "client.json", None)
+        if not isinstance(credentials, dict):
+            raise WorkbenchError("DEVICE_UNPAIRED", "请先完成设备配对。")
+        return {**credentials, "base_url": base_url}
+
     def __init__(self, root: Path, invite: dict):
         self.store = WorkbenchStore(root)
         self.claim_lock = threading.RLock()
@@ -940,13 +1056,33 @@ class FleetClient:
         self.credentials = _load(self.credentials_path, None)
         if self.credentials is not None and not isinstance(self.credentials, dict):
             raise WorkbenchError("storage_error", "设备凭据格式无效，请恢复备份。")
-        if self.credentials is not None and (
-            self.credentials.get("base_url") != self.base_url
-            or self.credentials.get("fingerprint") != self.fingerprint
-        ):
+        if self.credentials is not None and self.credentials.get("fingerprint") != self.fingerprint:
             raise WorkbenchError(
                 "permission_denied", "该数据目录已连接其他主控，请使用独立设备目录。"
             )
+        if self.credentials is not None and self.credentials.get("base_url") != self.base_url:
+            # An IP/SSH-tunnel address is transport, not coordinator identity.
+            # Keep the durable device credential and pinned certificate. Probe
+            # the new address before changing the saved endpoint or workers.
+            report = self._request("GET", "/v1/device")
+            if not isinstance(report, dict):
+                raise WorkbenchError("permission_denied", "新地址未能证明主控身份。")
+            device = report.get("device")
+            coordinator = report.get("coordinator")
+            if not isinstance(device, dict) or not isinstance(coordinator, dict):
+                raise WorkbenchError("permission_denied", "新地址未能证明主控身份。")
+            if device.get("device_id") != self.credentials.get("device_id") or coordinator.get(
+                "id"
+            ) != self.credentials.get("coordinator_id"):
+                raise WorkbenchError("permission_denied", "新地址不是已配对的主控设备。")
+            projects = self._request("GET", "/v1/projects")
+            if not isinstance(projects, dict) or not isinstance(projects.get("projects"), list):
+                raise WorkbenchError("permission_denied", "新地址未能读取已授权项目。")
+            relocated = {**self.credentials, "base_url": self.base_url}
+            _write_private(
+                self.credentials_path, json.dumps(relocated, ensure_ascii=False).encode("utf-8")
+            )
+            self.credentials = relocated
         if self.credentials is None:
             node = self.store.local_node()
             attempt_path = self.directory / "pair-attempt.json"
@@ -994,14 +1130,15 @@ class FleetClient:
                     authenticated=False,
                 )
             except WorkbenchError as exc:
-                if (
-                    created_attempt
-                    and exc.code == "tls_pin_mismatch"
-                    or exc.code in {"invite_expired", "invite_used"}
-                ):
-                    # The pin check precedes sending any secret, so this fresh
-                    # attempt never granted an identity. Explicit invite expiry
-                    # or refusal cannot be recovered with this proof either.
+                if exc.code in {
+                    "tls_pin_mismatch",
+                    "invite_expired",
+                    "invite_used",
+                    "permission_denied",
+                }:
+                    # These are definite refusals, unlike a lost reply or a
+                    # failed credential write after the coordinator committed.
+                    # Keep those uncertain proofs for same-invite recovery.
                     attempt_path.unlink(missing_ok=True)
                 raise
             if (
@@ -1193,10 +1330,12 @@ class FleetClient:
             raise WorkbenchError("project_unmapped", "请先为该项目选择本设备工作目录。")
         return {**context["project"], "path": path}
 
-    def claim(self, project_id, wait=30):
+    def claim(self, project_id, wait=30, admission=None):
         if not isinstance(wait, int) or isinstance(wait, bool) or not 0 <= wait <= 45:
             raise WorkbenchError("invalid_field", "领取等待时间需要在 0 到 45 秒之间。")
         with self.claim_lock:
+            if admission is not None and not admission.is_set():
+                return None
             if self.store.update_maintenance()["paused"]:
                 return None
             if self.store.update_maintenance()["pending_claims"]:
@@ -1219,7 +1358,9 @@ class FleetClient:
                 self.store.end_update_claim(marker)
                 raise
             stop = getattr(self.claim_cancellation, "event", None)
-            if stop is not None and stop.is_set():
+            if (stop is not None and stop.is_set()) or (
+                admission is not None and not admission.is_set()
+            ):
                 self.store.end_update_claim(marker)
                 return None
             try:

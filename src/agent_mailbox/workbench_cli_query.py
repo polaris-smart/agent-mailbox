@@ -16,10 +16,11 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import time
 from pathlib import Path
+
+from .workbench_runtime import discovery_directories, executable
 
 
 class ProjectPathError(RuntimeError):
@@ -42,18 +43,28 @@ PROVIDERS: dict[str, dict[str, object]] = {
 
 
 def resolve_binary(provider: str) -> str | None:
-    """env 覆盖优先，其次 PATH。找不到返回 None（调用方降级 ✓ 不抛 ✗）。"""
+    """Explicit override first, then the same discovery used by the desktop app."""
     spec = PROVIDERS.get(provider)
     if spec is None:
         return None
     override = os.environ.get(str(spec["env"]), "").strip()
     if override:
-        return override if Path(override).exists() else None
+        path = Path(override).expanduser()
+        return str(path) if path.is_file() and os.access(path, os.X_OK) else None
     for name in spec["names"]:  # type: ignore[union-attr]
-        found = shutil.which(name)
+        found = executable(name)
         if found:
             return found
     return None
+
+
+def query_env(binary: str) -> dict[str, str]:
+    """Resolve interpreter shebangs under the GUI's reduced PATH as well."""
+    env = clean_git_env()
+    paths = [str(path) for path in discovery_directories()]
+    paths.append(str(Path(binary).absolute().parent))
+    env["PATH"] = os.pathsep.join(dict.fromkeys(paths))
+    return env
 
 
 def tool_version(binary: str, provider: str, timeout: float = 5.0) -> str | None:
@@ -69,7 +80,7 @@ def tool_version(binary: str, provider: str, timeout: float = 5.0) -> str | None
             errors="replace",
             timeout=timeout,
             check=False,
-            env=clean_git_env(),
+            env=query_env(binary),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -185,7 +196,7 @@ def run(
             text=True,
             timeout=min(timeout, DEFAULT_TIMEOUT),
             check=False,
-            env=clean_git_env(),
+            env=query_env(binary),
         )
     except subprocess.TimeoutExpired:
         return {
@@ -203,6 +214,16 @@ def run(
         }
     provenance["duration_ms"] = int((time.monotonic() - started) * 1000)
     raw = (done.stdout or "")[:MAX_OUTPUT_BYTES]
+    if done.returncode != 0:
+        return {
+            "ok": False,
+            "data": None,
+            "provenance": provenance,
+            "error": {
+                "code": "CLI_FAILED",
+                "message": f"{provider} 退出码 {done.returncode}：{(done.stderr or raw)[:160]}",
+            },
+        }
     if not raw.strip():
         return {
             "ok": False,
@@ -282,7 +303,7 @@ def run_text(
             text=True,
             timeout=min(timeout, DEFAULT_TIMEOUT),
             check=False,
-            env=clean_git_env(),
+            env=query_env(binary),
         )
     except subprocess.TimeoutExpired:
         return {

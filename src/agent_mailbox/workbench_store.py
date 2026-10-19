@@ -14,6 +14,7 @@ import re
 import secrets
 import socket
 import sqlite3
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -34,8 +35,9 @@ class WorkbenchError(Exception):
 
 ACTIVE = frozenset({"starting", "running", "waiting_approval"})
 FINISH = frozenset({"review", "failed", "cancelled", "interrupted"})
+UPDATE_FREEZE_CLAIM = "__agent_mailbox_update_frozen__"
 MAX_TEXT = 1024 * 1024
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 18
 EMPLOYEE_KINDS = frozenset(
     {
         "codex",
@@ -74,6 +76,7 @@ REQUIRED_COLUMN_DDL: dict[tuple[str, str], str] = {
     ("messages", "source_session_id"): "TEXT",
     ("tasks", "model"): "TEXT",
     ("tasks", "tool_token"): "TEXT",
+    ("tasks", "review_recipient_id"): "TEXT REFERENCES employees(id)",
     ("employees", "lifecycle"): "TEXT NOT NULL DEFAULT 'active'",
     ("employees", "lifecycle_reason"): "TEXT NOT NULL DEFAULT ''",
     # 能力相关列保守给空串：宁可不声称可执行，也不误判成"可执行"
@@ -86,7 +89,7 @@ REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
     "devices": ("last_seen",),
     "memberships": ("secret_token", "role"),
     "messages": ("source_session_id",),
-    "tasks": ("model", "tool_token"),
+    "tasks": ("model", "tool_token", "review_recipient_id"),
     "employees": ("lifecycle", "lifecycle_reason", "connection_type", "entrypoint"),
     "permissions": ("expires_at",),
 }
@@ -264,9 +267,17 @@ CREATE TABLE IF NOT EXISTS tasks (
     result TEXT NOT NULL DEFAULT '', error TEXT, model TEXT,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
     request_message_id TEXT REFERENCES messages(id), source_task_id TEXT REFERENCES tasks(id),
-    tool_token TEXT NOT NULL, execution_mode TEXT NOT NULL DEFAULT 'managed'
+    tool_token TEXT NOT NULL, execution_mode TEXT NOT NULL DEFAULT 'managed',
+    review_recipient_id TEXT REFERENCES employees(id)
 );
 CREATE INDEX IF NOT EXISTS tasks_queue ON tasks(node_id, status, created_at);
+CREATE TABLE IF NOT EXISTS task_requests (
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    request_id TEXT NOT NULL, request_digest TEXT NOT NULL,
+    task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(project_id, request_id)
+);
 CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id),
     type TEXT NOT NULL, message TEXT NOT NULL, payload TEXT,
@@ -341,7 +352,13 @@ def _auxiliary_schema() -> tuple[str, ...]:
     **在读路径才炸**（自查发现：缺 `task_links` 时 `task_detail` 报"结构或语句不匹配"）。
     FTS 索引表**不在其中**：它是派生物（可重建、可关闭），缺了不算结构损坏。
     """
-    from . import workbench_onboarding, workbench_resources, workbench_views, workbench_workspaces
+    from . import (
+        workbench_human_spaces,
+        workbench_onboarding,
+        workbench_resources,
+        workbench_views,
+        workbench_workspaces,
+    )
 
     statements: list[str] = []
     for module, name in (
@@ -349,6 +366,7 @@ def _auxiliary_schema() -> tuple[str, ...]:
         (workbench_resources, "RESOURCE_SCHEMA"),
         (workbench_views, "_DDL"),
         (workbench_workspaces, "WORKSPACE_SCHEMA"),
+        (workbench_human_spaces, "HUMAN_SCHEMA"),
     ):
         statements.extend(getattr(module, name, ()))
     return tuple(statements)
@@ -407,6 +425,10 @@ def _assert_no_orphans_for_version(db: sqlite3.Connection, version: int) -> None
 
 class WorkbenchStore:
     def __init__(self, root: Path):
+        self.mail_wake_event = threading.Event()
+        self.mail_wake_ready_lock = threading.Lock()
+        self.mail_wake_ready_threads: set[str] = set()
+        self.mail_wake_waiters: dict[str, list[dict]] = {}
         self.root = Path(root).expanduser().resolve()
         self.directory = self.root / "workbench"
         try:
@@ -444,6 +466,39 @@ class WorkbenchStore:
             version = db.execute("PRAGMA user_version").fetchone()[0]
             if version > SCHEMA_VERSION:
                 raise WorkbenchError("incompatible_version", "数据来自更新的版本，请升级程序。")
+            if version == SCHEMA_VERSION:
+                # A current-version Human ACL damaged after migration must
+                # fail closed. Reassigning orphan projects to a fresh local
+                # owner would expose private data to the wrong Human.
+                human_tables = {
+                    "humans",
+                    "spaces",
+                    "space_memberships",
+                    "project_spaces",
+                    "project_human_grants",
+                    "project_human_reviewers",
+                    "human_bootstrap",
+                    "human_sessions",
+                    "human_enrollments",
+                }
+                present = {
+                    row[0]
+                    for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                }
+                if not human_tables <= present:
+                    raise WorkbenchError(
+                        "HUMAN_SCOPE_CORRUPT", "Human 权限表缺失；请从已验证备份恢复。"
+                    )
+                if (
+                    db.execute("SELECT 1 FROM human_bootstrap WHERE singleton=1").fetchone() is None
+                    or db.execute(
+                        "SELECT 1 FROM projects p LEFT JOIN project_spaces ps "
+                        "ON ps.project_id=p.id WHERE ps.project_id IS NULL LIMIT 1"
+                    ).fetchone()
+                ):
+                    raise WorkbenchError(
+                        "HUMAN_SCOPE_CORRUPT", "Human 项目归属缺失；请先核实，不自动改归属。"
+                    )
             if version < SCHEMA_VERSION:
                 # Rebuilding the legacy NOT NULL employee origin must not
                 # rewrite child foreign keys or discard project credentials.
@@ -456,6 +511,41 @@ class WorkbenchStore:
                         # 坏库被拒时既不写 schema ✓ 也不留**冗余备份**（评审中危：失败迁移的备份同名堆积 ✗）
                         # v<=10 直接返回 ⇒ legacy「失败⇒用备份恢复」的成文保证不受影响 ✓
                         _assert_no_orphans_for_version(db, version)
+                        # Public pre-Human databases have none of these tables;
+                        # assign their legacy projects to the local owner once.
+                        # A database that already has Human ACLs must never
+                        # turn a missing mapping into fresh owner access.
+                        human_acl_tables = {
+                            "humans",
+                            "spaces",
+                            "space_memberships",
+                            "project_spaces",
+                            "project_human_grants",
+                            "human_bootstrap",
+                        }
+                        present_human_acl = {
+                            row[0]
+                            for row in db.execute(
+                                "SELECT name FROM sqlite_master WHERE type='table' "
+                                "AND name IN ('humans','spaces','space_memberships',"
+                                "'project_spaces','project_human_grants','human_bootstrap')"
+                            )
+                        }
+                        if present_human_acl and (
+                            present_human_acl != human_acl_tables
+                            or db.execute(
+                                "SELECT 1 FROM human_bootstrap WHERE singleton=1"
+                            ).fetchone()
+                            is None
+                            or db.execute(
+                                "SELECT 1 FROM projects p LEFT JOIN project_spaces ps "
+                                "ON ps.project_id=p.id WHERE ps.project_id IS NULL LIMIT 1"
+                            ).fetchone()
+                        ):
+                            raise WorkbenchError(
+                                "HUMAN_SCOPE_CORRUPT",
+                                "旧版 Human 权限不完整；不会自动重新分配项目。",
+                            )
                         destination = (
                             self.directory
                             / f"state-v{version}-before-v{SCHEMA_VERSION}-{uuid4().hex}.sqlite"
@@ -479,10 +569,11 @@ class WorkbenchStore:
 
                     for statement in RESOURCE_SCHEMA:
                         db.execute(statement)
+                    from .workbench_human_spaces import HUMAN_SCHEMA, backfill_legacy
                     from .workbench_onboarding import ONBOARDING_SCHEMA
                     from .workbench_workspaces import WORKSPACE_SCHEMA
 
-                    for statement in (*ONBOARDING_SCHEMA, *WORKSPACE_SCHEMA):
+                    for statement in (*ONBOARDING_SCHEMA, *WORKSPACE_SCHEMA, *HUMAN_SCHEMA):
                         db.execute(statement)
                     columns = {row[1] for row in db.execute("PRAGMA table_info(devices)")}
                     if "last_seen" not in columns:
@@ -516,6 +607,7 @@ class WorkbenchStore:
                         ("source_task_id", "TEXT REFERENCES tasks(id)"),
                         ("tool_token", "TEXT"),
                         ("execution_mode", "TEXT NOT NULL DEFAULT 'managed'"),
+                        ("review_recipient_id", "TEXT REFERENCES employees(id)"),
                     ):
                         if column not in columns:
                             db.execute(f"ALTER TABLE tasks ADD COLUMN {column} {definition}")
@@ -572,6 +664,7 @@ class WorkbenchStore:
                             "UPDATE permissions SET expires_at=? WHERE task_id=? AND request_id=?",
                             (deadline.isoformat(), row["task_id"], row["request_id"]),
                         )
+                    backfill_legacy(db)
                     if db.execute("PRAGMA foreign_key_check").fetchone():
                         raise WorkbenchError(
                             "migration_failed",
@@ -593,6 +686,9 @@ class WorkbenchStore:
                     db.execute("BEGIN IMMEDIATE")
                     self._ensure_schema(db)  # 缺表：逐条 CREATE TABLE IF NOT EXISTS
                     self._ensure_required_columns(db)  # 缺列：ALTER TABLE ADD COLUMN
+                    from .workbench_human_spaces import backfill_legacy
+
+                    backfill_legacy(db)
                     db.commit()
                 except sqlite3.Error as exc:
                     db.rollback()
@@ -676,6 +772,13 @@ class WorkbenchStore:
                 }
                 if not (SCHEMA_TABLES | _auxiliary_tables()) <= present_tables:
                     return False  # 缺任意一张（核心或辅助）表 ⇒ 交给幂等建表
+                if db.execute("SELECT 1 FROM human_bootstrap WHERE singleton=1").fetchone() is None:
+                    return False
+                if db.execute(
+                    "SELECT 1 FROM projects p LEFT JOIN project_spaces ps "
+                    "ON ps.project_id=p.id WHERE ps.project_id IS NULL LIMIT 1"
+                ).fetchone():
+                    return False
                 for table, columns in REQUIRED_COLUMNS.items():
                     present = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
                     if not present or not set(columns) <= present:
@@ -760,7 +863,9 @@ class WorkbenchStore:
                 db.close()
 
     @contextmanager
-    def _transaction(self, readonly: bool = False) -> Iterator[sqlite3.Connection]:
+    def _transaction(
+        self, readonly: bool = False, *, allow_paused: bool = False, allow_frozen: bool = False
+    ) -> Iterator[sqlite3.Connection]:
         """``readonly=True`` ⇒ 只读连接 + 延迟 BEGIN（不拿写锁）。
 
         只读视图（墙/账本/简报/检索/证明查看…）必须走这条：拿写锁会让纯查询被写者挡住，
@@ -769,11 +874,60 @@ class WorkbenchStore:
         with self._connection(readonly=readonly) as db:
             db.execute("BEGIN" if readonly else "BEGIN IMMEDIATE")
             try:
+                # Check after SQLite's write lock so another Store process
+                # cannot slip a write between preparation and its backup.
+                if not readonly:
+                    if (
+                        not allow_frozen
+                        and db.execute(
+                            "SELECT 1 FROM update_claims WHERE id=?", (UPDATE_FREEZE_CLAIM,)
+                        ).fetchone()
+                    ):
+                        raise WorkbenchError(
+                            "UPDATE_PAUSED", "更新备份已冻结；恢复接单后重试写入。"
+                        )
+                    if (
+                        not allow_paused
+                        and db.execute("SELECT paused FROM update_settings WHERE id=1").fetchone()[
+                            0
+                        ]
+                    ):
+                        raise WorkbenchError(
+                            "UPDATE_PAUSED", "工作台正在准备更新；恢复接单后重试写入。"
+                        )
                 yield db
                 db.commit()
+                if not readonly and db.total_changes:
+                    # Coalesce in-process commits into one worker signal. Durable
+                    # intents also survive restart and other-process writers.
+                    self.mail_wake_event.set()
             except BaseException:
                 db.rollback()
                 raise
+
+    def _require_managed_drain(self, db: sqlite3.Connection, task: sqlite3.Row) -> None:
+        """A paused update may drain an already claimed managed run only."""
+        if (
+            db.execute("SELECT paused FROM update_settings WHERE id=1").fetchone()[0]
+            and task["execution_mode"] != "managed"
+        ):
+            raise WorkbenchError("UPDATE_PAUSED", "更新准备期间暂停邮箱任务写入。")
+
+    @contextmanager
+    def _wake_serialized(self) -> Iterator[None]:
+        """Order task withdrawal against host delivery: wake lock, then SQLite."""
+        from .workbench_wake import WakeLockBusy, state_lock
+
+        try:
+            with state_lock(self.root):
+                yield
+        except WakeLockBusy as exc:
+            raise WorkbenchError("wake_busy", "邮件投递正在处理，请稍后重试取消操作。") from exc
+
+    @contextmanager
+    def _wake_transaction(self) -> Iterator[sqlite3.Connection]:
+        with self._wake_serialized(), self._transaction() as db:
+            yield db
 
     def ensure_project(self, project_id: str) -> None:
         """读路径也要校验项目存在：打错的 --project 不许被静默当成"全局/空"。"""
@@ -877,7 +1031,7 @@ class WorkbenchStore:
         }
         return self._scrub(db, employee)
 
-    def snapshot(self) -> dict:
+    def snapshot(self, *, owner_read_receipts: bool = False) -> dict:
         with self._transaction(readonly=True) as db:  # 事务已由 _transaction 开启
             result = {}
             for table in (
@@ -898,6 +1052,13 @@ class WorkbenchStore:
                     else self._entity(row)
                     for row in rows
                 ]
+            if owner_read_receipts:
+                # Only the owner-authenticated bootstrap opts in. Generic snapshots
+                # and employee project context must not inherit owner visibility.
+                from .workbench_message_reads import receipt_in
+
+                for message in result["messages"]:
+                    message["read_receipt"] = receipt_in(db, message, message["recipient_id"])
             return self._scrub(db, result)
 
     def update_maintenance(self) -> dict:
@@ -906,19 +1067,37 @@ class WorkbenchStore:
             active = [
                 dict(row)
                 for row in db.execute(
-                    "SELECT id,title,status FROM tasks WHERE status IN ('starting','running','waiting_approval') ORDER BY created_at"
+                    "SELECT id,title,status,execution_mode FROM tasks "
+                    "WHERE status IN ('starting','running','waiting_approval') ORDER BY created_at"
                 )
             ]
             queued = db.execute("SELECT count(*) FROM tasks WHERE status='queued'").fetchone()[0]
             pending = [
                 dict(row)
-                for row in db.execute("SELECT id,created_at FROM update_claims ORDER BY created_at")
+                for row in db.execute(
+                    "SELECT id,created_at FROM update_claims WHERE id!=? ORDER BY created_at",
+                    (UPDATE_FREEZE_CLAIM,),
+                )
             ]
             return self._scrub(
                 db,
                 {
                     "paused": paused,
-                    "active_tasks": active,
+                    "frozen": bool(
+                        db.execute(
+                            "SELECT 1 FROM update_claims WHERE id=?", (UPDATE_FREEZE_CLAIM,)
+                        ).fetchone()
+                    ),
+                    "active_tasks": [
+                        {key: row[key] for key in ("id", "title", "status")}
+                        for row in active
+                        if row["execution_mode"] != "mailbox"
+                    ],
+                    "durable_mail_tasks": [
+                        {key: row[key] for key in ("id", "title", "status")}
+                        for row in active
+                        if row["execution_mode"] == "mailbox"
+                    ],
                     "queued_count": queued,
                     "pending_claims": pending,
                 },
@@ -926,7 +1105,9 @@ class WorkbenchStore:
 
     def begin_update_claim(self, claim_id: str) -> bool:
         _text(claim_id, "领取编号", 128)
-        with self._transaction() as db:
+        if claim_id == UPDATE_FREEZE_CLAIM:
+            raise WorkbenchError("invalid_field", "这是更新备份保留的领取编号。")
+        with self._transaction(allow_paused=True, allow_frozen=True) as db:
             if db.execute("SELECT paused FROM update_settings WHERE id=1").fetchone()[0]:
                 return False
             db.execute("INSERT INTO update_claims(id,created_at) VALUES(?,?)", (claim_id, _now()))
@@ -934,14 +1115,43 @@ class WorkbenchStore:
 
     def end_update_claim(self, claim_id: str) -> None:
         _text(claim_id, "领取编号", 128)
-        with self._transaction() as db:
+        if claim_id == UPDATE_FREEZE_CLAIM:
+            raise WorkbenchError("invalid_field", "这是更新备份保留的领取编号。")
+        with self._transaction(allow_paused=True, allow_frozen=True) as db:
+            if db.execute(
+                "SELECT 1 FROM update_claims WHERE id=?", (UPDATE_FREEZE_CLAIM,)
+            ).fetchone():
+                return
             db.execute("DELETE FROM update_claims WHERE id=?", (claim_id,))
 
     def pause_updates(self, paused: bool) -> dict:
         if not isinstance(paused, bool):
             raise WorkbenchError("invalid_field", "更新暂停状态需要为布尔值。")
-        with self._transaction() as db:
-            db.execute("UPDATE update_settings SET paused=? WHERE id=1", (int(paused),))
+        from contextlib import nullcontext
+
+        from .workbench_wake import WakeLockBusy, state_lock
+
+        wake = self.root / "wake"
+        if paused and wake.is_symlink():
+            raise WorkbenchError("UPDATE_UNSAFE_FILE", "唤醒目录是符号链接，请先检查数据目录。")
+        try:
+            # Same order as run_once and private_backup: wake lock, then DB.
+            # An in-flight host receipt finishes before update preparation;
+            # later rounds observe the pause while holding this lock.
+            with (
+                state_lock(self.root) if paused else nullcontext(),
+                self._transaction(allow_paused=True, allow_frozen=True) as db,
+            ):
+                if not paused:
+                    db.execute("DELETE FROM update_claims WHERE id=?", (UPDATE_FREEZE_CLAIM,))
+                db.execute(
+                    "UPDATE update_settings SET paused=? WHERE id=1 AND paused!=?",
+                    (int(paused), int(paused)),
+                )
+        except WakeLockBusy as exc:
+            raise WorkbenchError(
+                "UPDATE_WAKE_BUSY", "通知投递尚未结束，无法安全暂停；请稍后重试。"
+            ) from exc
         return self.update_maintenance()
 
     def update_channel(self, channel=None) -> str:
@@ -967,6 +1177,9 @@ class WorkbenchStore:
             db.execute(
                 "INSERT INTO projects VALUES(?,?,?,?)", (project_id, name, str(location), _now())
             )
+            from .workbench_human_spaces import assign_owner_project
+
+            assign_owner_project(db, project_id)
             return self._entity(self._required(db, "projects", project_id))
 
     def create_employee(
@@ -1075,7 +1288,12 @@ class WorkbenchStore:
             return self._add_project_member(db, project_id, employee_id)
 
     def remove_project_member(self, project_id: str, employee_id: str) -> dict:
-        with self._transaction() as db:
+        from .workbench_mail_notifications import (
+            host_may_know_assignment,
+            retire_undelivered_assignment,
+        )
+
+        with self._wake_transaction() as db:
             self._required(db, "projects", project_id)
             employee = self._required(db, "employees", employee_id)
             if db.execute(
@@ -1089,16 +1307,29 @@ class WorkbenchStore:
             if not self._membership(db, employee_id, project_id):
                 return self._employee(db, employee)
             for task in db.execute(
-                "SELECT id FROM tasks WHERE project_id=? AND assignee_id=? AND (status='queued' OR (execution_mode='mailbox' AND status='running'))",
+                "SELECT * FROM tasks WHERE project_id=? AND assignee_id=? AND (status='queued' OR (execution_mode='mailbox' AND status='running'))",
                 (project_id, employee_id),
             ).fetchall():
                 db.execute(
                     "UPDATE tasks SET status='cancelled',cancel_requested=1,updated_at=? WHERE id=?",
-                    (_now(), task[0]),
+                    (_now(), task["id"]),
                 )
+                retire_undelivered_assignment(db, self.root, task)
                 self._event(
-                    db, task[0], "member_removed", "员工已移出项目，邮件任务和排队任务已取消。"
+                    db, task["id"], "member_removed", "员工已移出项目，邮件任务和排队任务已取消。"
                 )
+                if host_may_know_assignment(db, self.root, task):
+                    warning = "项目权限已撤销，但宿主侧外部工作是否停止未确认；请 Human 核实。"
+                    self._event(db, task["id"], "external_stop_unconfirmed", warning)
+                    self._governance(
+                        db,
+                        "mail_task_stop_unconfirmed",
+                        project_id=project_id,
+                        task_id=task["id"],
+                        employee_id=employee_id,
+                        reason=warning,
+                        payload={"cause": "member_removed"},
+                    )
             db.execute(
                 "DELETE FROM memberships WHERE project_id=? AND employee_id=?",
                 (project_id, employee_id),
@@ -1179,7 +1410,13 @@ class WorkbenchStore:
     def set_employee_lifecycle(self, employee_id: str, status: str, reason: str = "") -> dict:
         _choice(status, LIFECYCLES, "请选择正常、暂停或退役。")
         reason = _text(reason, "变更原因", 4096, empty=status != "retired").strip()
-        with self._transaction() as db:
+        from .workbench_mail_notifications import (
+            enqueue_cancel_notice,
+            host_may_know_assignment,
+            retire_undelivered_assignment,
+        )
+
+        with self._wake_transaction() as db:
             employee = self._required(db, "employees", employee_id)
             reason = self._scrub(db, reason)
             previous = employee["lifecycle"]
@@ -1210,6 +1447,31 @@ class WorkbenchStore:
                             task["id"],
                         ),
                     )
+                    retire_undelivered_assignment(db, self.root, task)
+                    if status == "paused":
+                        notice_id = enqueue_cancel_notice(db, self.root, task)
+                        if notice_id is not None:
+                            self._governance(
+                                db,
+                                "mail_task_cancel_notice",
+                                project_id=task["project_id"],
+                                task_id=task["id"],
+                                employee_id=employee_id,
+                                reason="员工暂停；撤销通知已排队，恢复在岗前不会投递，宿主停工尚未确认。",
+                                payload={"message_id": notice_id},
+                            )
+                    elif host_may_know_assignment(db, self.root, task):
+                        warning = "员工已退役，但宿主侧外部工作是否停止未确认；请 Human 核实。"
+                        self._event(db, task["id"], "external_stop_unconfirmed", warning)
+                        self._governance(
+                            db,
+                            "mail_task_stop_unconfirmed",
+                            project_id=task["project_id"],
+                            task_id=task["id"],
+                            employee_id=employee_id,
+                            reason=warning,
+                            payload={"cause": "employee_retired"},
+                        )
                     self._expire_permissions(db, task["id"])
                     self._event(
                         db,
@@ -1233,7 +1495,11 @@ class WorkbenchStore:
             }
 
     def update_employee(
-        self, employee_id: str, status: str, detail: str = "", auth_status: str | None = None
+        self,
+        employee_id: str,
+        status: str,
+        detail: str = "",
+        auth_status: str | None = None,
     ) -> dict:
         _choice(status, EMPLOYEE_STATUSES, "请选择有效的员工连接状态。")
         detail = _text(detail, "状态说明", 4096, empty=True)
@@ -1259,6 +1525,8 @@ class WorkbenchStore:
         permission_mode: str = "read-only",
         model: str | None = None,
         actor: str = "human",
+        review_recipient_id: str | None = None,
+        request_id: str | None = None,
     ) -> dict:
         if model is not None:
             model = _text(model, "模型", 200).strip()
@@ -1270,8 +1538,68 @@ class WorkbenchStore:
             "请选择只读或允许修改项目目录的执行权限。",
         )
         with self._transaction() as db:
-            return self._create_task(
-                db, project_id, title, prompt, assignee_id, permission_mode, model, actor
+            previous, request_key = self._task_request(
+                db,
+                project_id,
+                request_id,
+                {
+                    "kind": "managed",
+                    "title": title,
+                    "prompt": prompt,
+                    "assignee_id": assignee_id,
+                    "permission_mode": permission_mode,
+                    "model": model,
+                    "actor": actor,
+                    "review_recipient_id": review_recipient_id,
+                },
+            )
+            if previous is not None:
+                return self._entity(previous)
+            task = self._create_task(
+                db,
+                project_id,
+                title,
+                prompt,
+                assignee_id,
+                permission_mode,
+                model,
+                actor,
+                review_recipient_id=review_recipient_id,
+            )
+            self._remember_task_request(db, project_id, request_key, task["id"])
+            return task
+
+    def _task_request(self, db, project_id, request_id, payload):
+        """Resolve a retried task creation before dispatch limits or side effects."""
+        if request_id is None:
+            return None, None
+        request_id = _text(request_id, "任务请求编号", 200).strip()
+        digest = hashlib.sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        previous = db.execute(
+            "SELECT task_id,request_digest FROM task_requests WHERE project_id=? AND request_id=?",
+            (project_id, request_id),
+        ).fetchone()
+        if previous is not None:
+            if not hmac.compare_digest(previous["request_digest"], digest):
+                raise WorkbenchError("TASK_REQUEST_CONFLICT", "同一个请求编号不能用于不同的任务。")
+            return self._required(db, "tasks", previous["task_id"]), None
+        return None, (request_id, digest)
+
+    @staticmethod
+    def _remember_task_request(db, project_id, request_key, task_id):
+        if request_key is not None:
+            request_id, digest = request_key
+            db.execute(
+                "INSERT INTO task_requests(project_id,request_id,request_digest,task_id,created_at) "
+                "VALUES(?,?,?,?,?)",
+                (project_id, request_id, digest, task_id, _now()),
             )
 
     def _dispatch_guard(self, db, project_id, assignee_id, title, prompt, actor) -> None:
@@ -1346,6 +1674,7 @@ class WorkbenchStore:
         actor="human",
         request_message_id=None,
         source_task_id=None,
+        review_recipient_id=None,
     ):
         self._required(db, "projects", project_id)
         self._dispatch_guard(db, project_id, assignee_id, title, prompt, actor)
@@ -1356,6 +1685,10 @@ class WorkbenchStore:
             )
         if not self._membership(db, assignee_id, project_id):
             raise WorkbenchError("permission_denied", "这位员工未加入该项目。")
+        if review_recipient_id is not None:
+            reviewer = self._message_member(db, project_id, review_recipient_id)
+            if reviewer["id"] == assignee_id or reviewer["node_id"] != self.local_node_id(db):
+                raise WorkbenchError("invalid_field", "技术复核者须为另一名本机在岗项目成员。")
         if not workbench_contract.execution_supported(
             employee["kind"], employee["connection_type"]
         ):
@@ -1371,8 +1704,8 @@ class WorkbenchStore:
         task_id, timestamp = _id("task"), _now()
         db.execute(
             "INSERT INTO tasks(id,project_id,title,prompt,assignee_id,node_id,"
-            "permission_mode,run_id,session_id,created_at,updated_at,model,request_message_id,source_task_id,tool_token) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "permission_mode,run_id,session_id,created_at,updated_at,model,request_message_id,source_task_id,tool_token,review_recipient_id) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 task_id,
                 project_id,
@@ -1389,6 +1722,7 @@ class WorkbenchStore:
                 request_message_id,
                 source_task_id,
                 secrets.token_urlsafe(32),
+                review_recipient_id,
             ),
         )
         self._event(db, task_id, "queued", "任务已进入队列。")
@@ -1399,7 +1733,10 @@ class WorkbenchStore:
             project_id=project_id,
             task_id=task_id,
             actor=actor,
-            payload={"permission_mode": permission_mode},
+            payload={
+                "permission_mode": permission_mode,
+                "review_recipient_id": review_recipient_id,
+            },
         )
         return self._entity(self._required(db, "tasks", task_id))
 
@@ -1448,7 +1785,7 @@ class WorkbenchStore:
                 )
             ]
 
-    # 注意：本方法按设计会写「已读标记」（record_views_in），因此**不是**只读路径
+    # 防积压查看水位会写入；逐封已读回执只由 message_open 写入。
     def employee_messages(
         self, project_id: str, employee_id: str, folder: str = "inbox", limit: int = 100
     ) -> dict:
@@ -1479,6 +1816,10 @@ class WorkbenchStore:
                 "has_older": len(rows) > limit,
                 "viewing_acknowledges": False,
             }
+            from .workbench_message_reads import receipt_in
+
+            for message in result["messages"]:
+                message["read_receipt"] = receipt_in(db, message, employee_id)
             # 水位线（见 workbench_views）：只记"看过了"，**不改任何消息/任务状态**，
             # 也只在收件箱生效；kill-switch 关闭积压折叠时它不产生任何行为影响。
             if folder == "inbox":
@@ -1765,6 +2106,9 @@ class WorkbenchStore:
                     db, project_id, sender_id, recipient_id, title, timestamp
                 )
                 if folded is not None:
+                    from .workbench_mail_notifications import enqueue
+
+                    enqueue(db, folded["id"], recipient_id, project_id)
                     return folded
             message_id = _id("message")
             db.execute(
@@ -1786,6 +2130,9 @@ class WorkbenchStore:
                     source_session_id,
                 ),
             )
+            from .workbench_mail_notifications import enqueue
+
+            enqueue(db, message_id, recipient_id, project_id)
             if request_work:
                 task = self._create_task(
                     db,
@@ -1870,7 +2217,7 @@ class WorkbenchStore:
             or not all(isinstance(value, str) and 0 < len(value) <= 128 for value in project_ids)
         ):
             raise WorkbenchError("invalid_field", "请提供有效的授权项目列表。")
-        with self._transaction() as db:
+        with self._transaction(allow_paused=True, allow_frozen=True) as db:
             self._required(db, "devices", node_id)
             if db.execute("SELECT paused FROM update_settings WHERE id=1").fetchone()[0]:
                 return None
@@ -1938,8 +2285,13 @@ class WorkbenchStore:
             "running": {"waiting_approval"},
             "waiting_approval": {"running"},
         }
-        with self._transaction() as db:
+        with self._transaction(allow_paused=True) as db:
             task = self._required(db, "tasks", task_id)
+            if (
+                task["execution_mode"] == "mailbox"
+                and db.execute("SELECT paused FROM update_settings WHERE id=1").fetchone()[0]
+            ):
+                raise WorkbenchError("UPDATE_PAUSED", "更新准备期间不能改变邮箱任务状态。")
             if status == task["status"] and status in ACTIVE:
                 return self._entity(task)
             if status not in transitions.get(task["status"], set()):
@@ -1987,8 +2339,12 @@ class WorkbenchStore:
 
     def add_event(self, task_id: str, type: str, message: str, payload: Any = None) -> dict:
         _json(payload)
-        with self._transaction() as db:
-            self._required(db, "tasks", task_id)
+        with self._transaction(allow_paused=True) as db:
+            task = self._required(db, "tasks", task_id)
+            if db.execute("SELECT paused FROM update_settings WHERE id=1").fetchone()[0] and (
+                task["execution_mode"] != "managed" or task["status"] not in ACTIVE
+            ):
+                raise WorkbenchError("UPDATE_PAUSED", "更新准备期间不能为已结束任务追加事件。")
             return self._event(db, task_id, type, message, payload)
 
     @staticmethod
@@ -2001,6 +2357,11 @@ class WorkbenchStore:
 
     def _finish_task(self, db, task_id, status, result, error):
         task = self._required(db, "tasks", task_id)
+        if (
+            task["execution_mode"] == "mailbox"
+            and db.execute("SELECT paused FROM update_settings WHERE id=1").fetchone()[0]
+        ):
+            raise WorkbenchError("UPDATE_PAUSED", "更新准备期间不能结束邮箱任务。")
         if task["status"] not in ACTIVE:
             raise WorkbenchError("invalid_state", "这次执行已结束或尚未开始。")
         if task["cancel_requested"] and status in {"review", "failed"}:
@@ -2024,6 +2385,32 @@ class WorkbenchStore:
                 "UPDATE employees SET execution_verified=1 WHERE id=?", (task["assignee_id"],)
             )
         result, error = self._scrub(db, result), self._scrub(db, error)
+        notification_error = None
+        if (
+            status == "review"
+            and task["execution_mode"] == "managed"
+            and task["review_recipient_id"]
+        ):
+            from .workbench_mail_sessions import _bound_store
+
+            db.execute("SAVEPOINT managed_review_notification")
+            try:
+                _bound_store(self, db).send_message(
+                    task["project_id"],
+                    "交付 / Delivery: " + task["title"][:70],
+                    f"Task: {task_id}\n技术复核待处理；Human 仍需最终验收。\n"
+                    "请用 project_delivery 查看固定交付，或在工作台任务详情中查看；此通知不复制执行输出。",
+                    recipient_id=task["review_recipient_id"],
+                    sender_id=task["assignee_id"],
+                    reply_to=task["request_message_id"],
+                    source_task_id=task_id,
+                    request_id=f"managed-delivery:{task_id}:{task['run_id']}",
+                )
+            except WorkbenchError as exc:
+                db.execute("ROLLBACK TO managed_review_notification")
+                notification_error = exc.code
+            finally:
+                db.execute("RELEASE managed_review_notification")
         db.execute(
             "UPDATE tasks SET status=?,result=?,error=?,updated_at=? WHERE id=?",
             (status, result, None if error is None else _json(error), _now(), task_id),
@@ -2036,13 +2423,45 @@ class WorkbenchStore:
             "执行已结束，等待验收。" if status == "review" else "执行已结束。",
             {"error": error},
         )
+        if notification_error is not None:
+            self._event(
+                db,
+                task_id,
+                "review_notification_blocked",
+                "交付已保存，但技术复核通知未送出；请 Human 检查复核者权限。",
+                {
+                    "review_recipient_id": task["review_recipient_id"],
+                    "error_code": notification_error,
+                },
+            )
         return self._entity(self._required(db, "tasks", task_id))
 
-    def finish_task(self, task_id: str, status: str, result: str = "", error: Any = None) -> dict:
+    def finish_task(
+        self,
+        task_id: str,
+        status: str,
+        result: str = "",
+        error: Any = None,
+        *,
+        employee_status: str | None = None,
+        employee_detail: str = "",
+    ) -> dict:
         _choice(status, FINISH, "请选择待验收、失败、取消或中断状态。")
         result = _text(result, "任务结果", empty=True)
-        with self._transaction() as db:
-            return self._finish_task(db, task_id, status, result, error)
+        if employee_status is not None:
+            _choice(employee_status, EMPLOYEE_STATUSES, "请选择有效的员工连接状态。")
+            employee_detail = _text(employee_detail, "状态说明", 4096, empty=True)
+        with self._transaction(allow_paused=True) as db:
+            task = self._required(db, "tasks", task_id)
+            if employee_status is not None and task["execution_mode"] != "managed":
+                raise WorkbenchError("invalid_state", "只有受管任务可在结束时更新员工状态。")
+            finished = self._finish_task(db, task_id, status, result, error)
+            if employee_status is not None:
+                db.execute(
+                    "UPDATE employees SET status=?,detail=? WHERE id=?",
+                    (employee_status, employee_detail, task["assignee_id"]),
+                )
+            return finished
 
     def finish_remote_task(self, task_id, run_id, status, result="", error=None):
         """Persist the final receipt and its replay proof in the same transaction.
@@ -2060,7 +2479,7 @@ class WorkbenchStore:
                 allow_nan=False,
             ).encode()
         ).hexdigest()
-        with self._transaction() as db:
+        with self._transaction(allow_paused=True) as db:
             task = self._required(db, "tasks", task_id)
             if task["run_id"] != run_id:
                 raise WorkbenchError("permission_denied", "这次执行已过期。")
@@ -2081,11 +2500,32 @@ class WorkbenchStore:
             )
             return result_task
 
-    def review_task(self, task_id: str, decision: str, note: str = "") -> dict:
+    def review_task(
+        self,
+        task_id: str,
+        decision: str,
+        note: str = "",
+        *,
+        human_id: str | None = None,
+        project_id: str | None = None,
+    ) -> dict:
         _choice(decision, {"accept", "reject"}, "请选择通过或退回验收。")
         note = _text(note, "验收意见", empty=True)
         with self._transaction() as db:
-            task = self._required(db, "tasks", task_id)
+            if human_id is not None:
+                from .workbench_human_spaces import require_review_authority
+
+                if not project_id:
+                    raise WorkbenchError("PROJECT_NOT_FOUND", "项目不存在或没有访问权限。")
+                require_review_authority(db, human_id, project_id)
+            if human_id is not None:
+                task = db.execute(
+                    "SELECT * FROM tasks WHERE id=? AND project_id=?", (task_id, project_id)
+                ).fetchone()
+                if task is None:
+                    raise WorkbenchError("TASK_NOT_FOUND", "任务不存在或没有访问权限。")
+            else:
+                task = self._required(db, "tasks", task_id)
             if task["status"] != "review":
                 raise WorkbenchError("invalid_state", "只有待验收的任务可以提交验收决定。")
             status = "done" if decision == "accept" else "failed"
@@ -2098,13 +2538,18 @@ class WorkbenchStore:
                 "UPDATE tasks SET status=?,error=?,updated_at=? WHERE id=?",
                 (status, error, _now(), task_id),
             )
-            self._event(db, task_id, "reviewed", note or "验收决定已保存。", {"decision": decision})
+            review_actor = f"human:{human_id}" if human_id is not None else "human"
+            event_payload = {"decision": decision}
+            if human_id is not None:
+                event_payload["actor"] = review_actor
+            self._event(db, task_id, "reviewed", note or "验收决定已保存。", event_payload)
             self._governance(
                 db,
                 "task_reviewed",
                 employee_id=task["assignee_id"],
                 project_id=task["project_id"],
                 task_id=task_id,
+                actor=review_actor,
                 reason=note,
                 payload={"decision": decision, "run_id": task["run_id"]},
             )
@@ -2132,6 +2577,7 @@ class WorkbenchStore:
                     "补充 / Follow-up: " + parent["title"][:260],
                     prompt[: MAX_TEXT // 2],
                     parent["assignee_id"],
+                    review_recipient_id=parent["review_recipient_id"],
                 )
             else:
                 task = self._create_task(
@@ -2170,7 +2616,12 @@ class WorkbenchStore:
             return {"task": task, "parent_task": self._entity(self._required(db, "tasks", task_id))}
 
     def cancel_task(self, task_id: str) -> dict:
-        with self._transaction() as db:
+        from .workbench_mail_notifications import (
+            enqueue_cancel_notice,
+            retire_undelivered_assignment,
+        )
+
+        with self._wake_transaction() as db:
             task = self._required(db, "tasks", task_id)
             if task["status"] not in ACTIVE | {"queued"}:
                 raise WorkbenchError("invalid_state", "任务已结束，无需取消。")
@@ -2183,6 +2634,8 @@ class WorkbenchStore:
                 "UPDATE tasks SET status=?,cancel_requested=1,updated_at=? WHERE id=?",
                 (status, _now(), task_id),
             )
+            retire_undelivered_assignment(db, self.root, task)
+            cancel_notice_id = enqueue_cancel_notice(db, self.root, task)
             self._expire_permissions(db, task_id)
             if not task["cancel_requested"]:
                 self._event(
@@ -2193,16 +2646,35 @@ class WorkbenchStore:
                     if status != "cancelled"
                     else "邮件任务或排队任务已取消。",
                 )
+            if cancel_notice_id is not None:
+                self._governance(
+                    db,
+                    "mail_task_cancel_notice",
+                    project_id=task["project_id"],
+                    task_id=task_id,
+                    employee_id=task["assignee_id"],
+                    reason="邮件任务撤销通知已排队；不代表宿主接收或 Agent 停工。",
+                    payload={"message_id": cancel_notice_id},
+                )
             return self._entity(self._required(db, "tasks", task_id))
 
     def recover_runs(self, node_id: str) -> list[dict]:
-        with self._transaction() as db:
+        # A persisted maintenance pause must not prevent the new App from
+        # starting. Only previously active managed runs are interrupted here;
+        # accepted mailbox work remains durable and untouched.
+        with self._transaction(allow_paused=True, allow_frozen=True) as db:
             self._required(db, "devices", node_id)
             rows = db.execute(
                 "SELECT id FROM tasks WHERE node_id=? "
                 "AND execution_mode='managed' AND status IN ('starting','running','waiting_approval')",
                 (node_id,),
             ).fetchall()
+            if db.execute(
+                "SELECT 1 FROM update_claims WHERE id=?", (UPDATE_FREEZE_CLAIM,)
+            ).fetchone():
+                if rows:
+                    raise WorkbenchError("UPDATE_BUSY", "备份冻结状态与活跃执行不一致，请先核查。")
+                return []
             recovered = []
             for row in rows:
                 task_id = row["id"]
@@ -2229,8 +2701,9 @@ class WorkbenchStore:
             raise WorkbenchError("invalid_field", "权限请求需要提供工具调用说明。")
         _json(options)
         _json(tool_call)
-        with self._transaction() as db:
+        with self._transaction(allow_paused=True) as db:
             task = self._required(db, "tasks", task_id)
+            self._require_managed_drain(db, task)
             if task["status"] not in {"running", "waiting_approval"} or task["cancel_requested"]:
                 raise WorkbenchError("invalid_state", "这次执行已停止，不能再请求权限。")
             existing = db.execute(
@@ -2337,8 +2810,9 @@ class WorkbenchStore:
         )
 
     def permission_decision(self, task_id: str, request_id: str, run_id: str) -> dict:
-        with self._transaction() as db:
+        with self._transaction(allow_paused=True) as db:
             task = self._required(db, "tasks", task_id)
+            self._require_managed_drain(db, task)
             permission = self._permission(db, task_id, request_id)
             if run_id != task["run_id"] or run_id != permission["run_id"]:
                 raise WorkbenchError("permission_denied", "这次执行与权限请求不匹配。")
@@ -2353,8 +2827,9 @@ class WorkbenchStore:
             return permission
 
     def expire_permission(self, task_id: str, request_id: str, run_id: str) -> dict:
-        with self._transaction() as db:
+        with self._transaction(allow_paused=True) as db:
             task = self._required(db, "tasks", task_id)
+            self._require_managed_drain(db, task)
             permission = self._permission(db, task_id, request_id)
             if run_id != task["run_id"] or run_id != permission["run_id"]:
                 raise WorkbenchError("permission_denied", "这次执行与权限请求不匹配。")
@@ -2369,8 +2844,9 @@ class WorkbenchStore:
             "请选择仅本次允许、本任务内允许或拒绝。",
         )
         expired = False
-        with self._transaction() as db:
+        with self._transaction(allow_paused=True) as db:
             task = self._required(db, "tasks", task_id)
+            self._require_managed_drain(db, task)
             permission = self._permission(db, task_id, request_id)
             if (
                 task["status"] != "waiting_approval"
@@ -3154,7 +3630,8 @@ class WorkbenchStore:
     def duplicate_employee_report(self) -> dict:
         """只读：列出**疑似重复的员工身份**及其引用计数（合并迁移的数字对账基准 ✓）。
 
-        HS 审计：同一人因 connection_type 不同建了多行（DSH / DSH App ✗ …）。
+        GUI/CLI 若是独立接单的宿主，属于不同员工信箱；不能因名称相似而建议合并。
+        只在同一设备、工具类型和连接形态内报告疑似重复身份。
         本报告**只读** ✓：分组 · 每行引用计数 · 建议保留行 · 需重指向的行数 ✓
         引用统计**动态找列**并**单独统计 `governance_events.actor` 字符串**（无外键 ⇒
         `foreign_key_check` 看不见 ✗ 评审教训 ✓）。
@@ -3210,11 +3687,17 @@ class WorkbenchStore:
                     )
             groups: dict[tuple, list[dict]] = {}
             for person in people:
-                groups.setdefault((person["name"].split()[0].lower(), person["kind"]), []).append(
-                    person
-                )
+                groups.setdefault(
+                    (
+                        person["name"].split()[0].lower(),
+                        person["kind"],
+                        person["node_id"],
+                        person["connection_type"],
+                    ),
+                    [],
+                ).append(person)
         duplicates = []
-        for (person, kind), rows in sorted(groups.items()):
+        for (person, kind, _node_id, _connection_type), rows in sorted(groups.items()):
             if len(rows) < 2:
                 continue
             for row in rows:

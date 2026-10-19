@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-mailbox"
-version = "0.8.2"
+version = "0.8.3a1"
 description = "Local-first AI agent team workbench: project-scoped MCP mailboxes for existing apps and CLIs, shared context, task handoffs and human review."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -22,10 +22,15 @@ classifiers = [
   "Topic :: Office/Business",
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-dependencies = ["mcp>=2.1", "cryptography>=46,<51"]
+dependencies = [
+    "mcp>=2.1",
+    "cryptography>=46,<51",
+    "tomli>=2.4.1; python_version < '3.11'",
+    "zeroconf>=0.151,<0.152",
+]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-timeout>=2.4", "ruff>=0.16.6,<0.17.0", "tinycss2>=1.4,<2"]
+dev = ["pytest>=8", "pytest-timeout>=2.4", "ruff>=0.16.6,<0.17.0", "tinycss2>=1.4,<2", "PyYAML>=6,<7"]
 desktop = [
   "pyobjc-core>=12.0; sys_platform == 'darwin'",
   "pyobjc-framework-Cocoa>=12.0; sys_platform == 'darwin'",

@@ -1,0 +1,12 @@
+"""Keep Hermes' gateway command identity through its official supervisor.
+
+The supervisor matches a child named ``hermes`` with ``gateway run`` in argv.
+This entry stays in the packaged resource bundle and delegates to the sole pinned
+overlay implementation beside it. The caller supplies its verified interpreter.
+"""
+
+import runpy
+from pathlib import Path
+
+if __name__ == "__main__":
+    runpy.run_path(str(Path(__file__).with_name("host_overlay_boot.py")), run_name="__main__")

@@ -1,0 +1,8 @@
+{
+  "name": "agent-mailbox-codex-host",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "dependencies": { "ws": "8.22.0" },
+  "scripts": { "test": "node --test test.mjs native.test.mjs routing.test.mjs" }
+}

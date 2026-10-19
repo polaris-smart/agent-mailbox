@@ -148,13 +148,19 @@ def prepare_workspace(store, task, project):
     task_id = task["id"]
     if not re.fullmatch(r"[A-Za-z0-9_-]+", task_id):
         raise WorkbenchError("delivery_unsafe", "任务标识不合法。")
-    directory = store.root / "task-workspaces"
-    directory.mkdir(mode=0o700, exist_ok=True)
-    if directory.is_symlink():
-        raise WorkbenchError("delivery_unsafe", "工作区目录不安全。")
-    private_mode(directory, 0o700)
-    destination = directory / task_id
-    with store._transaction() as db:
+    with store._transaction(allow_paused=True) as db:
+        current = store._required(db, "tasks", task_id)
+        store._require_managed_drain(db, current)
+        if db.execute("SELECT paused FROM update_settings WHERE id=1").fetchone()[0] and current[
+            "status"
+        ] not in {"starting", "running", "waiting_approval"}:
+            raise WorkbenchError("invalid_state", "只有正在执行的任务可以准备工作区。")
+        directory = store.root / "task-workspaces"
+        directory.mkdir(mode=0o700, exist_ok=True)
+        if directory.is_symlink():
+            raise WorkbenchError("delivery_unsafe", "工作区目录不安全。")
+        private_mode(directory, 0o700)
+        destination = directory / task_id
         existing = db.execute(
             "SELECT * FROM task_workspaces WHERE task_id=?", (task_id,)
         ).fetchone()
@@ -201,7 +207,13 @@ def prepare_workspace(store, task, project):
 
 
 def capture_delivery(store, task, project, result):
-    with store._transaction() as db:
+    with store._transaction(allow_paused=True) as db:
+        current = store._required(db, "tasks", task["id"])
+        store._require_managed_drain(db, current)
+        if db.execute("SELECT paused FROM update_settings WHERE id=1").fetchone()[0] and current[
+            "status"
+        ] not in {"starting", "running", "waiting_approval"}:
+            raise WorkbenchError("invalid_state", "只有正在执行的任务可以记录交付。")
         old = db.execute(
             "SELECT payload FROM task_deliveries WHERE task_id=?", (task["id"],)
         ).fetchone()
@@ -364,7 +376,7 @@ def task_delivery(store, taskid):
                 "workspace": None,
                 "files": [],
                 "diff": "",
-                "summary": "",
+                "summary": task["result"] or "",
                 "verification": {"status": "not_verified", "notes": "尚未捕获交付。"},
                 "capture_error": None,
             }

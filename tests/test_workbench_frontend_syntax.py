@@ -46,6 +46,11 @@ def test_workbench_css_parses_without_discarded_rules():
     assert _css_errors(css) == []
 
 
+def test_human_portal_css_parses_without_discarded_rules():
+    css = (_JS.parent / "human.css").read_text(encoding="utf-8")
+    assert _css_errors(css) == []
+
+
 def test_core_layout_rules_are_not_swallowed_by_a_media_block():
     # CSS parsers repair missing closing braces at EOF. A syntactically readable
     # tree can therefore still condition the entire UI on a narrow viewport.
@@ -76,6 +81,12 @@ def test_css_gate_rejects_the_actual_release_regressions(broken):
 def test_workbench_js_has_no_syntax_error():
     """Parse the shipped frontend the way a browser/reviewer does; fail on any SyntaxError."""
     result = _parse_module(_JS.read_text(encoding="utf-8"))
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available on this machine")
+def test_human_portal_js_has_no_syntax_error():
+    result = _parse_module((_JS.parent / "human.js").read_text(encoding="utf-8"))
     assert result.returncode == 0, result.stderr
 
 

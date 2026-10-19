@@ -86,6 +86,10 @@ class WorkbenchEngine:
         if self.on_change:
             self.on_change()
 
+    def active_worker_count(self) -> int:
+        with self.lock:
+            return len(self.workers)
+
     def close(self):
         self.stopping.set()
         self.notify()
@@ -95,6 +99,14 @@ class WorkbenchEngine:
             workers = list(self.workers)
         for worker in workers:
             worker.join(timeout=8)
+
+    def _completion_event(self, task_id: str, event_type: str, message: str, payload=None) -> None:
+        """Skip optional terminal-task events while update preparation is paused."""
+        try:
+            self.store.add_event(task_id, event_type, message, payload)
+        except WorkbenchError as exc:
+            if exc.code != "UPDATE_PAUSED":
+                raise
 
     def _record_delivery_proof(
         self, task_id: str, candidates: set[str], run_started: float
@@ -166,12 +178,14 @@ class WorkbenchEngine:
         if not artifacts:
             return  # 没有产出物就不记空证明（空证明=incomplete）
         try:
-            workbench_proof.build_proof(self.store, task_id, artifacts=artifacts)
-            self.store.add_event(
+            workbench_proof.build_proof(
+                self.store, task_id, artifacts=artifacts, managed_completion=True
+            )
+            self._completion_event(
                 task_id, "proof_recorded", f"交付证明已记录：{len(artifacts)} 个产出物。"
             )
         except Exception as exc:  # noqa: BLE001
-            self.store.add_event(task_id, "proof_failed", f"交付证明未能记录：{exc}")
+            self._completion_event(task_id, "proof_failed", f"交付证明未能记录：{exc}")
 
     def _loop(self):
         while not self.stopping.is_set():
@@ -336,31 +350,46 @@ class WorkbenchEngine:
                     "code": "DELIVERY_CAPTURE_FAILED",
                     "message": "交付内容未能完整捕获，请查看工作区和交付详情。",
                 }
-            saved = self.store.finish_task(
-                task["id"], status, result.get("output_text", ""), result.get("error")
-            )
-            status = saved["status"]
-            if status == "review":
-                self._record_delivery_proof(task["id"], candidates, run_started)
-            self.store.update_employee(
-                employee["id"],
+            employee_status = (
                 "available"
                 if status == "review"
                 else "auth_required"
                 if (result.get("error") or {}).get("code") == "AUTH_REQUIRED"
-                else "unknown",
+                else "unknown"
+            )
+            employee_detail = (
                 "Execution verified."
                 if status == "review"
                 else "The managed execution adapter requires authentication; native sign-in alone is not execution verification."
                 if (result.get("error") or {}).get("code") == "AUTH_REQUIRED"
-                else "Inspect the task for execution details.",
+                else "Inspect the task for execution details."
             )
-        except Exception as exc:  # noqa: BLE001 - execution must leave a terminal state
-            self.store.finish_task(
+            saved = self.store.finish_task(
                 task["id"],
-                "failed",
-                error={
-                    "code": exc.code if isinstance(exc, WorkbenchError) else "EXECUTION_ERROR",
-                    "message": str(exc),
-                },
+                status,
+                result.get("output_text", ""),
+                result.get("error"),
+                employee_status=employee_status,
+                employee_detail=employee_detail,
             )
+            status = saved["status"]
+            if status == "review":
+                self._record_delivery_proof(task["id"], candidates, run_started)
+        except Exception as exc:  # noqa: BLE001 - execution must leave a terminal state
+            current = self.store.get_task(task["id"])
+            if current["status"] in {"starting", "running", "waiting_approval"}:
+                self.store.finish_task(
+                    task["id"],
+                    "failed",
+                    error={
+                        "code": exc.code if isinstance(exc, WorkbenchError) else "EXECUTION_ERROR",
+                        "message": str(exc),
+                    },
+                )
+            else:
+                self._completion_event(
+                    task["id"],
+                    "postprocess_failed",
+                    "执行已结束，但收尾未完成；请检查本机诊断日志。",
+                    {"code": exc.code if isinstance(exc, WorkbenchError) else "POSTPROCESS_ERROR"},
+                )
