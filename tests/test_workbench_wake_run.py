@@ -8,9 +8,10 @@ STEP = 901
 
 
 def test_pending_mail_is_seen_without_counting_a_wake_then_recovers_once(tmp_path, wake_hook):
+    import sys
     from types import SimpleNamespace
 
-    from agent_mailbox.workbench_wake import hook_deliver, load_state
+    from agent_mailbox.workbench_wake import hook_command, hook_deliver, load_state
 
     calls = []
     deliver = hook_deliver(
@@ -35,7 +36,12 @@ def test_pending_mail_is_seen_without_counting_a_wake_then_recovers_once(tmp_pat
     assert not (tmp_path / "wake/claims/new-mail.ok").exists()
     assert poll(1001)["woke"] == []
     assert len(list((tmp_path / "wake/wake-outbox").glob("*.json"))) == 1
-    wake_hook(tmp_path)
+    hook = wake_hook(tmp_path)
+    assert hook_command(tmp_path) is not None, {
+        "platform": sys.platform,
+        "hook_exists": hook.is_file(),
+        "hook_mode": oct(hook.stat().st_mode) if hook.is_file() else None,
+    }
     assert poll(1002)["woke"] == ["e1"]
     assert poll(1003 + STEP)["woke"] == []
     assert calls == [1]

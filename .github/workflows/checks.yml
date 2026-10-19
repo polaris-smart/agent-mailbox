@@ -61,7 +61,7 @@ jobs:
         shell: bash
         run: |
           python - <<'PYTHON'
-          import os, pathlib, subprocess, sys
+          import hashlib, os, pathlib, subprocess, sys
           log = pathlib.Path(os.environ["RUNNER_TEMP"]) / "pytest.log"
           try:
               args = [sys.executable, "-m", "pytest", "-o", "addopts=--timeout=30", "-vv", "--tb=short"]
@@ -89,7 +89,13 @@ jobs:
                       "tests/test_workbench_wake_run.py",
                   ])
               else:
-                  args.append("--basetemp=/private/tmp/agent-mailbox-ci-pytest")
+                  identity = "|".join([
+                      os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"],
+                      os.environ["RUNNER_OS"], os.environ["RUNNER_ARCH"],
+                      f"{sys.version_info.major}.{sys.version_info.minor}",
+                  ])
+                  suffix = hashlib.sha256(identity.encode()).hexdigest()[:12]
+                  args.append(f"--basetemp=/private/tmp/am-ci-{suffix}")
               with log.open("wb") as target:
                   result = subprocess.run(args, stdout=target, stderr=subprocess.STDOUT, timeout=900)
               code = result.returncode
