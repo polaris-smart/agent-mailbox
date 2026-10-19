@@ -1163,7 +1163,9 @@ class FleetClient:
         ):
             raise WorkbenchError("storage_error", "本设备项目目录记录格式无效，请恢复备份。")
 
-    def _request(self, method, path, body=None, authenticated=True, timeout=10):
+    def _request(self, method, path, body=None, authenticated=True, timeout=10, admission=None):
+        if path == "/v1/tasks/claim" and admission is not None and not admission.is_set():
+            raise WorkbenchError("claim_stopped", "设备已停止领取任务。")
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.check_hostname = False
@@ -1197,7 +1199,9 @@ class FleetClient:
             if path == "/v1/tasks/claim":
                 with self.connection_lock:
                     stop = getattr(self.claim_cancellation, "event", None)
-                    if stop is not None and stop.is_set():
+                    if (stop is not None and stop.is_set()) or (
+                        admission is not None and not admission.is_set()
+                    ):
                         raise WorkbenchError("claim_stopped", "设备已停止领取任务。")
                     self.claim_connection = connection
                     # HTTPConnection clears .sock for Connection: close responses
@@ -1369,6 +1373,7 @@ class FleetClient:
                     "/v1/tasks/claim",
                     {"project_id": project_id, "wait": wait},
                     timeout=wait + 10,
+                    admission=admission,
                 )["task"]
             except WorkbenchError as exc:
                 if exc.code in {

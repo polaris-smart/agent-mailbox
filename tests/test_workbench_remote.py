@@ -253,6 +253,57 @@ def test_relocate_pauses_claim_that_has_not_sent_its_request(remote, monkeypatch
     assert not owner.store.update_maintenance()["pending_claims"]
 
 
+def test_relocate_cancels_claim_between_admission_check_and_transport_registration(
+    remote, monkeypatch
+):
+    owner, device, project, _, _ = remote
+    original_worker = device.remote_worker
+    original_worker.close()
+    client = device.remote_client
+    entered = threading.Event()
+    proceed = threading.Event()
+    original_request = client._request
+
+    def paused_request(method, path, *args, **kwargs):
+        if path == "/v1/tasks/claim":
+            entered.set()
+            assert proceed.wait(10)
+        return original_request(method, path, *args, **kwargs)
+
+    monkeypatch.setattr(client, "_request", paused_request)
+    worker = RemoteWorker(client, bridge_command=original_worker.execution.command)
+    device.remote_worker = worker
+    worker.start_project(project["id"])
+    assert entered.wait(5)
+    old_claim_ids = {row["id"] for row in device.store.update_maintenance()["pending_claims"]}
+    assert len(old_claim_ids) == 1
+    new_address = owner.fleet.base_url.replace("127.0.0.1", "localhost")
+    outcome = {}
+
+    def relocate():
+        try:
+            outcome["result"] = device.relocate_fleet(new_address)
+        except WorkbenchError as exc:
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=relocate)
+    thread.start()
+    deadline = time.monotonic() + 5
+    while worker.claim_admission.is_set() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    try:
+        assert not worker.claim_admission.is_set()
+    finally:
+        proceed.set()
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    assert "error" not in outcome
+    assert outcome["result"]["remote"]["base_url"] == new_address
+    assert old_claim_ids.isdisjoint(
+        row["id"] for row in device.store.update_maintenance()["pending_claims"]
+    )
+
+
 def test_disconnect_pauses_claim_that_has_not_sent_its_request(remote, monkeypatch):
     _, device, project, _, _ = remote
     original_worker = device.remote_worker
