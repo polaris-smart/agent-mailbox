@@ -196,16 +196,34 @@ class PinnedDispatchTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(authority.events), 1)
 
     async def test_current_authority_requires_recovered_native_session(self):
-        """A legacy transcript pin alone cannot admit automation after Gateway restart."""
+        """A cold route without committed human provenance cannot admit automation."""
         from unittest.mock import patch
 
         import gateway.session_authorities as authorities
+        import gateway.session_automation as automation
 
         authority = SimpleNamespace(sessions={})
-        with patch.object(authorities, "authority_for_home", return_value=authority):
+        self.owner.session_store.lookup_by_session_key = lambda key: self.entry if key == self.key else None
+        with (patch.object(authorities, "authority_for_home", return_value=authority),
+              patch.object(automation, "committed_route_envelope", return_value=None)):
             self.assertFalse(self.request().current())
             authority.sessions["original"] = SimpleNamespace(route=self.key)
             self.assertTrue(self.request().current())
+
+    async def test_current_authority_accepts_exact_cold_messaging_route_with_human_provenance(self):
+        """Restarted Gateway may resume an existing Feishu route without a fresh Human message."""
+        from unittest.mock import patch
+
+        import gateway.session_authorities as authorities
+        import gateway.session_automation as automation
+
+        authority = SimpleNamespace(sessions={})
+        self.owner.session_store.lookup_by_session_key = lambda key: self.entry if key == self.key else None
+        with (patch.object(authorities, "authority_for_home", return_value=authority),
+              patch.object(automation, "committed_route_envelope", return_value={"provenance": "synthetic"})):
+            self.assertTrue(self.request().current())
+            self.reset("another-conversation")
+            self.assertFalse(self.request().current())
 
     async def test_current_host_refuses_another_plugin_profile(self):
         from unittest.mock import patch

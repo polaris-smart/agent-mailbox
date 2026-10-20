@@ -821,6 +821,12 @@ class Replacement:
         **PRE_AUTHORITY_WRAPPER,
         "pinned.py": "54004ff871f89411bec183da0e26b8495f3f68d206b28e5666ed6490fdd87b02",
     }
+    # Exact six-file component installed by the previous controlled cutover.
+    # That cutover refreshed the metadata reader as well as the authority pin.
+    PRE_AUTHORITY_METADATA_LIVE: ClassVar[dict[str, str]] = {
+        **PRE_AUTHORITY_METADATA,
+        "live.py": "31eb65c430193fb58bb48502647d5623132341cb54117bda832a2e5324764590",
+    }
 
     @staticmethod
     def _identity(path):
@@ -867,7 +873,8 @@ class Replacement:
                   and old.get("__init__.py") == self.LEGACY_INIT
                   and old.get("plugin.yaml") == digest(self.preparation.source_files()["plugin.yaml"]))
         if not legacy and old not in (self.PRE_REAUTH, self.PRE_PRIVATE_082,
-                                      self.PRE_AUTHORITY_WRAPPER, self.PRE_AUTHORITY_METADATA):
+                                      self.PRE_AUTHORITY_WRAPPER, self.PRE_AUTHORITY_METADATA,
+                                      self.PRE_AUTHORITY_METADATA_LIVE):
             raise ValueError("unrecognized_hermes_component_version")
         new = {name: digest(raw) for name, raw in self.preparation.source_files().items()}
         directory(self.records, create=True)

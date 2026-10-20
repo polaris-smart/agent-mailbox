@@ -86,6 +86,7 @@ class PinnedGateway:
         modules = compatible_sdk(private_mode=self.private_mode)
         self.authority_mode = "gateway.session_automation" in modules
         self.authorities = modules.get("gateway.session_authorities")
+        self.automation = modules.get("gateway.session_automation")
         self.native = modules["gateway.run_plugin_injection"].GatewayPluginInjectionMixin
         turn = modules["gateway.run_turn"].GatewayTurnMixin
         context = modules["hermes_cli.plugins"].PluginContext
@@ -130,7 +131,20 @@ class PinnedGateway:
             return (getattr(self.owner, "session_authorities", None) is None
                     and getattr(self.owner, "session_authority", None) is None)
         live = authority.sessions.get(self.sid)
-        return live is not None and live.route == self.key
+        if live is not None:
+            return live.route == self.key and not getattr(live, "superseded", False)
+        # A Gateway restart restores local sessions, but messaging sessions are
+        # mounted on first inbound. Its official automation path can admit a
+        # cold messaging route when it has committed human provenance; requiring
+        # an in-memory LiveSession here would strand mail until the Human writes.
+        # Check the exact persisted route and provenance before Receiver journals
+        # anything. Hermes rechecks both at durable FIFO admission.
+        entry = self.owner.session_store.lookup_by_session_key(self.key)
+        if (entry is None or entry.session_id != self.sid or entry.session_key != self.key
+                or entry.origin is None
+                or getattr(entry.origin.platform, "value", entry.origin.platform) != self.platform):
+            return False
+        return self.automation.committed_route_envelope(authority, entry) is not None
 
     def current(self):
         try:

@@ -137,6 +137,18 @@ def test_authority_admission_with_old_metadata_can_upgrade_only_exact_bytes(case
         case.replacement.preview()
 
 
+def test_cold_route_cutover_predecessor_requires_exact_six_files(case, monkeypatch):
+    target = case.replacement.target
+    for name in ("pinned.py", "live.py", "private_platform.py"):
+        (target / name).write_bytes((case.replacement.preparation.source / name).read_bytes())
+    known = {name: setup.digest((target / name).read_bytes()) for name in setup.FILES}
+    monkeypatch.setattr(setup.Replacement, "PRE_AUTHORITY_METADATA_LIVE", known)
+    assert case.replacement.preview()["state"] == "preview"
+    (target / "live.py").write_bytes(b"unknown metadata change")
+    with pytest.raises(ValueError, match="unrecognized_hermes_component_version"):
+        case.replacement.preview()
+
+
 @pytest.mark.parametrize("changed", ["config", "old_component", "new_component", "socket"])
 def test_changed_or_live_receiver_refuses_without_replacing(case, changed, monkeypatch):
     plan = case.replacement.preview()["plan_id"]
