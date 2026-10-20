@@ -75,7 +75,13 @@ def _paths(home):
     root = Path(home).resolve() / "workbench/receivers"
     # Short Unix socket path, partitioned by canonical mailbox home.
     key = hashlib.sha256(os.fsencode(Path(home).resolve())).hexdigest()[:16]
-    ipc = Path.home().resolve() / ".agent-mailbox-hosts" / key
+    user_home = Path.home().resolve()
+    ipc = user_home / ".agent-mailbox-hosts" / key
+    # Some valid macOS home paths exhaust the Unix socket limit before the
+    # receiver starts. Keep the same owner-private HOME, using a shorter
+    # directory only for homes where the legacy location could not work.
+    if len(os.fsencode(ipc / "999999-123456789abc.mail.sock")) > 100:
+        ipc = user_home / ".amb" / key
     if len(os.fsencode(ipc / "999999-123456789abc.mail.sock")) > 100:
         raise ValueError("receiver_socket_path_too_long")
     return root, ipc

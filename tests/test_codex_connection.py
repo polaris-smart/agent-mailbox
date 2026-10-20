@@ -25,6 +25,33 @@ from agent_mailbox.workbench_host_transport import endpoint_for
 from agent_mailbox.workbench_store import WorkbenchError, WorkbenchStore
 
 
+def test_receiver_ipc_preserves_existing_private_directory_for_short_home(monkeypatch):
+    short_home = Path("/private/tmp") / "amh"
+    monkeypatch.setenv("HOME", str(short_home))
+
+    _, ipc = connection._paths(short_home / "mailbox")
+
+    assert ipc.parent == short_home / ".agent-mailbox-hosts"
+
+
+def test_receiver_ipc_uses_short_private_home_directory_when_needed(monkeypatch):
+    long_home = Path("/private/tmp") / ("long-user-home-" + "x" * 18)
+    monkeypatch.setenv("HOME", str(long_home))
+
+    _, ipc = connection._paths(long_home / "mailbox")
+
+    assert ipc.parent == long_home / ".amb"
+    assert len(str(ipc / "999999-123456789abc.mail.sock").encode()) <= 100
+
+
+def test_receiver_ipc_rejects_home_too_long_for_private_fallback(monkeypatch):
+    very_long_home = Path("/private/tmp") / ("x" * 80)
+    monkeypatch.setenv("HOME", str(very_long_home))
+
+    with pytest.raises(ValueError, match="receiver_socket_path_too_long"):
+        connection._paths(very_long_home / "mailbox")
+
+
 @pytest.fixture
 def setup(tmp_path, monkeypatch, request):
     store = WorkbenchStore(tmp_path / "home")
