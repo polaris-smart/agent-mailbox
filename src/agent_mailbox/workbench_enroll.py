@@ -105,7 +105,7 @@ def plan(store, project_id: str | None = None) -> dict[str, Any]:
             for item in have.get(row["kind"], [])
             if item["name"] == row["name"]
             and item["connection_type"] == row["connection_type"]
-            and (not item["entrypoint"] or item["entrypoint"] == row["entrypoint"])
+            and item["entrypoint"] == row["entrypoint"]
         ]
         suggestions.append(
             {

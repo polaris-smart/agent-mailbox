@@ -208,6 +208,34 @@ def test_same_name_cli_profiles_cannot_share_one_mailbox(scene, monkeypatch):
     assert actual["entrypoint"] == "/opt/first/codex"
 
 
+def test_legacy_blank_entrypoint_does_not_hide_same_name_profiles(scene, monkeypatch):
+    store, project = scene
+    store.create_employee("Codex", "codex", project["id"], connection_type="cli")
+    monkeypatch.setattr(
+        workbench_runtime,
+        "discover_employees",
+        lambda: [
+            {"kind": "codex", "name": "Codex", "connection_type": "cli", "entrypoint": path}
+            for path in ("/opt/first/codex", "/opt/second/codex")
+        ],
+    )
+    outline = we.plan(store, project["id"])
+    assert [row["already_enrolled"] for row in outline["suggestions"]] == [False, False]
+    with pytest.raises(WorkbenchError, match="不同名称"):
+        we.onboard(store, project["id"], apply=True)
+    assert _snapshot(store)["mailbox_sessions"] == 0
+
+
+def test_unique_discovered_entrypoint_fills_legacy_employee(scene):
+    store, project = scene
+    legacy = store.create_employee("Codex", "codex", project["id"], connection_type="cli")
+    result = we.enroll(store, project["id"], "codex", name="Codex")
+    assert result["employee"]["id"] == legacy["id"]
+    with store._transaction(readonly=True) as db:
+        actual = db.execute("SELECT entrypoint FROM employees WHERE id=?", (legacy["id"],)).fetchone()
+    assert actual["entrypoint"] == "/usr/local/bin/codex"
+
+
 def test_enrol_same_identity_in_another_project_reuses_employee(scene, tmp_path):
     store, first_project = scene
     second_dir = tmp_path / "second-project"
