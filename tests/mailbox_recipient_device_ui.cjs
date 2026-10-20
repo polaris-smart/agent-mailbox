@@ -32,6 +32,7 @@ const helpers = source.slice(source.indexOf('function project()'), source.indexO
 vm.runInNewContext(helpers, context);
 const renderMessages = vm.runInNewContext(`(${source.slice(source.indexOf('function renderMessages()'), source.indexOf('\nconst governanceLabels', source.indexOf('function renderMessages()')))})`, context);
 const renderMailboxes = vm.runInNewContext(`(${source.slice(source.indexOf('function renderMailboxes()'), source.indexOf('\nfunction renderMembers()', source.indexOf('function renderMailboxes()')))})`, context);
+const groupProjectMessages = vm.runInNewContext(`(${source.slice(source.indexOf('function groupProjectMessages('), source.indexOf('\nasync function refresh(', source.indexOf('function groupProjectMessages(')))})`, context);
 
 const form = renderMessages()[1].children[1];
 const recipient = form.children.find(x => x.tag === 'select');
@@ -41,6 +42,27 @@ assert.equal(choices.length, 2);
 assert.notEqual(choices[0].children.join(''), choices[1].children.join(''), 'same-name recipients need visible device context');
 assert(choices[0].children.join('').includes('Office Mac'));
 assert(choices[1].children.join('').includes('Home Mac'));
+
+const chronologicalMessages = [
+  {id: 'older', title: 'First', body: 'First body', created_at: '2026-10-20T10:00:00Z'},
+  {id: 'newer', title: 'Second', body: 'Second body', created_at: '2026-10-21T10:00:00Z', reply_to: 'older'},
+];
+state.messages.p = chronologicalMessages;
+const messageRows = renderMessages()[1].children[0].children.filter(x => x.tag === 'article');
+assert.deepEqual(messageRows.map(x => x.props['data-message-id']), ['newer', 'older'], 'project messages show newest first');
+assert.deepEqual(chronologicalMessages.map(x => x.id), ['older', 'newer'], 'rendering does not mutate the cached order');
+delete state.messages.p;
+state.data.messages = chronologicalMessages.map(x => ({...x, project_id: 'p'}));
+assert.deepEqual(renderMessages()[1].children[0].children.filter(x => x.tag === 'article').map(x => x.props['data-message-id']),
+  ['newer', 'older'], 'bootstrap fallback also shows newest first');
+state.data.messages = [];
+const grouped = groupProjectMessages([{id: 'p'}, {id: 'other'}], [
+  {...chronologicalMessages[0], project_id: 'p'},
+  {id: 'elsewhere', project_id: 'other'},
+  {...chronologicalMessages[1], project_id: 'p'},
+]);
+assert.deepEqual(Array.from(grouped.p, x => x.id), ['older', 'newer'], 'grouping preserves the server order for each project');
+assert.deepEqual(Array.from(grouped.other, x => x.id), ['elsewhere'], 'messages remain scoped to their project');
 
 const rail = renderMailboxes()[1].children[0];
 const first = rail.children[0].children[1].children[1].children.join('');

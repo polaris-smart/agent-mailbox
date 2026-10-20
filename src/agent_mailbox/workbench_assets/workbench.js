@@ -2137,7 +2137,8 @@ async function loadMessages() {
 function renderMessages() {
   if (!project()) return [heading(navLabels.messages), empty(t("选择消息所属的项目", "Choose a project for messages"), t("项目消息与成员、资料和工作记录一起保存。", "Project messages stay with members, resources, and work records."), "new-project", t("创建项目", "Create project"))];
   const projectId = state.projectId;
-  const messages = state.messages[projectId] || (state.data.messages || []).filter((item) => item.project_id === projectId);
+  // Both message sources are oldest-first; display the newest first without mutating cached data.
+  const messages = (state.messages[projectId] || (state.data.messages || []).filter((item) => item.project_id === projectId)).slice().reverse();
   const draft = state.messageDrafts[projectId] ||= { title: "", body: "", recipientId: "", replyTo: null, requestWork: false, requestId: null };
   const thread = el("section", { class: "message-list", "aria-label": t("项目消息记录", "Project message history") });
   if (state.messagesError) thread.append(el("p", { class: "form-error", role: "alert" }, errorText(state.messagesError)));
@@ -2755,6 +2756,11 @@ function render() {
   root.replaceChildren(...content.flat(Infinity).filter((item) => item !== null && item !== undefined && item !== false));
   root.setAttribute("aria-busy", "false");
 }
+function groupProjectMessages(projects, messages) {
+  const grouped = Object.fromEntries(projects.map((item) => [item.id, []]));
+  for (const message of messages) grouped[message.project_id]?.push(message);
+  return grouped;
+}
 async function refresh({ silent = false } = {}) {
   if (state.applicationStopping || state.applicationStopped) return;
   if (state.refreshing) return;
@@ -2770,7 +2776,7 @@ async function refresh({ silent = false } = {}) {
     state.data = result;
     if (result.update_maintenance) { state.updatePauseUnconfirmed = false; if (state.updates) state.updates.maintenance = result.update_maintenance; }
     renderMaintenanceBanner();
-    if (Array.isArray(result.messages)) { for (const item of result.projects) state.messages[item.id] = result.messages.filter((message) => message.project_id === item.id); }
+    if (Array.isArray(result.messages)) state.messages = groupProjectMessages(result.projects, result.messages);
     document.getElementById("version-label").textContent = result.version ? `v${result.version.replace(/^v/, "")}` : "";
     state.error = null;
     if (!result.projects.some((item) => item.id === state.projectId)) state.projectId = result.projects[0]?.id || "";
