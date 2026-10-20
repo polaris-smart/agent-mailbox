@@ -2044,7 +2044,16 @@ class WorkbenchStore:
             elif source_task_id is not None:
                 raise WorkbenchError("permission_denied", "人工消息不能冒用员工执行来源。")
             if recipient_id is not None:
-                self._message_member(db, project_id, recipient_id)
+                try:
+                    self._message_member(db, project_id, recipient_id)
+                except WorkbenchError as exc:
+                    if exc.code != "permission_denied":
+                        raise
+                    raise WorkbenchError(
+                        "RECIPIENT_NOT_IN_PROJECT",
+                        f"收件人 {recipient_id!r} 不是项目 {project_id!r} 的成员；"
+                        "请从 project_context 核对本项目的员工 id。",
+                    ) from exc
                 # T33 通讯录白名单：收件人一旦有通讯录，只有列内发件人可达（默认无列表 ⇒ 开放，不误伤）
                 verdict = workbench_contacts.may_message_in(db, project_id, sender_id, recipient_id)
                 if not verdict["allowed"]:

@@ -103,6 +103,11 @@ def build_server(session_file: str | Path) -> MCPServer:
                 exc.close()
             if isinstance(code, str) and code in known:
                 raise ToolError(f"{code}: {known[code]}") from None
+            if code == "RECIPIENT_NOT_IN_PROJECT" and tool == "message":
+                raise ToolError(
+                    f"{code}: Recipient {args.get('recipient_id')!r} is not a member of "
+                    f"project {manifest['project_id']!r}. Check project_context for member IDs."
+                ) from None
             if exc.code in (401, 403):
                 raise ToolError("UNAUTHORIZED: Reconnect this employee mailbox session.") from None
             raise ToolError(

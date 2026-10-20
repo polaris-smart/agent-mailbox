@@ -138,13 +138,16 @@ def test_identity_tool_and_cross_project_rejections(team, tmp_path):
     ):
         with pytest.raises(WorkbenchError):
             invoke(store, a["token"], tool, args)
-    with pytest.raises(WorkbenchError):
+    with pytest.raises(WorkbenchError) as recipient_error:
         invoke(
             store,
             a["token"],
             "message",
             {"title": "Out", "body": "No", "recipient_id": outsider["id"]},
         )
+    assert recipient_error.value.code == "RECIPIENT_NOT_IN_PROJECT"
+    assert outsider["id"] in recipient_error.value.message
+    assert project["id"] in recipient_error.value.message
     private = store.send_message(project["id"], "Private", "For Bob", recipient_id=bob["id"])
     with pytest.raises(WorkbenchError):
         invoke(

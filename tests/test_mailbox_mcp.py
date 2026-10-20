@@ -308,6 +308,29 @@ def test_private_thread_denial_is_not_reported_as_mailbox_outage(connection):
     assert "employee-secret" not in str(caught.value)
 
 
+def test_cross_project_recipient_denial_names_the_scope_without_leaking_server_detail(connection):
+    manifest, _, state, _ = connection
+    server = build_server(manifest)
+    state["status"] = 400
+    state["response"] = {
+        "error": {
+            "code": "RECIPIENT_NOT_IN_PROJECT",
+            "message": "employee-secret private detail",
+        }
+    }
+    with pytest.raises(ToolError, match="RECIPIENT_NOT_IN_PROJECT") as caught:
+        asyncio.run(
+            server.call_tool(
+                "project_message",
+                {"title": "review", "body": "hello", "recipient_id": "outsider"},
+            )
+        )
+    assert "outsider" in str(caught.value)
+    assert "project" in str(caught.value)
+    assert "MAILBOX_UNAVAILABLE" not in str(caught.value)
+    assert "employee-secret" not in str(caught.value)
+
+
 def test_live_resource_denied_without_http(connection):
     manifest, calls, _, _ = connection
     server = build_server(manifest)
