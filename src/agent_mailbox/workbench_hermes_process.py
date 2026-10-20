@@ -385,6 +385,7 @@ def run(python, profile, request, *, source=None, expected_files=None, timeout=2
                     "pin_apply",
                     "pin_status",
                     "pin_rollback",
+                    "pin_refresh",
                 }:
                     if (
                         not set(projection)

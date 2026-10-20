@@ -171,7 +171,15 @@ def _execute(
             completed, pending = set(), None
         else:
             completed, _cutoff, pending = completed_history(store.root, binding["id"])
-        if pending not in (None, plan_id) or set(phases) != completed:
+        # A completed baseline can predate the cutover journal. Its private
+        # required/cutoff pair is still checked by completed_history(), and
+        # the exact pending epoch and gate are checked above. Only that one
+        # legacy baseline may be absent from the journal; every later epoch
+        # must have a matching completed journal.
+        legacy_baseline = set()
+        if prearmed and pending == plan_id and len(completed) == 1 and not phases:
+            legacy_baseline = completed
+        if pending not in (None, plan_id) or set(phases) != completed - legacy_baseline:
             return {"state": "fence_requires_recovery", "delivery_verified": False}
     except (OSError, ValueError):
         return {"state": "cutover_journal_requires_inspection", "delivery_verified": False}

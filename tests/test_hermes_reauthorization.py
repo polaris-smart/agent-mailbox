@@ -109,6 +109,54 @@ def test_prepare_uses_only_verified_profile_and_redacts_session(tmp_path, monkey
     assert "candidate_fingerprint" not in result and "session_id" not in result
 
 
+def test_refresh_only_exact_unstarted_fenced_plan(tmp_path, monkeypatch):
+    from agent_mailbox import workbench_hermes_journal as journal
+
+    store = SimpleNamespace(root=tmp_path)
+    (tmp_path / "wake" / "claims").mkdir(parents=True, mode=0o700)
+    binding = {
+        "id": "binding_" + "a" * 32,
+        "employee_id": "employee_test", "project_id": "project_test",
+        "host_kind": "hermes",
+    }
+    plan = "plan_" + "b" * 32
+    monkeypatch.setattr(reauth.catalog, "_member", lambda *_: None)
+    monkeypatch.setattr(reauth, "_binding", lambda *_: binding)
+    monkeypatch.setattr(holds, "active_fence_for_plan", lambda *_: True)
+    monkeypatch.setattr(holds, "_gate_matches", lambda *_: True)
+    monkeypatch.setattr(journal, "path", lambda *_: tmp_path / "absent-journal")
+    monkeypatch.setattr(
+        reauth.catalog, "_discover",
+        lambda: (tmp_path, Path("/bin/python3"), {
+            "profiles": [{"profile_id": "default", "home": str(tmp_path)}]
+        }),
+    )
+    monkeypatch.setattr(reauth, "hermes_reauthorization_preview", lambda *_: {
+        "state": "candidate_ready", "binding_id": binding["id"],
+        "candidate_fingerprint": "a" * 64,
+    })
+    monkeypatch.setattr(reauth.process, "payload", lambda: tmp_path)
+    monkeypatch.setattr(reauth.process, "FILES", ())
+    calls = []
+    monkeypatch.setattr(reauth.process, "run", lambda *a, **k: (
+        calls.append(a[2]) or {"state": "preview", "expires_at": 12345}
+    ))
+    result = reauth.refresh_exact_fenced_plan(
+        store, "employee_test", "project_test", plan, "default", confirmed=True
+    )
+    assert result == {
+        "state": "plan_refreshed", "plan_id": plan, "expires_at": 12345,
+        "old_mail_released": False, "delivery_verified": False,
+    }
+    assert calls[0]["operation"] == "pin_refresh"
+    assert calls[0]["expected_candidate_fingerprint"] == "a" * 64
+    monkeypatch.setattr(holds, "_gate_matches", lambda *_: False)
+    assert reauth.refresh_exact_fenced_plan(
+        store, "employee_test", "project_test", plan, "default", confirmed=True
+    )["state"] == "fence_requires_recovery"
+    assert len(calls) == 1
+
+
 def test_gateway_instance_change_after_plan_is_not_confirmed(tmp_path, monkeypatch):
     store = SimpleNamespace(root=tmp_path)
     candidate = {

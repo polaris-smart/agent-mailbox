@@ -156,6 +156,53 @@ def test_pin_status_does_not_report_preview_after_external_config_change(case):
     )
 
 
+def test_expired_unchanged_plan_can_be_refreshed_once_without_changing_pin(case, monkeypatch):
+    plan = preview(case)
+    before = case.config.read_bytes()
+    record = case.update.records / plan / "plan.json"
+    original = json.loads(record.read_text())
+    monkeypatch.setattr(setup.time, "time", lambda: original["expires_at"] + 1)
+    with pytest.raises(ValueError, match="plan_expired"):
+        case.update.apply(
+            plan, expected_binding_id=case.binding_id,
+            confirmed=True, gateway_stopped=True,
+        )
+    refreshed = case.update.refresh(
+        plan, expected_binding_id=case.binding_id,
+        expected_candidate_fingerprint=case.fingerprint, confirmed=True,
+    )
+    assert refreshed["state"] == "preview"
+    assert refreshed["expires_at"] > original["expires_at"]
+    assert json.loads(record.read_text()) == original
+    assert case.config.read_bytes() == before
+    with pytest.raises(ValueError, match="already_refreshed"):
+        case.update.refresh(
+            plan, expected_binding_id=case.binding_id,
+            expected_candidate_fingerprint=case.fingerprint, confirmed=True,
+        )
+    assert case.update.apply(
+        plan, expected_binding_id=case.binding_id,
+        confirmed=True, gateway_stopped=True,
+    )["state"] == "configured_runtime_unverified"
+
+
+def test_refresh_refuses_changed_config_or_candidate(case):
+    plan = preview(case)
+    with pytest.raises(ValueError, match="candidate_changed"):
+        case.update.refresh(
+            plan, expected_binding_id=case.binding_id,
+            expected_candidate_fingerprint="different", confirmed=True,
+        )
+    before = case.config.read_bytes()
+    case.config.write_bytes(before + b" ")
+    with pytest.raises(ValueError, match="configuration_changed"):
+        case.update.refresh(
+            plan, expected_binding_id=case.binding_id,
+            expected_candidate_fingerprint=case.fingerprint, confirmed=True,
+        )
+    assert not (case.update.records / plan / "renewal.json").exists()
+
+
 @pytest.mark.parametrize("changed", ["config", "socket"])
 def test_changed_candidate_config_or_live_socket_refuses_without_write(case, changed):
     plan = preview(case)

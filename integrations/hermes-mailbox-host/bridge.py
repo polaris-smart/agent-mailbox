@@ -89,7 +89,7 @@ def execute(request):
             return adapter.rollback(request["plan_id"], confirmed=request["confirmed"],
                                     gateway_stopped=request["gateway_stopped"])
         return adapter.status(request["plan_id"])
-    if operation in {"pin_preview", "pin_apply", "pin_status", "pin_rollback"}:
+    if operation in {"pin_preview", "pin_apply", "pin_status", "pin_rollback", "pin_refresh"}:
         source = Path(__file__).resolve().with_name("setup.py")
         spec = importlib.util.spec_from_file_location("mailbox_hermes_preparation", source)
         module = importlib.util.module_from_spec(spec)
@@ -105,8 +105,10 @@ def execute(request):
         required = {"version", "operation", "profile", "plan_id"}
         if operation in {"pin_apply", "pin_rollback"}:
             required |= {"expected_binding_id", "confirmed", "gateway_stopped"}
-        elif operation == "pin_status":
+        elif operation in {"pin_status", "pin_refresh"}:
             required.add("expected_binding_id")
+        if operation == "pin_refresh":
+            required |= {"expected_candidate_fingerprint", "confirmed"}
         if set(request) != required:
             raise ValueError("invalid_request")
         if operation == "pin_apply":
@@ -116,6 +118,11 @@ def execute(request):
             return adapter.rollback(request["plan_id"], expected_binding_id=request["expected_binding_id"],
                                     confirmed=request["confirmed"],
                                     gateway_stopped=request["gateway_stopped"])
+        if operation == "pin_refresh":
+            return adapter.refresh(request["plan_id"],
+                                   expected_binding_id=request["expected_binding_id"],
+                                   expected_candidate_fingerprint=request["expected_candidate_fingerprint"],
+                                   confirmed=request["confirmed"])
         return adapter.status(request["plan_id"],
                               expected_binding_id=request["expected_binding_id"])
     if operation in {"mcp_command_preview", "mcp_command_apply",

@@ -1100,7 +1100,48 @@ class PinUpdate:
         if (plan.get("version") != 1 or plan.get("id") != name
                 or plan.get("profile") != str(self.preparation.profile)):
             raise ValueError("plan_scope_mismatch")
+        renewal_path = folder / "renewal.json"
+        if renewal_path.exists() or renewal_path.is_symlink():
+            renewal = json.loads(read_file(renewal_path))
+            if (not isinstance(renewal, dict)
+                    or set(renewal) != {"version", "plan_id", "binding_id",
+                                            "candidate_fingerprint", "prior_expires_at",
+                                            "expires_at"}
+                    or renewal["version"] != 1 or renewal["plan_id"] != name
+                    or renewal["binding_id"] != plan["binding_id"]
+                    or renewal["candidate_fingerprint"] != plan["candidate_fingerprint"]
+                    or renewal["prior_expires_at"] != plan["expires_at"]
+                    or type(renewal["expires_at"]) not in {int, float}
+                    or renewal["expires_at"] <= plan["expires_at"]):
+                raise ValueError("pin_renewal_unconfirmed")
+            plan = {**plan, "expires_at": renewal["expires_at"]}
         return folder, plan
+
+    def refresh(self, name, *, expected_binding_id,
+                expected_candidate_fingerprint, confirmed=False):
+        """Extend one unchanged, unstarted plan once; never change the pin."""
+        if confirmed is not True:
+            raise ValueError("explicit_plan_refresh_confirmation_required")
+        directory(self.preparation.records, create=True)
+        with self.preparation.operation():
+            folder, plan = self._plan(name)
+            if (expected_binding_id != plan["binding_id"]
+                    or expected_candidate_fingerprint != plan["candidate_fingerprint"]):
+                raise ValueError("candidate_changed_refresh_required")
+            if (folder / "intent.json").exists() or (folder / "rolled_back.json").exists():
+                raise ValueError("pin_update_already_started_inspect_status")
+            if (folder / "renewal.json").exists():
+                raise ValueError("pin_plan_already_refreshed")
+            if self.status(name, expected_binding_id=expected_binding_id)["state"] != "preview":
+                raise ValueError("configuration_changed_refresh_required")
+            renewal = {
+                "version": 1, "plan_id": name, "binding_id": expected_binding_id,
+                "candidate_fingerprint": expected_candidate_fingerprint,
+                "prior_expires_at": plan["expires_at"],
+                "expires_at": max(time.time(), plan["expires_at"]) + TTL,
+            }
+            write_new(folder / "renewal.json", json.dumps(renewal, sort_keys=True).encode())
+            return self.status(name, expected_binding_id=expected_binding_id)
 
     def apply(self, name, *, expected_binding_id,
               confirmed=False, gateway_stopped=False):

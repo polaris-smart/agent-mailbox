@@ -23,6 +23,71 @@ def prepare(store, employee_id, project_id):
         return {"state": "check_unconfirmed", "candidate_available": False}
 
 
+def refresh_exact_fenced_plan(
+    store, employee_id, project_id, plan_id, profile_id, *, confirmed=False
+):
+    """Renew only an unchanged, unstarted plan already fencing this binding."""
+    catalog._member(store, employee_id, project_id)
+    if confirmed is not True:
+        return {"state": "confirmation_required", "delivery_verified": False}
+    if not isinstance(plan_id, str) or not re.fullmatch(r"plan_[0-9a-f]{32}", plan_id):
+        return {"state": "plan_unconfirmed", "delivery_verified": False}
+    from .workbench_hermes_cutover import _exclusive_cutover
+    from .workbench_hermes_journal import path as journal_path
+    from .workbench_reauthorization_holds import _gate_matches, active_fence_for_plan
+
+    try:
+        with _exclusive_cutover(store.root):
+            binding = _binding(store.root, employee_id, project_id, "hermes")
+            if not binding or not (
+                active_fence_for_plan(store.root, binding["id"], plan_id)
+                and _gate_matches(store.root, binding, plan_id)
+            ):
+                return {"state": "fence_requires_recovery", "delivery_verified": False}
+            _root, python, discovery = catalog._discover()
+            matches = [] if discovery is None else [
+                item for item in discovery["profiles"] if item["profile_id"] == profile_id
+            ]
+            if len(matches) != 1:
+                return {"state": "profile_unconfirmed", "delivery_verified": False}
+            profile = Path(matches[0]["home"])
+            record = journal_path(store.root, binding["id"], plan_id)
+            if record.exists() or record.is_symlink():
+                return {"state": "cutover_journal_requires_inspection", "delivery_verified": False}
+            candidate = hermes_reauthorization_preview(store, employee_id, project_id)
+            if (
+                candidate.get("state") != "candidate_ready"
+                or candidate.get("binding_id") != binding["id"]
+            ):
+                return {"state": "configuration_changed", "delivery_verified": False}
+            source = process.payload()
+            hashes = {
+                name: hashlib.sha256((source / name).read_bytes()).hexdigest()
+                for name in process.FILES
+            }
+            result = process.run(
+                python, profile,
+                {
+                    "version": 1, "operation": "pin_refresh", "profile": str(profile),
+                    "plan_id": plan_id, "expected_binding_id": binding["id"],
+                    "expected_candidate_fingerprint": candidate["candidate_fingerprint"],
+                    "confirmed": True,
+                },
+                source=source, expected_files=hashes, timeout=5,
+            )
+            return {
+                "state": "plan_refreshed" if result.get("state") == "preview" else "check_unconfirmed",
+                "plan_id": plan_id,
+                "expires_at": result.get("expires_at"),
+                "old_mail_released": False,
+                "delivery_verified": False,
+            }
+    except BlockingIOError:
+        return {"state": "cutover_in_progress", "delivery_verified": False}
+    except (OSError, ValueError, TypeError, KeyError):
+        return {"state": "check_unconfirmed", "delivery_verified": False}
+
+
 def _prepare(store, employee_id, project_id):
     candidate = hermes_reauthorization_preview(store, employee_id, project_id)
     if candidate["state"] != "candidate_ready":

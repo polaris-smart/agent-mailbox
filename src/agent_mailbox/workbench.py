@@ -1549,6 +1549,26 @@ class Handler(BaseHTTPRequestHandler):
                 ),
             )
         if (
+            route == ["mailbox", "receivers", "hermes", "reauthorization", "refresh"]
+            and method == "POST"
+        ):
+            from .workbench_hermes_reauthorization import refresh_exact_fenced_plan
+
+            if (
+                set(data) != {"employee_id", "project_id", "plan_id", "profile_id", "confirmed"}
+                or data["confirmed"] is not True
+            ):
+                raise WorkbenchError(
+                    "INVALID_REQUEST", "Confirm one exact fenced Hermes plan."
+                )
+            return self.send_value(
+                200,
+                refresh_exact_fenced_plan(
+                    store, data["employee_id"], data["project_id"],
+                    data["plan_id"], data["profile_id"], confirmed=True,
+                ),
+            )
+        if (
             route == ["mailbox", "receivers", "hermes", "reauthorization", "commit"]
             and method == "POST"
         ):
