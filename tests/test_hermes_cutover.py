@@ -515,6 +515,27 @@ def test_partial_binding_fence_blocks_new_plan_before_gateway(monkeypatch, tmp_p
     assert controller.events == []
 
 
+def test_exact_prearmed_plan_can_commit_without_releasing_old_mail(monkeypatch, tmp_path):
+    store, controller = setup(monkeypatch, tmp_path)
+    binding_id = "binding_" + "a" * 32
+    plan_id = "plan_" + "b" * 32
+    claims = store.root / "wake" / "claims"
+    claims.mkdir(mode=0o700)
+    required = required_path(store.root, binding_id)
+    gate = gate_path(store.root, binding_id)
+    required.write_text(json.dumps({
+        "version": 1, "binding_id": binding_id, "plan_id": plan_id,
+    }))
+    gate.write_text(json.dumps({
+        "version": 1, "binding_id": binding_id, "plan_id": plan_id,
+        "employee_id": "employee", "project_id": "project",
+    }))
+    required.chmod(0o600)
+    gate.chmod(0o600)
+    assert invoke(store, controller)["state"] == "new_route_released"
+    assert controller.events.index("drain") < controller.events.index("arm")
+
+
 def test_unsafe_binding_journal_directory_blocks_gateway(monkeypatch, tmp_path):
     store, controller = setup(monkeypatch, tmp_path)
     claims = store.root / "wake" / "claims"

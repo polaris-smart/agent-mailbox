@@ -31,8 +31,11 @@ from .workbench_hermes_gateway_gate import drained_idle, stopped_after_drain
 from .workbench_hermes_reauthorization import arm_old_mail, release_new_route
 from .workbench_host_transport import endpoint_for
 from .workbench_reauthorization_holds import (
+    _gate_matches,
     _private_claims,
+    active_fence_for_plan,
     completed_history,
+    cutoff_path,
     gated,
 )
 from .workbench_receiver_status import _binding
@@ -150,10 +153,25 @@ def _execute(
         )
         if any(phase != "complete" for phase in phases.values()):
             return {"state": "cutover_journal_requires_inspection", "delivery_verified": False}
-        if gated(store.root, binding["id"]):
+        # The Owner may have explicitly armed this same plan before pressing
+        # Commit. Resume only its exact, durable fence; another or partial gate
+        # remains a recovery stop. The normal arm step below rechecks all old
+        # pending messages while the Gateway is drained.
+        prearmed = gated(store.root, binding["id"])
+        if prearmed and not (
+            active_fence_for_plan(store.root, binding["id"], plan_id)
+            and _gate_matches(store.root, binding, plan_id)
+        ):
             return {"state": "fence_requires_recovery", "delivery_verified": False}
-        completed, _cutoff, pending = completed_history(store.root, binding["id"])
-        if pending is not None or set(phases) != completed:
+        cutoff = cutoff_path(store.root, binding["id"])
+        if prearmed and not cutoff.exists() and not cutoff.is_symlink():
+            # First cutover: the pre-pin required marker intentionally exists
+            # before its matching cutoff. The exact fence proof above verifies
+            # this is the same plan and that no epoch record exists yet.
+            completed, pending = set(), None
+        else:
+            completed, _cutoff, pending = completed_history(store.root, binding["id"])
+        if pending not in (None, plan_id) or set(phases) != completed:
             return {"state": "fence_requires_recovery", "delivery_verified": False}
     except (OSError, ValueError):
         return {"state": "cutover_journal_requires_inspection", "delivery_verified": False}
