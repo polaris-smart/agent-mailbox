@@ -1,7 +1,14 @@
 """The release wake gate is scoped to one employee and one project."""
 
 import json
+import socket
+import tempfile
+import threading
+from pathlib import Path
 
+import pytest
+
+from agent_mailbox import workbench_wake_gate
 from agent_mailbox.cli import _dispatch
 from agent_mailbox.workbench_host_bindings import set_binding
 from agent_mailbox.workbench_mail_notifications import enqueue, mark_host_received
@@ -51,9 +58,7 @@ def test_gate_requires_exact_route_and_host_receipt(tmp_path, monkeypatch, capsy
         encoding="utf-8",
     )
     endpoint.chmod(0o600)
-    monkeypatch.setattr(
-        "agent_mailbox.workbench_host_transport.receiver_online", lambda _home, _route: True
-    )
+    monkeypatch.setattr(workbench_wake_gate, "receiver_online", lambda _home, _route: True)
     with store._transaction() as db:
         enqueue(db, "first-mail", employee["id"], first["id"])
         enqueue(db, "other-project-mail", employee["id"], second["id"])
@@ -149,3 +154,75 @@ def test_gate_does_not_disclose_invalid_endpoint_content(tmp_path, capsys):
     code, result = _check(store.root, employee["id"], project["id"], capsys)
     assert code == 2
     assert result == {"verdict": "indeterminate", "reason": "check_unconfirmed"}
+
+
+@pytest.mark.parametrize(
+    ("gateway_available", "route_available", "consistent"),
+    [(True, False, False), (False, True, False), (True, True, True)],
+)
+def test_hermes_listener_and_exact_route_are_separate_checks(
+    tmp_path, capsys, gateway_available, route_available, consistent
+):
+    store = WorkbenchStore(tmp_path / "home")
+    project = store.create_project("Synthetic", tmp_path)
+    employee = store.create_employee("Hermes", "hermes", project["id"])
+    binding = set_binding(
+        store, employee["id"], project["id"], host_kind="hermes", host_session_id="original"
+    )
+    with tempfile.TemporaryDirectory(prefix="am-gate-", dir="/private/tmp") as directory:
+        endpoint = Path(directory) / "receiver.sock"
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(endpoint))
+        endpoint.chmod(0o600)
+        listener.listen(1)
+        config = store.root / "wake" / "host-endpoints.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "endpoints": [
+                        {
+                            "binding_id": binding["id"],
+                            "employee_id": employee["id"],
+                            "host_kind": "hermes",
+                            "socket_path": str(endpoint),
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        config.chmod(0o600)
+        errors = []
+
+        def answer():
+            try:
+                channel, _ = listener.accept()
+                with channel:
+                    channel.recv(8192)
+                    channel.sendall(
+                        json.dumps(
+                            {
+                                "protocol": "agent-mailbox.host-health.v1",
+                                "host_kind": "hermes",
+                                "gateway_injection_available": gateway_available,
+                                "route_available": route_available,
+                            }
+                        ).encode()
+                        + b"\n"
+                    )
+            except Exception as exc:  # noqa: BLE001 — surface socket worker failures
+                errors.append(exc)
+
+        worker = threading.Thread(target=answer, daemon=True)
+        worker.start()
+        try:
+            code, result = _check(store.root, employee["id"], project["id"], capsys)
+        finally:
+            listener.close()
+            worker.join(3)
+        assert result["checks"]["G1_declared"]["passed"] is True
+        assert result["checks"]["G2_listener"]["passed"] is True
+        assert result["checks"]["G3_consistent"]["passed"] is consistent
+        assert not worker.is_alive() and not errors
+        assert code == 1  # A health check alone is not a fresh host receipt.

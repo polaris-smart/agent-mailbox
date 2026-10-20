@@ -7,6 +7,7 @@ opened and accepted in the intended original session.
 
 from __future__ import annotations
 
+import errno
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
@@ -14,7 +15,27 @@ from math import isfinite
 from pathlib import Path
 
 from .workbench_host_bindings import load_bindings
-from .workbench_host_transport import configured_for_binding, receiver_online
+from .workbench_host_transport import configured_for_binding, endpoint_for, receiver_online
+from .workbench_receiver_status import _probe
+
+
+def _hermes_health(home: Path, binding: dict) -> dict | None:
+    """A valid listener response is distinct from an available exact route."""
+    endpoint = endpoint_for(home, binding)
+    if not endpoint:
+        return None
+    try:
+        return _probe(endpoint, "hermes", timeout=1.0, binding=binding, details=True)
+    except OSError as exc:
+        if isinstance(exc, TimeoutError) or exc.errno in {
+            errno.ENOENT,
+            errno.ECONNREFUSED,
+            errno.ETIMEDOUT,
+        }:
+            return None
+        raise
+    except ValueError:
+        return None
 
 
 def evaluate(
@@ -79,11 +100,17 @@ def evaluate(
         None,
     )
     declared = bool(binding and configured_for_binding(home, binding))
-    receiver = bool(declared and receiver_online(home, binding))
+    if declared and member["kind"] == "hermes":
+        health = _hermes_health(home, binding)
+        receiver = health is not None
+        route_ready = bool(health and health["route_available"] and health["gateway_available"])
+    else:
+        receiver = bool(declared and receiver_online(home, binding))
+        route_ready = receiver
     checks = {
         "G1_declared": {"passed": declared},
         "G2_listener": {"passed": receiver},
-        "G3_consistent": {"passed": declared and receiver},
+        "G3_consistent": {"passed": declared and route_ready},
         "G4_backlog": {
             "passed": held == unknown == 0 and oldest_pending_minutes <= max_pending_minutes
         },
