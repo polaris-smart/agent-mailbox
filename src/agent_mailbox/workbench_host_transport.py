@@ -277,10 +277,13 @@ def _codex_launcher_endpoint(home, directory, thread_id=None):
         raise ValueError("owner_private_launcher_directory_required")
     manifests = []
     for file in directory.iterdir():
-        if re.fullmatch(r"[0-9]+-[a-f0-9]{12}\.json", file.name):
-            manifests.append(file)
-            if len(manifests) > 16:
-                raise ValueError("too_many_launcher_manifests")
+        if not re.fullmatch(r"[0-9]+-[a-f0-9]{12}\.json", file.name):
+            continue
+        manifests.append(file)
+        # A crashed launcher can leave a manifest behind. Bound total work,
+        # but do not let a few stale entries hide a live original session.
+        if len(manifests) > 256:
+            raise ValueError("too_many_launcher_manifests")
     candidates = []
     for file in manifests:
         try:
@@ -317,6 +320,8 @@ def _codex_launcher_endpoint(home, directory, thread_id=None):
                     continue
                 raise  # Timeout/permissions are uncertainty, never proof of death.
         candidates.append(str(endpoint))
+        if len(candidates) > 16:
+            raise ValueError("too_many_live_codex_launchers")
     if len(candidates) > 1:
         if thread_id is None:
             raise ValueError("ambiguous_live_codex_launchers")

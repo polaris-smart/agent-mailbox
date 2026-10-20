@@ -92,6 +92,14 @@ def test_restart_finds_new_socket_without_rewriting_owner_config(routing):
     assert config.read_bytes() == original
 
 
+def test_crashed_restarts_do_not_hide_latest_live_receiver(routing):
+    home, _, binding, _, host = routing
+    for index in range(1, 18):
+        host(index, live=False)
+    latest, _ = host(18)
+    assert transport.endpoint_for(home, binding) == str(latest)
+
+
 def test_absent_receiver_does_not_fall_back_to_legacy_hook(routing, monkeypatch):
     home, _, binding, _, _ = routing
     monkeypatch.setattr(wake, "hook_command", lambda h: ["must-not-run"])
@@ -313,7 +321,15 @@ def test_legacy_manifest_requires_explicit_new_launcher(routing):
 
 def test_manifest_scan_is_bounded(routing):
     home, base, binding, _, _ = routing
-    for i in range(17):
+    for i in range(257):
         (base / f"{i}-123456789abc.json").write_text("{}")
     with pytest.raises(ValueError, match="too_many"):
+        transport.endpoint_for(home, binding)
+
+
+def test_excess_live_launchers_fail_closed(routing):
+    home, _, binding, _, host = routing
+    for index in range(1, 18):
+        host(index)
+    with pytest.raises(ValueError, match="too_many_live_codex_launchers"):
         transport.endpoint_for(home, binding)
