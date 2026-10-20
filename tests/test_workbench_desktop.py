@@ -147,6 +147,7 @@ SCRIPT = (
     "    with urllib.request.urlopen(root, timeout=5) as response:\n"
     "        assert response.status == 200\n"
     "    print('DESKTOP_OK', flush=True)\n"
+    "    service_stopped.wait(timeout=8)\n"
     "fake = types.ModuleType('agent_mailbox.workbench_desktop')\n"
     "fake.run_desktop = fake_desktop\n"
     "sys.modules['agent_mailbox.workbench_desktop'] = fake\n"
