@@ -78,6 +78,12 @@ def test_preview_does_not_issue_or_write_config_and_apply_is_idempotent(setup):
     assert all(p.stat().st_mode & 0o777 == 0o600 for p in directory.iterdir())
 
 
+def test_installed_python_mailbox_command_ignores_host_python_environment(setup):
+    store, project, employee, session, *_ = setup
+    _, args = installer._credential(store, employee["id"], project["id"], session["id"])
+    assert args[:3] == ["-E", "-m", "agent_mailbox"]
+
+
 @pytest.mark.parametrize(
     "source", ["effective", "inherited", "disabled", "runtime", "offline", "missing", "untrusted"]
 )

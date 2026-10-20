@@ -88,7 +88,7 @@ def _credential(store, employee_id, project_id, session_id):
             or session["project_id"] != project_id
         ):
             raise ValueError("installer_session_scope_mismatch")
-    args = [] if getattr(sys, "frozen", False) else ["-m", "agent_mailbox"]
+    args = [] if getattr(sys, "frozen", False) else ["-E", "-m", "agent_mailbox"]
     return sys.executable, [
         *args,
         "mailbox-mcp",

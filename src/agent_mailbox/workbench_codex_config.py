@@ -87,12 +87,13 @@ def plan_install(before, *, command, args):
         or not Path(command).is_absolute()
         or not isinstance(args, list)
         or not all(isinstance(a, str) for a in args)
-        or len(args) not in (3, 5)
+        or len(args) not in (3, 5, 6)
     ):
         raise ValueError("codex_mailbox_invalid_command")
     if (
         args[-3:-1] != ["mailbox-mcp", "--session-file"]
         or (len(args) == 5 and args[:2] != ["-m", "agent_mailbox"])
+        or (len(args) == 6 and args[:3] != ["-E", "-m", "agent_mailbox"])
         or not Path(args[-1]).is_absolute()
         or any("\x00" in value or len(value) > 8192 for value in [command, *args])
     ):

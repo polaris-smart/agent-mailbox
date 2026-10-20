@@ -11,7 +11,7 @@ from .workbench_store import WorkbenchError
 
 
 def _configuration(path):
-    args = [] if getattr(sys, "frozen", False) else ["-m", "agent_mailbox"]
+    args = [] if getattr(sys, "frozen", False) else ["-E", "-m", "agent_mailbox"]
     return {
         "mcpServers": {
             "agent-mailbox-project": {

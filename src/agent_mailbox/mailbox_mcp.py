@@ -10,6 +10,11 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+if __name__ == "__main__":
+    from .cli import _isolate_mailbox_imports
+
+    _isolate_mailbox_imports()
+
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 

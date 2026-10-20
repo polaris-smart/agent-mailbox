@@ -3,9 +3,11 @@
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from socketserver import TCPServer
 
 import pytest
@@ -350,6 +352,25 @@ def test_cli_reports_missing_session_file_without_traceback(tmp_path, capsys):
     assert "会话文件" in err and "工作台" in err  # 去哪修
     assert "agent-mailbox mailbox-mcp --session-file" in err  # 一条命令
     assert "Traceback" not in err
+
+
+def test_cli_ignores_host_pythonpath_when_starting_mailbox_mcp(tmp_path):
+    shadow = tmp_path / "host-site" / "mcp"
+    shadow.mkdir(parents=True)
+    (shadow / "__init__.py").write_text('raise RuntimeError("HOST_MCP_SHADOW")\n')
+    source = str(Path(__import__("agent_mailbox").__file__).resolve().parent.parent)
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join((str(shadow.parent), source))}
+    for module, extra in (("agent_mailbox", ["mailbox-mcp"]), ("agent_mailbox.mailbox_mcp", [])):
+        result = subprocess.run(
+            [sys.executable, "-m", module, *extra, "--help"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "HOST_MCP_SHADOW" not in result.stderr
 
 
 def test_read_only_knowledge_tools_are_actually_callable(tmp_path, monkeypatch, python_cli):

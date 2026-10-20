@@ -100,6 +100,13 @@ def test_only_private_session_file_command_shape(args):
         config.plan_install(None, command="/exe", args=args)
 
 
+def test_isolated_python_mailbox_command_is_accepted():
+    args = ["-E", "-m", "agent_mailbox", "mailbox-mcp", "--session-file", "/private/s.json"]
+    plan = config.plan_install(None, command="/synthetic/python", args=args)
+    parsed = config.tomllib.loads(plan.after.decode())
+    assert parsed["mcp_servers"][config.SERVER]["args"] == args
+
+
 def test_remove_preserves_later_independent_changes():
     original = b"[features]\nkeep = true\n"
     plan = install_plan(original)

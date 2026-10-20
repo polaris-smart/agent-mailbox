@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -23,8 +24,32 @@ def workbench_lease_modes() -> tuple[str, ...]:
     return MODES
 
 
+def _isolate_mailbox_imports() -> None:
+    """Drop host-injected import roots before loading MCP and its dependencies.
+
+    Python has already consumed PYTHONPATH at startup, so clearing the variable
+    alone leaves the host site-packages ahead of this installation in sys.path.
+    Keep this package's own source root for `python -m` development launches.
+    """
+    inherited = os.environ.pop("PYTHONPATH", "")
+    os.environ.pop("PYTHONHOME", None)
+    if not inherited:
+        return
+    package_root = Path(__file__).resolve().parent.parent
+    injected = {Path(value or os.getcwd()).resolve() for value in inherited.split(os.pathsep)}
+    retained = []
+    for value in sys.path:
+        root = Path(value or os.getcwd()).resolve()
+        if root not in injected or root == package_root:
+            retained.append(value)
+    sys.path[:] = retained
+
+
 def main(argv: list[str] | None = None) -> None:
     """CLI 入口：**绝不让 WorkbenchError 变成裸 traceback**（铁律 U5 错误自解释）。"""
+    args = sys.argv[1:] if argv is None else argv
+    if args and args[0] == "mailbox-mcp":
+        _isolate_mailbox_imports()
     from .workbench_store import WorkbenchError
 
     try:

@@ -32,6 +32,13 @@ def test_exporting_same_connection_reuses_its_private_manifest(team):
     assert len(list_sessions(store, employee_id, project_id)) == 1
 
 
+def test_exported_python_mcp_command_ignores_host_python_environment(team):
+    store, project_id, employee_id = team
+    exported = export_session(store, employee_id, project_id, "Isolated Python")
+    args = exported["config"]["mcpServers"]["agent-mailbox-project"]["args"]
+    assert args[:3] == ["-E", "-m", "agent_mailbox"]
+
+
 def test_separate_conversation_keeps_its_own_key(team):
     store, project_id, employee_id = team
     desktop = export_session(store, employee_id, project_id, "Desktop conversation")
