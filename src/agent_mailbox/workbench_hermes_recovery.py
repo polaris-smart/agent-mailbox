@@ -12,6 +12,7 @@ import os
 import re
 import stat
 import time
+from pathlib import Path
 
 from . import workbench_hermes_catalog as catalog
 from . import workbench_hermes_journal as journal
@@ -28,11 +29,28 @@ from .workbench_reauthorization_holds import (
     required_path,
 )
 from .workbench_receiver_status import _binding
+from .workbench_store import WorkbenchError
+
+
+def _resolve_cutover_profile(store, employee_id, project_id, profile_id):
+    """Accept the selected profile ID returned by reauthorization preview."""
+    try:
+        return catalog.resolve(store, employee_id, project_id, profile_id)
+    except WorkbenchError as exc:
+        if exc.code != "RECEIVER_PROFILE_UNCONFIRMED":
+            raise
+    _root, python, discovery = catalog._discover()
+    matches = [] if discovery is None else [
+        entry for entry in discovery["profiles"] if entry["profile_id"] == profile_id
+    ]
+    if len(matches) != 1:
+        raise WorkbenchError("RECEIVER_PROFILE_UNCONFIRMED", "Choose a listed Hermes profile.")
+    return python, Path(matches[0]["home"])
 
 
 def inspect(store, employee_id, project_id, profile_id):
     """Return a conservative state, never a recovery instruction or secret."""
-    _python, profile = catalog.resolve(store, employee_id, project_id, profile_id)
+    _python, profile = _resolve_cutover_profile(store, employee_id, project_id, profile_id)
     binding = _binding(store.root, employee_id, project_id, "hermes")
     if not binding:
         return {"state": "binding_required", "delivery_verified": False}
@@ -186,7 +204,7 @@ def restore_pre_pin(
 def _restore_pre_pin(
     store, employee_id, project_id, plan_id, profile_id, *, control_factory, route_seconds
 ):
-    python, profile = catalog.resolve(store, employee_id, project_id, profile_id)
+    python, profile = _resolve_cutover_profile(store, employee_id, project_id, profile_id)
     binding = _binding(store.root, employee_id, project_id, "hermes")
     if not binding:
         return {"state": "binding_required", "delivery_verified": False}
@@ -359,7 +377,7 @@ def retry_restore_pre_pin(
 def _retry_restore_pre_pin(
     store, employee_id, project_id, plan_id, profile_id, *, control_factory, route_seconds
 ):
-    python, profile = catalog.resolve(store, employee_id, project_id, profile_id)
+    python, profile = _resolve_cutover_profile(store, employee_id, project_id, profile_id)
     binding = _binding(store.root, employee_id, project_id, "hermes")
     if not binding:
         return {"state": "binding_required", "delivery_verified": False}

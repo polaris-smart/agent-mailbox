@@ -23,6 +23,22 @@ from agent_mailbox.workbench_reauthorization_holds import (
 from agent_mailbox.workbench_store import WorkbenchStore
 
 
+def test_recovery_accepts_preview_profile_id_without_browser_path(monkeypatch, tmp_path):
+    store = SimpleNamespace(root=tmp_path)
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    monkeypatch.setattr(recovery.catalog, "_member", lambda *_: None)
+    monkeypatch.setattr(recovery.catalog, "_discover", lambda: (
+        tmp_path, Path("/fake/python"),
+        {"profiles": [{"profile_id": "default", "home": str(profile)}]},
+    ))
+    assert recovery._resolve_cutover_profile(store, "employee", "project", "default") == (
+        Path("/fake/python"), profile,
+    )
+    with pytest.raises(Exception, match="Choose a listed Hermes profile"):
+        recovery._resolve_cutover_profile(store, "employee", "project", str(profile))
+
+
 def test_recovery_inspection_distinguishes_cutover_fence_and_external_marker(monkeypatch, tmp_path):
     store = SimpleNamespace(root=tmp_path)
     profile = tmp_path / "profile"
