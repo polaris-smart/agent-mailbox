@@ -43,6 +43,42 @@ def main(argv: list[str] | None = None) -> None:
 
 def _dispatch(argv: list[str] | None = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] == "wake-check":
+        import sqlite3
+
+        parser = argparse.ArgumentParser(
+            prog="agent-mailbox wake-check",
+            description="Read-only component readiness for one employee and project.",
+        )
+        parser.add_argument("--home", type=Path, required=True)
+        parser.add_argument("--employee", required=True)
+        parser.add_argument("--project", required=True)
+        parser.add_argument("--max-pending-min", type=float, default=30.0)
+        parser.add_argument("--json", action="store_true")
+        options = parser.parse_args(args[1:])
+        from .workbench_wake_gate import evaluate
+
+        try:
+            result = evaluate(
+                options.home,
+                options.employee,
+                options.project,
+                max_pending_minutes=options.max_pending_min,
+            )
+        except (OSError, ValueError, TypeError, sqlite3.Error) as exc:
+            reason = (
+                "workbench_db_missing"
+                if str(exc) == "workbench_db_missing"
+                else "check_unconfirmed"
+            )
+            result = {"verdict": "indeterminate", "reason": reason}
+        if options.json:
+            print(json.dumps(result, ensure_ascii=False))
+        else:
+            print(f"Wake component gate: {result['verdict']}")
+            for name, check in result.get("checks", {}).items():
+                print(f"  {name}: {'pass' if check['passed'] else 'fail'}")
+        return {"pass": 0, "fail": 1, "indeterminate": 2}[result["verdict"]]
     if args and args[0] == "codex-receiver-start":
         from .workbench_codex_shortcut import main as receiver_main
 
@@ -278,6 +314,7 @@ def _dispatch(argv: list[str] | None = None) -> None:
   --bind EMPLOYEE --project PROJECT --host HOST --session SESSION  绑定已有宿主会话
   --unbind EMPLOYEE --project PROJECT  撤销项目范围的宿主绑定
   --bindings    只读列出绑定；绑定不等于已接通
+  agent-mailbox wake-check --home HOME --employee E --project P --json  只读检查收件路由（非完整收信验收）
   --plist-dir   单元目录（默认 ~/Library/LaunchAgents ✓ 测试时可指临时目录 ✓）
   --state-dir   唤醒状态目录（默认 <store home>/wake ✓ hook 与 outbox **钉在 store home** ✗）
 默认不装 ✓ opt-in ✓；四道闸（水位线/冷启动/冷却 15 分钟/≤4 次每小时）都在代码里 ✓""")
