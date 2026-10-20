@@ -237,6 +237,7 @@ class LiveTest(unittest.IsolatedAsyncioTestCase):
         with (
             patch.dict(live.SUPPORTED, {"gateway.session": "0" * 64}),
             patch.dict(live.PRIVATE_SUPPORTED, {"gateway.session": "0" * 64}),
+            patch.dict(live.AUTHORITY_SUPPORTED, {"gateway.session": "0" * 64}),
             self.assertRaisesRegex(ValueError, "unsupported_hermes_metadata_version"),
         ):
             self.reader.snapshot()

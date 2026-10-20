@@ -32,13 +32,24 @@ PRIVATE_SUPPORTED = {
     "gateway.run_turn": "2166596c5f2f9ae07c37c81dacd51d24167310443ac2f8e71c1a8656e2a7e6a0",
 }
 
+# Complete session-authority generation, matching the separately pinned
+# admission path in pinned.py. A mixed set must still fail closed.
+AUTHORITY_SUPPORTED = {
+    "hermes_cli.plugins": "09d2ecf9298118b156cd092190235507169fada6f0ea9ec32b6b61a5747e0549",
+    "gateway.run_plugin_injection": "e4097818da5177cf779a30c06426ff4789bf986cdedd298c4439278d7272a7f1",
+    "gateway.session": "632d8e541b07262b8af3006905d1719fdce1cd011b5573043a14380a9ceb0933",
+    "gateway.session_persistence": "db4dad2fcdc378a0b7729e6f02d6dd31201dcf37008c92b07cfc546b15723183",
+    "hermes_constants": "fa787b51131a857182df790d19f7285f39d91f2abfd9ecf8142909a1de7e130e",
+    "gateway.run": "ad8e017ab49075f33f5659dfefe547ecb73467dd139e80e3fec39182393045f4",
+}
+
 
 def _sdk():
     # A diagnostic request must never import the runner. Accept only one
     # complete pinned generation; a mixture of legacy/private host files fails.
     if any(sys.modules.get(name) is None for name in SUPPORTED):
         raise ValueError("hermes_runtime_not_loaded")
-    for expected in (SUPPORTED, PRIVATE_SUPPORTED):
+    for expected in (SUPPORTED, PRIVATE_SUPPORTED, AUTHORITY_SUPPORTED):
         modules = {}
         for name, digest in expected.items():
             module = sys.modules.get(name)
