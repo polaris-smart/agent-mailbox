@@ -1132,9 +1132,8 @@ function openManualEmployeeForm() {
   body.append(form);
 }
 
-// 首次启动的**未签名提示**（HS 0.8.1 本体第 3 条 ✓）：
-// 用户是"解包双击"的人 ✓ 看不到 README ✗ ⇒ 必须在**界面内**说清两步绕过 ✓
-// 诚实原则 ✓：明说"我们没有签名/公证"✓（不是 bug ✗ 也不是你的错 ✓）
+// First-run notice for the unsigned distribution. Keep the platform guidance
+// factual and avoid claiming that an unsigned binary is automatically safe.
 function unsignedNotice() {
   const KEY = "agent-mailbox.unsigned-notice.dismissed";
   let dismissed = false;
@@ -1149,12 +1148,13 @@ function unsignedNotice() {
     icon("shield"),
     el("div", {},
       el("strong", {}, t("这个版本没有做签名与公证", "This build is not code-signed or notarized")),
-      el("p", {}, t("自己人用的版本 ✓ 无害 ✓ 只是系统第一次会拦一下 ✓ 两步就能过：", "A self-hosted build. Harmless; the OS just asks once. Two steps:")),
+      el("p", {}, t("系统可能阻止打开未签名的应用。请先核对下载来源，再按系统提示决定是否打开。", "Your system may block an unsigned app. Verify where you downloaded it before deciding whether to open it.")),
       el("ul", {},
-        el("li", {}, t("macOS：系统设置 → 隐私与安全性 → 仍要打开 ✓ 或终端执行 `xattr -d com.apple.quarantine /Applications/Agent Mailbox.app`",
-                       "macOS: System Settings - Privacy & Security - Open Anyway, or `xattr -d com.apple.quarantine /Applications/Agent Mailbox.app`")),
-        el("li", {}, t("Windows：SmartScreen 提示里点「更多信息」→「仍要运行」✓", "Windows: on the SmartScreen prompt choose More info, then Run anyway."))),
-      el("p", { class: "field-hint" }, t("我们**不含任何内置智能体** ✓ 引擎由你自备 ✓", "No agent engines are bundled; bring your own."))),
+        el("li", {}, t("macOS：核对来源后，可在系统设置 → 隐私与安全性中查看系统提供的打开选项。",
+                       "macOS: after verifying the source, review the available option in System Settings → Privacy & Security.")),
+        el("li", {}, t("Windows：核对来源后，在 SmartScreen 提示中查看应用信息与系统提供的选项。",
+                       "Windows: after verifying the source, review the app details and available options in SmartScreen."))),
+      el("p", { class: "field-hint" }, t("应用不附带智能体引擎；需自行安装所选宿主。", "Agent engines are not bundled; install your chosen host separately."))),
     close);
 }
 

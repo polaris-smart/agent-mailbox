@@ -6,7 +6,7 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../src/agent_mailbox/workbench_assets/workbench.js'), 'utf8');
 const start = source.indexOf('function openManualEmployeeForm()');
-const end = source.indexOf('\n// 首次启动', start);
+const end = source.indexOf('\nfunction unsignedNotice()', start);
 assert(start >= 0 && end > start, 'manual registration form must exist');
 
 const fields = new Map();
