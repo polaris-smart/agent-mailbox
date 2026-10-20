@@ -236,6 +236,22 @@ def test_unique_discovered_entrypoint_fills_legacy_employee(scene):
     assert actual["entrypoint"] == "/usr/local/bin/codex"
 
 
+def test_cli_enroll_passes_explicit_entrypoint(scene, capsys):
+    from agent_mailbox.cli import main
+
+    store, project = scene
+    assert main([
+        "enroll", "codex", "--home", str(store.root), "--project", project["id"],
+        "--name", "Codex", "--entrypoint", "/opt/custom/codex", "--json",
+    ]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    with store._transaction(readonly=True) as db:
+        actual = db.execute(
+            "SELECT entrypoint FROM employees WHERE id=?", (payload["employee"]["id"],)
+        ).fetchone()
+    assert actual["entrypoint"] == "/opt/custom/codex"
+
+
 def test_enrol_same_identity_in_another_project_reuses_employee(scene, tmp_path):
     store, first_project = scene
     second_dir = tmp_path / "second-project"
