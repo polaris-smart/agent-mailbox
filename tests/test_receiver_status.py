@@ -181,6 +181,7 @@ def test_codex_original_thread_receiver_status_uses_scoped_health(tmp_path):
             "session_verified": False,
             "delivery_verified": False,
             "pending_alert_count": 0,
+            "held_alert_count": 0,
             "unknown_delivery_alert_count": 0,
             "oldest_pending_alert_at": None,
             "state": "component_available",
@@ -264,6 +265,7 @@ def test_status_requires_exact_hermes_route_without_claiming_delivery(setup, ava
         "session_verified": False,
         "delivery_verified": False,
         "pending_alert_count": 0,
+        "held_alert_count": 0,
         "unknown_delivery_alert_count": 0,
         "oldest_pending_alert_at": None,
         **({"hermes_route_present": True} if employee["kind"] == "hermes" else {}),
@@ -336,6 +338,38 @@ def test_unknown_delivery_alerts_are_counted_only_in_their_project(tmp_path):
     assert first_status["pending_alert_count"] == second_status["pending_alert_count"] == 1
     assert first_status["unknown_delivery_alert_count"] == 1
     assert second_status["unknown_delivery_alert_count"] == 0
+
+
+def test_held_alerts_remain_visible_in_exact_project_diagnostics(tmp_path):
+    store = WorkbenchStore(tmp_path / "home")
+    first = store.create_project("First", tmp_path)
+    second = store.create_project("Second", tmp_path)
+    employee = store.create_employee("Hermes", "hermes", first["id"])
+    store.add_project_member(second["id"], employee["id"])
+    first_letter = store.send_message(
+        first["id"], "First", "Synthetic", recipient_id=employee["id"]
+    )
+    store.send_message(second["id"], "Second", "Synthetic", recipient_id=employee["id"])
+    with store._transaction() as db:
+        db.execute(
+            "UPDATE notifications SET status='reauthorization_held' "
+            "WHERE kind='mailbox_wake' AND state_hash=?",
+            (first_letter["id"],),
+        )
+
+    first_status = status.reception_status(store, employee["id"], first["id"])
+    second_status = status.reception_status(store, employee["id"], second["id"])
+    assert first_status["pending_alert_count"] == 0
+    assert first_status["held_alert_count"] == 1
+    assert second_status["pending_alert_count"] == 1
+    assert second_status["held_alert_count"] == 0
+    with store._transaction(readonly=True) as db:
+        assert (
+            db.execute(
+                "SELECT status FROM notifications WHERE state_hash=?", (first_letter["id"],)
+            ).fetchone()["status"]
+            == "reauthorization_held"
+        )
 
 
 @pytest.mark.parametrize("other_project", [False, True])

@@ -7,7 +7,7 @@ const assets=path.resolve(process.env.MAILBOX_UI_ASSETS||path.join(__dirname,'..
   const browser=await chromium.launch({headless:true,...process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{}});
   const results=[];
   try {
-    for(const kind of ['hermes','deepseek'])for(const locale of ['zh-CN','en-US'])for(const scenario of ['states','project-race','closed-form',...(kind==='hermes'?['project-link','project-link-race','held-mail','profiles','profile-race','profile-close','diagnostic','diagnostic-race','admission','admission-existing','admission-other-route','admission-unknown','admission-race','grant','grant-offline','grant-race','grant-close','grant-invalid']:['dsh-profiles'])]){
+    for(const kind of ['hermes','deepseek'])for(const locale of ['zh-CN','en-US'])for(const scenario of ['states','held-status','project-race','closed-form',...(kind==='hermes'?['project-link','project-link-race','held-mail','profiles','profile-race','profile-close','diagnostic','diagnostic-race','admission','admission-existing','admission-other-route','admission-unknown','admission-race','grant','grant-offline','grant-race','grant-close','grant-invalid']:['dsh-profiles'])]){
       const context=await browser.newContext({locale,viewport:{width:locale==='zh-CN'?1200:900,height:locale==='zh-CN'?800:600}});
       const page=await context.newPage();page.setDefaultTimeout(6000);
       const fixture={projects:['A','B'].map(id=>({id,name:'Synthetic '+id,path:'/synthetic/'+id})),
@@ -150,6 +150,7 @@ const assets=path.resolve(process.env.MAILBOX_UI_ASSETS||path.join(__dirname,'..
             ...(kind==='hermes'?{hermes_route_present:hermesRoutePresent}:{}),
             component_available:state==='component_available',session_verified:false,delivery_verified:false,
             pending_alert_count:scenario==='states'?2:0,
+            held_alert_count:scenario==='held-status'&&url.searchParams.get('project_id')==='A'?2:0,
             unknown_delivery_alert_count:scenario==='states'?1:0,
             oldest_pending_alert_at:scenario==='states'?'2026-10-19T00:00:00Z':null,
             ...(kind==='deepseek'?{opened_alert_retractions:{pending:1,unknown:2,binding_changed:0}}:{})}});
@@ -171,7 +172,12 @@ const assets=path.resolve(process.env.MAILBOX_UI_ASSETS||path.join(__dirname,'..
         ? (zh?'尚未授权此员工的原会话。':'No existing session is authorized for this employee.')
         : (zh?'接收组件可用。':'The receiver component is available.'),{exact:false}).waitFor();
       assert.match(await dialog.textContent(),zh?/不代表原会话已收到提醒/:/does not establish notification delivery/);
-      if(scenario.startsWith('project-link')){
+      if(scenario==='held-status'){
+        const backlog=dialog.locator('#native-receiver-backlog');
+        await backlog.getByText(zh?'2 条旧提醒':'2 older alerts',{exact:false}).waitFor();
+        await dialog.locator('#native-receiver-project').selectOption('B');
+        await backlog.waitFor({state:'hidden'});
+      }else if(scenario.startsWith('project-link')){
         const section=dialog.locator('.receiver-project-link');
         await section.locator('summary').click();
         const check=section.getByRole('button',{name:zh?'检查复用已有原会话':'Check existing session link',exact:true});

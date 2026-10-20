@@ -153,6 +153,12 @@ def reception_status(store, employee_id, project_id):
             "WHERE kind='mailbox_wake' AND target_id=? AND project_id=? AND status='pending'",
             (employee_id, project_id),
         ).fetchall()
+        held_count = db.execute(
+            "SELECT count(*) FROM notifications "
+            "WHERE kind='mailbox_wake' AND target_id=? AND project_id=? "
+            "AND status='reauthorization_held'",
+            (employee_id, project_id),
+        ).fetchone()[0]
     claims = store.root / "wake" / "claims"
     unknown_count = sum((claims / f"{row['state_hash']}.unknown").is_file() for row in pending)
     result = {
@@ -163,6 +169,7 @@ def reception_status(store, employee_id, project_id):
         "session_verified": False,
         "delivery_verified": False,
         "pending_alert_count": len(pending),
+        "held_alert_count": held_count,
         "unknown_delivery_alert_count": unknown_count,
         "oldest_pending_alert_at": min((row["created_at"] for row in pending), default=None),
     }

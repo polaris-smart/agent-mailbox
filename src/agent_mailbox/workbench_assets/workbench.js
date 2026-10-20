@@ -1245,6 +1245,13 @@ function openNativeReceiverStatus(employee) {
             `This employee has ${result.pending_alert_count} pending alerts in this project; oldest recorded ${oldest}. Mail remains in the mailbox; this does not confirm delivery.`);
           backlog.hidden = false;
         }
+        if (Number.isSafeInteger(result.held_alert_count) && result.held_alert_count > 0) {
+          const heldText = t(
+            `此员工在当前项目另有 ${result.held_alert_count} 条旧提醒暂停投递，尚未视为送达。须逐封核对；系统不会自动补投。`,
+            `This employee has ${result.held_alert_count} older alerts held in this project. They are not confirmed delivered. Review them individually; the system will not replay them automatically.`);
+          backlog.textContent = backlog.hidden ? heldText : `${backlog.textContent} ${heldText}`;
+          backlog.hidden = false;
+        }
         const counts = result.opened_alert_retractions;
         if (result.host_kind === "deepseek" && counts && ["pending", "unknown", "binding_changed"].every(key => Number.isSafeInteger(counts[key]) && counts[key] >= 0)) {
           retraction.textContent = t(
