@@ -75,7 +75,7 @@ def enrolled(store, project_id: str) -> dict[str, list[dict[str, Any]]]:
     with store._transaction(readonly=True) as db:
         store._required(db, "projects", project_id)
         rows = db.execute(
-            "SELECT e.id, e.name, e.kind, e.connection_type FROM employees e "
+            "SELECT e.id, e.name, e.kind, e.connection_type, e.entrypoint FROM employees e "
             "JOIN memberships m ON m.employee_id = e.id WHERE m.project_id = ?",
             (project_id,),
         ).fetchall()
@@ -103,7 +103,9 @@ def plan(store, project_id: str | None = None) -> dict[str, Any]:
         already = [
             item
             for item in have.get(row["kind"], [])
-            if item["name"] == row["name"] and item["connection_type"] == row["connection_type"]
+            if item["name"] == row["name"]
+            and item["connection_type"] == row["connection_type"]
+            and (not item["entrypoint"] or item["entrypoint"] == row["entrypoint"])
         ]
         suggestions.append(
             {
@@ -112,7 +114,8 @@ def plan(store, project_id: str | None = None) -> dict[str, Any]:
                 "existing": [item["name"] for item in already],
                 "command": (
                     f"agent-mailbox enroll {shlex.quote(row['kind'])} "
-                    f"--project {shlex.quote(project_id)} --name {shlex.quote(row['name'])}"
+                    f"--project {shlex.quote(project_id)} --name {shlex.quote(row['name'])} "
+                    f"--entrypoint {shlex.quote(row['entrypoint'])}"
                     if project_id
                     else None
                 ),
@@ -163,6 +166,7 @@ def enroll(
     *,
     name: str | None = None,
     connection_type: str = "cli",
+    entrypoint: str | None = None,
     host: str = "generic",
     binary: str | None = None,
 ) -> dict[str, Any]:
@@ -175,6 +179,21 @@ def enroll(
     # connection shapes without forcing a novice to invent a label.
     suffix = {"app": " App", "endpoint": " Endpoint"}.get(connection_type, "")
     label = name or f"{default_name}{suffix}"
+    entrypoint = (entrypoint or "").strip()
+    if not entrypoint:
+        matches = {
+            row["entrypoint"]
+            for row in discover(installed_only=True)
+            if row["kind"] == kind
+            and row["name"] == label
+            and row["connection_type"] == connection_type
+        }
+        if len(matches) > 1:
+            raise WorkbenchError(
+                "IDENTITY_CONNECTION_AMBIGUOUS",
+                "同名宿主存在多个连接入口；请指定 --entrypoint，或为每个入口使用不同名称。",
+            )
+        entrypoint = next(iter(matches), "")
     with store._transaction(readonly=True) as db:
         store._required(db, "projects", project_id)
         node_id = store.local_node_id(db)
@@ -195,8 +214,20 @@ def enroll(
             "IDENTITY_CONNECTION_CONFLICT",
             "该身份已经使用另一连接入口，请为不同连接建立新员工身份。",
         )
-    if existing is None:
-        employee = store.create_employee(label, kind, project_id, connection_type=connection_type)
+    if (
+        existing is not None
+        and existing["entrypoint"]
+        and entrypoint
+        and existing["entrypoint"] != entrypoint
+    ):
+        raise WorkbenchError(
+            "IDENTITY_CONNECTION_CONFLICT",
+            "该身份已经使用另一连接入口，请为不同连接建立新员工身份。",
+        )
+    if existing is None or (entrypoint and not existing["entrypoint"]):
+        employee = store.create_employee(
+            label, kind, project_id, connection_type=connection_type, entrypoint=entrypoint
+        )
     else:
         store.add_project_member(project_id, existing["id"])
         employee = {k: existing[k] for k in existing.keys()}  # noqa: SIM118
@@ -286,6 +317,15 @@ def onboard(
         for row in outline["suggestions"]
         if (kinds is None or row["kind"] in kinds) and not row["already_enrolled"]
     ]
+    identities = set()
+    for row in targets:
+        identity = (row["kind"], row["name"], row["connection_type"])
+        if identity in identities:
+            raise WorkbenchError(
+                "IDENTITY_CONNECTION_AMBIGUOUS",
+                "同名宿主存在多个连接入口；请先为每个入口设不同名称，再批量入伙。",
+            )
+        identities.add(identity)
     results = []
     for row in targets:
         if not apply:
@@ -297,6 +337,7 @@ def onboard(
             row["kind"],
             name=row["name"],
             connection_type=row["connection_type"],
+            entrypoint=row["entrypoint"],
             host=host,
             binary=binary,
         )

@@ -180,6 +180,34 @@ def test_plan_and_onboard_keep_discovered_connections_distinct(scene, monkeypatc
     assert connections == {"app", "cli"}
 
 
+def test_same_name_cli_profiles_cannot_share_one_mailbox(scene, monkeypatch):
+    store, project = scene
+    candidates = [
+        {"kind": "codex", "name": "Codex", "connection_type": "cli", "entrypoint": path}
+        for path in ("/opt/first/codex", "/opt/second/codex")
+    ]
+    monkeypatch.setattr(workbench_runtime, "discover_employees", lambda: candidates)
+
+    with pytest.raises(WorkbenchError, match="多个连接入口"):
+        we.enroll(store, project["id"], "codex", name="Codex")
+    with pytest.raises(WorkbenchError, match="不同名称"):
+        we.onboard(store, project["id"], apply=True)
+    assert _snapshot(store)["employees"] == 0
+
+    first = we.enroll(
+        store, project["id"], "codex", name="Codex", entrypoint="/opt/first/codex"
+    )
+    outline = we.plan(store, project["id"])
+    assert [row["already_enrolled"] for row in outline["suggestions"]] == [True, False]
+    assert all("--entrypoint " in row["command"] for row in outline["suggestions"])
+    with pytest.raises(WorkbenchError, match="另一连接入口"):
+        we.enroll(store, project["id"], "codex", name="Codex", entrypoint="/opt/second/codex")
+    assert _snapshot(store)["mailbox_sessions"] == 1
+    with store._transaction(readonly=True) as db:
+        actual = db.execute("SELECT entrypoint FROM employees WHERE id=?", (first["employee"]["id"],)).fetchone()
+    assert actual["entrypoint"] == "/opt/first/codex"
+
+
 def test_enrol_same_identity_in_another_project_reuses_employee(scene, tmp_path):
     store, first_project = scene
     second_dir = tmp_path / "second-project"

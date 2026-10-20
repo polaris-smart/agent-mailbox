@@ -630,6 +630,7 @@ def _dispatch(argv: list[str] | None = None) -> None:
         parser.add_argument("--home", type=Path, default=Path.home() / ".agent-mailbox")
         parser.add_argument("--project", required=True)
         parser.add_argument("--name", default=None)
+        parser.add_argument("--entrypoint", default=None)
         parser.add_argument("--host", default="generic", choices=list(workbench_enroll_hosts()))
         parser.add_argument("--binary", default=None)
         parser.add_argument("--json", action="store_true")
@@ -643,6 +644,7 @@ def _dispatch(argv: list[str] | None = None) -> None:
                 options.project,
                 options.kind,
                 name=options.name,
+                entrypoint=options.entrypoint,
                 host=options.host,
                 binary=options.binary,
             )
