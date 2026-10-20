@@ -41,6 +41,9 @@ const assets = path.resolve(process.env.MAILBOX_UI_ASSETS || path.join(__dirname
             session_verified: false, delivery_verified: false,
             pending_alert_count: 2, oldest_pending_alert_at: '2026-10-18T00:00:00+00:00' } });
         }
+        if (url.pathname === '/api/workbench/mailbox/sessions') {
+          return route.fulfill({ json: { sessions: [{ active: true }] } });
+        }
         if (url.pathname.startsWith('/api/')) {
           assert.equal(request.method(), 'GET');
           return route.fulfill({ json: { events: [], notifications: [], capabilities: [], revision: 0 } });
@@ -67,7 +70,9 @@ const assets = path.resolve(process.env.MAILBOX_UI_ASSETS || path.join(__dirname
         : 'This system or host does not yet support automatic mail alerts in an existing session';
       await status.getByText(expected, { exact: false }).waitFor();
       await page.getByRole('dialog').locator('#native-receiver-backlog').getByText(
-        locale === 'zh-CN' ? '2 条待投递提醒' : '2 pending alerts', { exact: false }).waitFor();
+        locale === 'zh-CN' ? '2 条待处理提醒' : '2 pending alerts', { exact: false }).waitFor();
+      await page.getByRole('dialog').locator('#native-receiver-backlog').getByText(
+        locale === 'zh-CN' ? '不代表已送达' : 'does not confirm delivery', { exact: false }).waitFor();
       assert.deepEqual(calls, [['worker', 'project']]);
       await page.getByRole('dialog').getByRole('button', { name: locale === 'zh-CN' ? '关闭' : 'Close', exact: true }).first().click();
       await page.locator('[data-view="tasks"]').first().click();
