@@ -501,5 +501,11 @@ def run(python, profile, request, *, source=None, expected_files=None, timeout=2
                         os.killpg(child.pid, signal.SIGKILL)
                     except ProcessLookupError:
                         pass
+                    except PermissionError:
+                        # Some macOS runners deny a signal to the process
+                        # group after its leader exits. If it is still our
+                        # child, kill that exact process before reaping it.
+                        if child.poll() is None:
+                            child.kill()
                 child.wait()
                 child.stdout.close()

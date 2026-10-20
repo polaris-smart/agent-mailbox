@@ -114,6 +114,15 @@ def test_invalid_or_unbounded_response_is_unknown_and_never_echoed(case, code):
     assert time.monotonic() - started < 3
 
 
+def test_group_kill_permission_error_falls_back_to_owned_child(case, monkeypatch):
+    def deny_group_kill(_pid, _sig):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(process.os, "killpg", deny_group_kill)
+    with pytest.raises(ValueError, match="^hermes_preparation_result_unknown$"):
+        case[3]("import time; time.sleep(2)\n", timeout=0.05)
+
+
 def test_nonzero_exit_cannot_claim_success(case):
     with pytest.raises(ValueError, match="^hermes_preparation_refused_or_incomplete$"):
         case[3](success() + "raise SystemExit(2)\n")
