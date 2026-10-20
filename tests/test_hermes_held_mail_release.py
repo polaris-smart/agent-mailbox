@@ -161,6 +161,47 @@ def test_two_project_backlog_does_not_burst_when_routes_are_linked(linked):
     assert len(release.list_held(store, employee["id"], third["id"])["items"]) == 2
 
 
+def test_one_employee_cannot_preview_or_release_another_projects_held_mail(linked):
+    store, first, second, employee = linked
+    third = store.create_project("Third", first["path"])
+    store.add_project_member(third["id"], employee["id"])
+    second_mail = store.send_message(second["id"], "Second only", "Second body", employee["id"])
+    third_mail = store.send_message(third["id"], "Third only", "Third body", employee["id"])
+    _link(store, second, employee)
+    _link(store, third, employee)
+
+    assert [item["id"] for item in release.list_held(store, employee["id"], second["id"])["items"]] == [
+        second_mail["id"]
+    ]
+    assert [item["id"] for item in release.list_held(store, employee["id"], third["id"])["items"]] == [
+        third_mail["id"]
+    ]
+    second_preview = release.operation(
+        store, employee["id"], second["id"], second_mail["id"], "preview"
+    )
+    assert second_preview["body"] == "Second body"
+
+    # A valid review token for one project must not authorize that message
+    # through another project, even when the employee and host session match.
+    with pytest.raises(ValueError, match="held_mail_unavailable"):
+        release.operation(store, employee["id"], third["id"], second_mail["id"], "preview")
+    with pytest.raises(ValueError, match="held_mail_unavailable"):
+        release.operation(
+            store,
+            employee["id"],
+            third["id"],
+            second_mail["id"],
+            "apply",
+            expected_fingerprint=second_preview["fingerprint"],
+            confirmed=True,
+        )
+    assert held(store.root, second_mail["id"])
+    assert held(store.root, third_mail["id"])
+    routes, missing = resolve_routes(store, employee["id"], [second_mail["id"], third_mail["id"]])
+    assert routes == []
+    assert set(missing) == {second_mail["id"], third_mail["id"]}
+
+
 def test_work_request_and_wrong_scope_cannot_be_released(linked):
     store, first, second, employee = linked
     task_message = create_mail_task(store, second["id"], "Task", "Synthetic", employee["id"])[
