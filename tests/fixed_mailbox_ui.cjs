@@ -20,7 +20,7 @@ const app = {id: 'app', name: 'Codex App', kind: 'codex', connection_type: 'app'
 const state = {
   mailboxEmployeeId: 'cli', mailboxFolder: 'inbox', mailboxMessageId: '', messageDrafts: {},
   data: {
-    node: {id: 'local'}, employees: [cli, app],
+    node: {id: 'local', name: 'Local Mac'}, devices: [{id: 'local', name: 'Local Mac'}], employees: [cli, app],
     projects: [{id: 'p1', name: 'Project A'}, {id: 'p2', name: 'Project B'}],
     messages: [
       {id: 'm1', project_id: 'p1', recipient_id: 'cli', sender_id: 'human', title: 'First', body: 'A', created_at: '2026-01-01T00:00:00Z'},
@@ -39,6 +39,7 @@ const context = {
   selectProject: () => {}, selectView: () => {}, loadMessages: () => {},
   openReceiverSettings: () => {}, openNativeReceiverStatus: () => {},
 };
+vm.runInNewContext(source.slice(source.indexOf('function project()'), source.indexOf('function formatDate(')), context);
 const renderMailboxes = vm.runInNewContext(`(${source.slice(start, end)})`, context);
 const sections = renderMailboxes();
 const [rail, listPane] = sections[1].children;

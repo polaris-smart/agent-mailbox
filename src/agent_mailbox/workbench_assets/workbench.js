@@ -138,6 +138,18 @@ function assignableEmployees() { return projectEmployees().filter((employee) => 
 function projectTasks() { return (state.data?.tasks || []).filter((task) => task.project_id === state.projectId); }
 function employeeName(id) { return state.data?.employees.find((employee) => employee.id === id)?.name || t("未分配员工", "Unassigned"); }
 function deviceName(id) { return state.data?.devices.find((device) => device.id === id)?.name || (state.data?.node?.id === id ? state.data.node.name : t("设备未确认", "Device unconfirmed")); }
+function mailboxDeviceLabel(employee, people) {
+  const name = deviceName(employee.node_id);
+  const peers = people.filter((other) => other.id !== employee.id && other.name === employee.name && other.node_id !== employee.node_id && deviceName(other.node_id) === name);
+  if (!peers.length) return name;
+  const id = String(employee.node_id || employee.id);
+  let width = 6;
+  while (width < id.length && peers.some((other) => String(other.node_id || other.id).slice(-width) === id.slice(-width))) width += 2;
+  return `${name} · ${id.slice(-width)}`;
+}
+function mailboxRecipientLabel(employee, people) {
+  return [employee.name, employee.kind, employee.connection_type, mailboxDeviceLabel(employee, people)].filter(Boolean).join(" · ");
+}
 function formatDate(value, detailed = false) {
   if (!value) return t("时间未记录", "Time not recorded");
   const date = new Date(value);
@@ -1939,7 +1951,7 @@ function renderMailboxes() {
       const inboxCount = folderMessages(person, "inbox").length;
       const item = el("button", { type: "button", class: `mailbox-rail-item${person.id === employee.id ? " selected" : ""}`, "aria-pressed": String(person.id === employee.id) },
         avatar(person.name),
-        el("span", { class: "mailbox-rail-identity" }, el("span", { class: "mailbox-rail-name" }, person.name), el("span", { class: "mailbox-rail-kind mono" }, [person.kind, person.connection_type].filter(Boolean).join(" · "))),
+        el("span", { class: "mailbox-rail-identity" }, el("span", { class: "mailbox-rail-name" }, person.name), el("span", { class: "mailbox-rail-kind mono" }, [person.kind, person.connection_type, mailboxDeviceLabel(person, employees)].filter(Boolean).join(" · "))),
         inboxCount ? el("span", { class: "mailbox-rail-count mono" }, inboxCount) : null);
       item.addEventListener("click", () => { state.mailboxEmployeeId = person.id; state.mailboxMessageId = ""; render(); });
       return item;
@@ -2156,7 +2168,7 @@ function renderMessages() {
   const requestWork = el("input", { id: "message-request-work", type: "checkbox", checked: draft.requestWork });
   const populateRecipients = () => {
     const people = requestWork.checked ? assignableEmployees() : projectEmployees();
-    recipient.replaceChildren(el("option", { value: "" }, requestWork.checked ? t("选择执行员工", "Choose an executing employee") : t("项目全员", "Everyone in this project")), ...people.map((employee) => el("option", { value: employee.id }, employee.name)));
+    recipient.replaceChildren(el("option", { value: "" }, requestWork.checked ? t("选择执行员工", "Choose an executing employee") : t("项目全员", "Everyone in this project")), ...people.map((employee) => el("option", { value: employee.id }, mailboxRecipientLabel(employee, people))));
     recipient.value = people.some((item) => item.id === draft.recipientId) ? draft.recipientId : "";
     recipient.required = requestWork.checked;
   };
