@@ -30,6 +30,30 @@ def control(tmp_path):
     return instance
 
 
+@pytest.mark.parametrize(
+    ("observed", "returncode", "expected"),
+    [
+        (b"10000\n", 0, True),
+        (b"10100\n", 0, True),
+        (b"9800\n", 0, True),
+        (b"10201\n", 0, False),
+        (b"unreadable\n", 0, False),
+        (b"10000\n", 1, False),
+    ],
+)
+def test_pid_identity_uses_hermes_bounded_macos_fingerprint_drift(
+    monkeypatch, tmp_path, observed, returncode, expected
+):
+    instance = control(tmp_path)
+    monkeypatch.setattr(instance, "_env", lambda: {})
+    monkeypatch.setattr(
+        gateway_control.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=returncode, stdout=observed),
+    )
+    assert instance.pid_identity({"pid": 123, "start_time": 10000}) is expected
+
+
 def test_first_contact_live_status_is_answered_by_same_gateway(monkeypatch, tmp_path):
     instance = control(tmp_path)
     instance.domain = f"gui/{os.getuid()}"

@@ -29,6 +29,11 @@ class HermesStopAfterMarkerUnconfirmed(ValueError):
     """The official stop marker may be live although launchd stop failed."""
 
 
+# Hermes gateway.status tolerates up to 2 seconds of macOS start-time
+# fingerprint drift between its retained record and a later psutil read.
+_START_TIME_DRIFT_CENTISECONDS = 200
+
+
 def _service_launcher_matches(command: Path, plist: Path) -> bool:
     """Require the official service to use the same CLI as stop/start.
 
@@ -484,7 +489,7 @@ class HermesGatewayControl:
 
     def pid_identity(self, runtime):
         pid, recorded = runtime.get("pid"), runtime.get("start_time")
-        if type(pid) is not int or pid <= 0 or type(recorded) is not int:
+        if type(pid) is not int or pid <= 0 or type(recorded) is not int or recorded <= 0:
             return False
         result = subprocess.run(
             [
@@ -501,7 +506,12 @@ class HermesGatewayControl:
             timeout=5,
             check=False,
         )
-        return result.returncode == 0 and result.stdout.strip() == str(recorded).encode()
+        if result.returncode != 0:
+            return False
+        observed = result.stdout.strip()
+        if not observed.isdigit():
+            return False
+        return abs(int(observed) - recorded) <= _START_TIME_DRIFT_CENTISECONDS
 
     def original_pid_gone(self, pid):
         if type(pid) is not int or pid <= 0:

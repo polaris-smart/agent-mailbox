@@ -814,6 +814,13 @@ class Replacement:
         "plugin.yaml": "6f7ee82a4d6372138465f0ba5adf1f8789597da4c0d44d0d5341363e543d0a6f",
         "README.md": "01313974c4b75549c576a667c70368db1e53e21f85b0cccbe2b07b9b338b9429",
     }
+    # The exact six-file installation after the admission pin was updated to
+    # the session-authority SDK while its read-only metadata reader remained
+    # on the previous pin. Only this measured mixed installation is eligible.
+    PRE_AUTHORITY_METADATA: ClassVar[dict[str, str]] = {
+        **PRE_AUTHORITY_WRAPPER,
+        "pinned.py": "54004ff871f89411bec183da0e26b8495f3f68d206b28e5666ed6490fdd87b02",
+    }
 
     @staticmethod
     def _identity(path):
@@ -860,7 +867,7 @@ class Replacement:
                   and old.get("__init__.py") == self.LEGACY_INIT
                   and old.get("plugin.yaml") == digest(self.preparation.source_files()["plugin.yaml"]))
         if not legacy and old not in (self.PRE_REAUTH, self.PRE_PRIVATE_082,
-                                      self.PRE_AUTHORITY_WRAPPER):
+                                      self.PRE_AUTHORITY_WRAPPER, self.PRE_AUTHORITY_METADATA):
             raise ValueError("unrecognized_hermes_component_version")
         new = {name: digest(raw) for name, raw in self.preparation.source_files().items()}
         directory(self.records, create=True)
