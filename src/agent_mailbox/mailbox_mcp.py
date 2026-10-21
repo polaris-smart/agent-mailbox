@@ -156,7 +156,11 @@ def build_server(session_file: str | Path) -> MCPServer:
     def project_messages(
         folder: str = "inbox", limit: int = 100, before_message_id: str = ""
     ) -> dict:
-        """Read newest mail first; pass the last ID as before_message_id for older mail."""
+        """List this project's mail newest first; page with the last visible ID.
+
+        Inbox delivery_alert_status identifies notification state, including
+        reauthorization_held. It is not a read receipt or task acceptance.
+        """
         return call(
             "messages", {"folder": folder, "limit": limit, "before_message_id": before_message_id}
         )

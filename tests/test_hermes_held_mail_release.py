@@ -128,6 +128,21 @@ def test_held_mail_review_shows_registered_sender_before_owner_can_release(linke
     assert preview["sender_name"] == "WorkBuddy"
 
 
+def test_recipient_inbox_identifies_exact_held_letter_without_opening_it(linked):
+    store, first, second, employee = linked
+    other = store.send_message(first["id"], "Other project", "Synthetic", employee["id"])
+    old = store.send_message(second["id"], "Held here", "Synthetic", employee["id"])
+    _link(store, second, employee)
+
+    before = store.snapshot()
+    inbox = store.employee_messages(second["id"], employee["id"])
+    assert [item["id"] for item in inbox["messages"]] == [old["id"]]
+    assert inbox["messages"][0]["delivery_alert_status"] == "reauthorization_held"
+    assert inbox["messages"][0]["read_receipt"] is None
+    assert store.snapshot() == before
+    assert store.employee_messages(first["id"], employee["id"])["messages"][0]["id"] == other["id"]
+
+
 def test_two_project_backlog_does_not_burst_when_routes_are_linked(linked):
     store, first, second, employee = linked
     third = store.create_project("Third", first["path"])

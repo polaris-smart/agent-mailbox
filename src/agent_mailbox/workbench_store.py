@@ -1836,6 +1836,22 @@ class WorkbenchStore:
 
             for message in result["messages"]:
                 message["read_receipt"] = receipt_in(db, message, employee_id)
+            if folder == "inbox" and result["messages"]:
+                from .workbench_mail_notifications import KIND
+
+                ids = [message["id"] for message in result["messages"]]
+                placeholders = ",".join("?" for _ in ids)
+                statuses = {
+                    row["state_hash"]: row["status"]
+                    for row in db.execute(
+                        "SELECT state_hash,status FROM notifications WHERE project_id=? "
+                        "AND target_id=? AND kind=? AND state_hash IN (" + placeholders + ")",
+                        (project_id, employee_id, KIND, *ids),
+                    )
+                }
+                for message in result["messages"]:
+                    # Advisory delivery state only. Listing never opens or accepts mail.
+                    message["delivery_alert_status"] = statuses.get(message["id"])
             # 水位线（见 workbench_views）：只记"看过了"，**不改任何消息/任务状态**，
             # 也只在收件箱生效；kill-switch 关闭积压折叠时它不产生任何行为影响。
             if folder == "inbox":

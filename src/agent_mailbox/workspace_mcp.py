@@ -146,7 +146,11 @@ def build_server(store, employee_id, project_id, token, endpoint="", task_id="",
     def project_messages(
         folder: str = "inbox", limit: int = 100, before_message_id: str = ""
     ) -> dict:
-        """Read mail newest first; use the last ID to page older without ACK."""
+        """List mail newest first; page with the last ID without an ACK.
+
+        Inbox delivery_alert_status is advisory notification state, not a read
+        receipt or task acceptance.
+        """
         guard()
         return store.employee_messages(project_id, employee_id, folder, limit, before_message_id)
 
