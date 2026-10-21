@@ -1327,6 +1327,14 @@ class Handler(BaseHTTPRequestHandler):
         store = self.server.store
         route = path.removeprefix(PREFIX).strip("/").split("/")
         method = self.command
+        if method == "POST" and route == ["mailbox", "wake", "recheck"]:
+            # The owner-authenticated CLI has changed the durable wake switch
+            # in a separate process. Notify this process without granting a
+            # mailbox read or bypassing the worker's own delivery gates.
+            if data:
+                raise WorkbenchError("INVALID_REQUEST", "Expected an empty wake recheck request.")
+            store.mail_wake_event.set()
+            return self.send_value(200, {"status": "signalled"})
         from .workbench_human_spaces import legacy_owner_view_crosses_human_boundary
 
         identity_route = (

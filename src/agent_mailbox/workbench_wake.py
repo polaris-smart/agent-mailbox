@@ -36,6 +36,45 @@ def state_dir(home: Path) -> Path:
     return Path(home) / WAKE_DIRNAME
 
 
+def _signal_running_workbench(home: Path) -> bool:
+    """Nudge the owner-authenticated native worker after a cross-process toggle."""
+    import http.client
+    from urllib.parse import urlsplit
+
+    try:
+        instance = json.loads((Path(home) / "workbench/instance.json").read_text())
+        endpoint = urlsplit(instance["endpoint"])
+        token = instance["token"]
+        if (
+            endpoint.scheme != "http"
+            or endpoint.hostname != "127.0.0.1"
+            or endpoint.path not in ("", "/")
+            or endpoint.query
+            or endpoint.fragment
+            or endpoint.username is not None
+            or endpoint.password is not None
+            or not endpoint.port
+            or not isinstance(token, str)
+            or not token
+        ):
+            return False
+        connection = http.client.HTTPConnection("127.0.0.1", endpoint.port, timeout=1)
+        try:
+            connection.request(
+                "POST",
+                "/api/workbench/mailbox/wake/recheck",
+                body=b"{}",
+                headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            response.read()
+            return response.status == 200
+        finally:
+            connection.close()
+    except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException):
+        return False
+
+
 def empty_state() -> dict[str, Any]:
     return {"version": 1, "enabled": True, "employees": {}}
 
@@ -1272,7 +1311,10 @@ def cli_main(argv: list[str], *, home: Path, store: Any = None) -> int:
         except WakeLockBusy as exc:
             print(f"⚠ {exc}；唤醒设置未更改")
             return 2
+        notified = _signal_running_workbench(state_home) if state["enabled"] else False
         print("唤醒已" + ("开启 ✓" if state["enabled"] else "关闭 ✓（判定只读 ✓ 信不会丢 ✓）"))
+        if state["enabled"] and not notified:
+            print("运行中的工作台未连接；待下一次启动或恢复检查时补投未读信。")
         return 0
     state = load_for_cli()
     if install:

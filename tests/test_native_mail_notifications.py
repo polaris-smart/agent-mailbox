@@ -1,9 +1,11 @@
 """Real store/session/delivery/wake boundaries, isolated homes and no models."""
 
 import asyncio
+import http.client as http_client
 import json
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -1033,6 +1035,96 @@ def test_commit_wakes_native_worker_without_waiting_for_recovery_interval(team, 
         store.mail_wake_event.set()
         thread.join(3)
     assert not thread.is_alive()
+
+
+def test_reenable_from_separate_cli_signals_running_native_worker(team, monkeypatch):
+    """Re-enabling must deliver held mail without waiting for a recovery scan."""
+    import agent_mailbox.workbench as app
+    import agent_mailbox.workbench_wake as wake
+
+    store, project, worker, _, _ = team
+    install_hook(store)
+    ready, received, stop = threading.Event(), threading.Event(), threading.Event()
+    calls = []
+    real_run = wake.run_once
+
+    def run(*args, **kwargs):
+        result = real_run(*args, **kwargs)
+        ready.set()
+        return result
+
+    def host(command, **kwargs):
+        calls.append(command)
+        result = host_receipt(store, command)
+        received.set()
+        return result
+
+    factory = hook_deliver
+    monkeypatch.setattr(wake, "run_once", run)
+    monkeypatch.setattr(
+        wake, "hook_deliver", lambda home, **kwargs: factory(home, **{**kwargs, "runner": host})
+    )
+    server = app.WorkbenchHTTP(store)
+    http = threading.Thread(target=server.serve_forever, daemon=True)
+    native = threading.Thread(
+        target=app.wake_redeem_loop,
+        args=(store, store.root),
+        kwargs={"interval": None, "stop": stop},
+        daemon=True,
+    )
+    http.start()
+    native.start()
+    try:
+        assert ready.wait(3)
+        assert wake.cli_main(["--disable"], home=store.root) == 0
+        ready.clear()
+        letter = store.send_message(
+            project["id"], "Held while disabled", "Synthetic", recipient_id=worker["id"]
+        )
+        assert ready.wait(3)
+        assert not received.is_set()
+        assert pending_ids(store, worker["id"]) == [letter["id"]]
+
+        unauthenticated = http_client.HTTPConnection("127.0.0.1", server.server_port, timeout=2)
+        try:
+            unauthenticated.request(
+                "POST",
+                "/api/workbench/mailbox/wake/recheck",
+                body=b"{}",
+                headers={"Authorization": "Bearer wrong", "Content-Type": "application/json"},
+            )
+            response = unauthenticated.getresponse()
+            assert response.status == 401
+            response.read()
+        finally:
+            unauthenticated.close()
+
+        ready.clear()
+        code = (
+            "from pathlib import Path; from agent_mailbox.workbench_wake import cli_main; "
+            f"raise SystemExit(cli_main(['--enable'], home=Path({str(store.root)!r})))"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert received.wait(3), "Separate CLI enable must signal the native worker"
+        assert ready.wait(3), "Delivery state must be committed before inspection"
+        assert len(calls) == 1
+        assert pending_ids(store, worker["id"]) == []
+    finally:
+        stop.set()
+        store.mail_wake_event.set()
+        native.join(3)
+        server.shutdown()
+        http.join(3)
+        server.close()
+    assert not native.is_alive()
 
 
 def test_codex_turn_complete_signal_retries_busy_pending_before_recovery_interval(

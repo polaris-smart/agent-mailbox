@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import http.client
+import json
 import threading
 from types import SimpleNamespace
 
@@ -16,6 +18,41 @@ def test_status_and_toggle_only_touch_our_own_state(tmp_path):
     assert load_state(tmp_path)["enabled"] is True, "wake is on by default once installed"
     assert cli_main(["--disable"], home=tmp_path) == 0
     assert load_state(tmp_path)["enabled"] is False, "disable must be respected"
+    assert cli_main(["--enable"], home=tmp_path) == 0
+    assert load_state(tmp_path)["enabled"] is True
+
+
+def test_enable_never_sends_owner_token_to_non_loopback_instance(tmp_path, monkeypatch):
+    instance = tmp_path / "workbench/instance.json"
+    instance.parent.mkdir()
+    instance.write_text(json.dumps({"endpoint": "http://example.invalid:1234", "token": "secret"}))
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("A non-loopback instance must never be contacted")
+
+    monkeypatch.setattr("http.client.HTTPConnection", forbidden)
+    assert cli_main(["--enable"], home=tmp_path) == 0
+    assert load_state(tmp_path)["enabled"] is True
+
+
+def test_enable_keeps_durable_switch_if_stale_local_port_returns_invalid_http(
+    tmp_path, monkeypatch
+):
+    instance = tmp_path / "workbench/instance.json"
+    instance.parent.mkdir()
+    instance.write_text(json.dumps({"endpoint": "http://127.0.0.1:1234", "token": "secret"}))
+
+    class InvalidLocalServer:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, *args, **kwargs):
+            raise http.client.BadStatusLine("not an HTTP workbench")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(http.client, "HTTPConnection", InvalidLocalServer)
     assert cli_main(["--enable"], home=tmp_path) == 0
     assert load_state(tmp_path)["enabled"] is True
 
