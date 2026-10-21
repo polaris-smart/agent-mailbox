@@ -418,12 +418,15 @@ def _run_once_locked(
         if pending_provider is None:
             return {"cold": True, "woke": [], "skipped": list(employee_ids), "degraded": degraded}
     for employee_id in employee_ids:
-        unread = unread_provider(store, employee_id)
         durable = set(pending_provider(store, employee_id) if pending_provider else [])
-        if event_driven:
-            # Only committed notification intents enter the native event stream.
-            # Merely reading old mail must not replay historical notifications.
-            unread = [mid for mid in unread if mid in durable]
+        if event_driven and pending_provider is not None:
+            # The durable provider already joins messages, membership and the
+            # active recipient. Avoid paging through every historical letter on
+            # each five-second recovery pass merely to intersect with this set.
+            # Cold-start reconciliation above still reads history once.
+            unread = sorted(durable)
+        else:
+            unread = unread_provider(store, employee_id)
         if not delivery_available(home, employee_id):
             # A missing hook is already represented by .pending. Do not create
             # another outbox file every recovery pass while still disconnected.

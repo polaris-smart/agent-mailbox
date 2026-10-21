@@ -298,6 +298,31 @@ def test_empty_state_first_round_zeroes_before_waking(tmp_path):
     assert result["cold"] is True, "首启这一轮本身就是冷启动 ✓"
 
 
+def test_event_recovery_uses_committed_intents_without_rescanning_history(tmp_path):
+    from agent_mailbox.workbench_wake import empty_state, save_state
+
+    home = tmp_path / "home"
+    state = empty_state()
+    state["cold_done"] = True
+    save_state(home, state)
+    delivered = []
+
+    def history_scan(*_args):
+        raise AssertionError("event recovery must not scan historical messages")
+
+    result = run_once(
+        object(),
+        home,
+        unread_provider=history_scan,
+        pending_provider=lambda _store, _employee: ["committed-new-mail"],
+        deliver=lambda _employee, decision: delivered.append(decision["fresh"]) or True,
+        employee_ids=["employee_demo"],
+        event_driven=True,
+    )
+    assert result["woke"] == ["employee_demo"]
+    assert delivered == [["committed-new-mail"]]
+
+
 def test_entry_point_redelivers_pending(tmp_path, wake_hook):
     """AM-01 at the ENTRY level (Codex: my unit test bypassed the real entry point).
 
