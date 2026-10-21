@@ -451,3 +451,29 @@ def test_content_change_invalidates_old_confirmation(linked):
             confirmed=True,
         )
     assert held(store.root, old["id"])
+
+
+def test_sender_change_invalidates_old_confirmation(linked):
+    store, _, second, employee = linked
+    original = store.create_employee("Original", "workbuddy", second["id"])
+    replacement = store.create_employee("Replacement", "workbuddy", second["id"])
+    session = create_session(store, original["id"], second["id"], "Synthetic sender")
+    old = store.send_message(
+        second["id"], "Old", "Synthetic", recipient_id=employee["id"],
+        sender_id=original["id"], mailbox_token=session["token"],
+    )
+    _link(store, second, employee)
+    preview = release.operation(store, employee["id"], second["id"], old["id"], "preview")
+    with store._transaction() as db:
+        db.execute("UPDATE messages SET sender_id=? WHERE id=?", (replacement["id"], old["id"]))
+    with pytest.raises(ValueError, match="configuration_changed"):
+        release.operation(
+            store,
+            employee["id"],
+            second["id"],
+            old["id"],
+            "apply",
+            expected_fingerprint=preview["fingerprint"],
+            confirmed=True,
+        )
+    assert held(store.root, old["id"])
