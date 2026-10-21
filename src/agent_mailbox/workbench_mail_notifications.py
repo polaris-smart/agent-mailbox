@@ -271,6 +271,11 @@ def ready_ids(store, employee_id, *, ready_threads=frozenset()):
             available = False
         if available:
             eligible.update(mid for mid in route["messages"] if mid not in unknown)
+            if binding["host_kind"] == "hermes":
+                # The host may have durable turn evidence even when its receipt
+                # mirror is missing. Let hook_deliver query this exact unknown
+                # delivery; its unknown fence still forbids reinjection.
+                eligible.update(unknown)
             if binding["host_kind"] == "codex" and binding["host_session_id"] in ready_threads:
                 immediate.update(mid for mid in route["messages"] if mid not in unknown)
     now = time.time()

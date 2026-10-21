@@ -775,7 +775,12 @@ def hook_deliver(
                     if unknown.is_file() and not _claim_receipt(
                         base, employee_id, unknown, binding
                     ):
-                        delivered = False
+                        if binding["host_kind"] == "hermes":
+                            # The inner delivery path can query this exact
+                            # host journal without reinjecting the message.
+                            safe.append(mid)
+                        else:
+                            delivered = False
                     else:
                         safe.append(mid)
                 if not safe:

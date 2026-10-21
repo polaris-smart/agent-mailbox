@@ -15,7 +15,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent_mailbox import workbench_host_bindings as bindings
 from agent_mailbox import workbench_host_transport as transport
+from agent_mailbox import workbench_mail_notifications as notifications
 from agent_mailbox import workbench_wake as wake
 
 if sys.platform == "win32":
@@ -338,13 +340,6 @@ def test_wake_reconciles_real_gateway_journal_without_reinjection(setup, monkeyp
         raise OSError("synthetic receipt mirror loss")
 
     monkeypatch.setattr(setup.receiver, "write_receipt", fail_mirror)
-    setup.receiver.observe_turn(
-        session_id="existing_session",
-        platform="feishu",
-        user_message=setup.calls[0][0],
-    )
-    assert setup.receiver.delivery_status(setup.envelope)["status"] == "received"
-    assert not (setup.home / "wake/receipts/wake-test").exists()
 
     claims = setup.home / "wake/claims"
     claims.mkdir()
@@ -378,12 +373,39 @@ def test_wake_reconciles_real_gateway_journal_without_reinjection(setup, monkeyp
         worker.start()
         monkeypatch.setattr(wake, "hook_command", lambda _home: ["legacy-must-not-run"])
         try:
+            # The normal worker selects ready IDs before calling hook_deliver.
+            # A missing receipt mirror must still reach the Hermes journal
+            # reconciliation path, without making an unknown eligible to resend.
+            monkeypatch.setattr(notifications, "settle_preexisting_opens", lambda *_: [])
+            monkeypatch.setattr(notifications, "pending_ids", lambda *_: ["message_test"])
+            monkeypatch.setattr(
+                bindings,
+                "resolve_routes",
+                lambda *_: ([{"binding": setup.binding, "messages": ["message_test"]}], []),
+            )
+            assert notifications.ready_ids(
+                SimpleNamespace(root=setup.home), setup.binding["employee_id"]
+            ) == ["message_test"]
             send = wake.hook_deliver(
                 setup.home,
                 runner=lambda *args, **kwargs: pytest.fail("must not redeliver unknown"),
                 require_receipt=True,
-                expected_binding=setup.binding,
+                binding_resolver=lambda _employee, mids: (
+                    [{"binding": setup.binding, "messages": mids}],
+                    [],
+                ),
+                include_pending=False,
             )
+            assert send(setup.binding["employee_id"], {"fresh": ["message_test"]}) is False
+            assert (claims / "message_test.unknown").exists()
+            assert len(setup.calls) == 1
+            setup.receiver.observe_turn(
+                session_id="existing_session",
+                platform="feishu",
+                user_message=setup.calls[0][0],
+            )
+            assert setup.receiver.delivery_status(setup.envelope)["status"] == "received"
+            assert not (setup.home / "wake/receipts/wake-test").exists()
             assert send(setup.binding["employee_id"], {"fresh": ["message_test"]}) is True
             assert (claims / "message_test.ok").exists()
             assert not (claims / "message_test.unknown").exists()
