@@ -138,6 +138,14 @@ def test_real_stdio_port_change_duplicate_request_and_revocation(connection, mon
             new_server = start()  # Same installed connection follows a new workbench port.
             assert not (await session.call_tool("project_messages", {})).is_error
             assert state["last_port"] == new_server.server_port
+            older = await session.call_tool(
+                "project_messages", {"folder": "inbox", "limit": 2, "before_message_id": "msg-two"}
+            )
+            assert not older.is_error
+            assert json.loads(older.content[0].text) == {
+                "tool": "messages",
+                "args": {"folder": "inbox", "limit": 2, "before_message_id": "msg-two"},
+            }
             opened = await session.call_tool("project_message_open", {"message_id": "msg-one"})
             assert not opened.is_error
             assert json.loads(opened.content[0].text) == {

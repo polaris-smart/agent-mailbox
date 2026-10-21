@@ -143,10 +143,12 @@ def build_server(store, employee_id, project_id, token, endpoint="", task_id="",
         return result
 
     @server.tool()
-    def project_messages(folder: str = "inbox", limit: int = 100) -> dict:
-        """Read my inbox, sent mail or project group. Viewing is not ACK or completion."""
+    def project_messages(
+        folder: str = "inbox", limit: int = 100, before_message_id: str = ""
+    ) -> dict:
+        """Read mail newest first; use the last ID to page older without ACK."""
         guard()
-        return store.employee_messages(project_id, employee_id, folder, limit)
+        return store.employee_messages(project_id, employee_id, folder, limit, before_message_id)
 
     def send(title, body, recipient_id=None, reply_to=None, request_work=False, request_id=None):
         guard(write=True)
@@ -314,9 +316,13 @@ def build_remote_server(client, employee_id, project_id, task_id="", run_id=""):
         return call("note", {"title": title, "body": body})
 
     @server.tool()
-    def project_messages(folder: str = "inbox", limit: int = 100) -> dict:
-        """Read my inbox, sent mail or project group without ACK or triggering work."""
-        return call("messages", {"folder": folder, "limit": limit})
+    def project_messages(
+        folder: str = "inbox", limit: int = 100, before_message_id: str = ""
+    ) -> dict:
+        """Read mail newest first; use the last ID to page older without ACK."""
+        return call(
+            "messages", {"folder": folder, "limit": limit, "before_message_id": before_message_id}
+        )
 
     @server.tool()
     def project_message(

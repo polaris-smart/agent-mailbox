@@ -60,6 +60,26 @@ def test_same_named_connection_requires_explicit_reuse_or_rotation(team):
     assert invoke(store, first["token"], "identity", {})["session_id"] == first["id"]
 
 
+def test_session_mail_pages_older_messages(team):
+    store, _project, _alice, bob, (a, b) = team
+    sent = [
+        invoke(
+            store, a["token"], "message",
+            {"title": f"Page {i}", "body": "synthetic", "recipient_id": bob["id"]},
+        )
+        for i in range(3)
+    ]
+    first = invoke(store, b["token"], "messages", {"limit": 2})
+    second = invoke(
+        store, b["token"], "messages",
+        {"limit": 2, "before_message_id": first["messages"][-1]["id"]},
+    )
+    assert [m["id"] for m in first["messages"] + second["messages"]] == [
+        m["id"] for m in reversed(sent)
+    ]
+    assert first["has_older"] and not second["has_older"]
+
+
 def test_mail_exchange_without_tasks_and_session_attribution(team):
     store, _project, alice, bob, (a, b) = team
     first = invoke(

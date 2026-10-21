@@ -1787,13 +1787,16 @@ class WorkbenchStore:
 
     # 防积压查看水位会写入；逐封已读回执只由 message_open 写入。
     def employee_messages(
-        self, project_id: str, employee_id: str, folder: str = "inbox", limit: int = 100
+        self, project_id: str, employee_id: str, folder: str = "inbox", limit: int = 100,
+        before_message_id: str = "",
     ) -> dict:
-        """Read newest mail first; viewing never acknowledges or starts work."""
+        """Read newest mail first; page using the last visible message ID."""
         if folder not in ("inbox", "sent", "group"):
             raise WorkbenchError("invalid_field", "信箱分类必须是 inbox、sent 或 group。")
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
             raise WorkbenchError("invalid_field", "信箱读取数量必须为 1–100。")
+        if not isinstance(before_message_id, str):
+            raise WorkbenchError("invalid_field", "更早邮件游标无效。")
         with self._transaction() as db:
             self._required(db, "projects", project_id)
             self._message_member(db, project_id, employee_id)
@@ -1802,11 +1805,24 @@ class WorkbenchStore:
                 "sent": "sender_id=?",
                 "group": "recipient_id IS NULL AND (sender_id IS NULL OR sender_id!=?)",
             }[folder]
+            older_than = ""
+            parameters = [project_id, employee_id]
+            if before_message_id:
+                cursor = db.execute(
+                    "SELECT created_at,rowid FROM messages WHERE project_id=? AND "
+                    + condition + " AND id=?",
+                    (project_id, employee_id, before_message_id),
+                ).fetchone()
+                if cursor is None:
+                    raise WorkbenchError("invalid_field", "更早邮件游标无效。")
+                older_than = " AND (created_at < ? OR (created_at = ? AND rowid < ?))"
+                parameters.extend((cursor["created_at"], cursor["created_at"], cursor["rowid"]))
             rows = db.execute(
                 "SELECT * FROM messages WHERE project_id=? AND "
                 + condition
+                + older_than
                 + " ORDER BY created_at DESC,rowid DESC LIMIT ?",
-                (project_id, employee_id, limit + 1),
+                (*parameters, limit + 1),
             ).fetchall()
             result = {
                 "project_id": project_id,

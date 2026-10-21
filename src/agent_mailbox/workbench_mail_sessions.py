@@ -32,7 +32,7 @@ TOOLS = {
     "graft_ask": {"task"},
     "context": set(),
     "identity": set(),
-    "messages": {"folder", "limit"},
+    "messages": {"folder", "limit", "before_message_id"},
     "message_open": {"message_id"},
     "message": {"title", "body", "recipient_id", "reply_to", "request_id"},
     "note": {"title", "body"},
@@ -302,7 +302,8 @@ def invoke(store, token, tool, args):
                 result["mailbox_policy"] = workbench_policy.effective_policy_in(db, project)
             elif tool == "messages":
                 result = bound.employee_messages(
-                    project, employee, args.get("folder", "inbox"), args.get("limit", 100)
+                    project, employee, args.get("folder", "inbox"), args.get("limit", 100),
+                    args.get("before_message_id", ""),
                 )
             elif tool == "message_open":
                 from .workbench_message_reads import open_in

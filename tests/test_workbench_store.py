@@ -789,6 +789,45 @@ def test_employee_mail_returns_newest_first_with_a_bounded_window(store, project
     assert [m["id"] for m in sent["messages"]] == [messages[2]["id"], messages[1]["id"]]
 
 
+def test_employee_mail_pages_older_messages_without_cross_scope_cursor(
+    store, project, employee, tmp_path
+):
+    from agent_mailbox.workbench_mail_sessions import create_session
+
+    sender = store.create_employee("Page sender", "codex", project["id"])
+    session = create_session(store, sender["id"], project["id"], "Page sender session")
+    messages = [
+        store.send_message(
+            project["id"], f"Page {i}", "synthetic", sender_id=sender["id"],
+            recipient_id=employee["id"], mailbox_token=session["token"],
+        ) for i in range(5)
+    ]
+    first = store.employee_messages(project["id"], employee["id"], limit=2)
+    second = store.employee_messages(
+        project["id"], employee["id"], limit=2,
+        before_message_id=first["messages"][-1]["id"],
+    )
+    third = store.employee_messages(
+        project["id"], employee["id"], limit=2,
+        before_message_id=second["messages"][-1]["id"],
+    )
+    assert [m["id"] for page in (first, second, third) for m in page["messages"]] == [
+        m["id"] for m in reversed(messages)
+    ]
+    assert [page["has_older"] for page in (first, second, third)] == [True, True, False]
+    other_path = tmp_path / "other-page-project"
+    other_path.mkdir()
+    other = store.create_project("Other page project", other_path)
+    outsider_mail = store.send_message(other["id"], "Foreign", "synthetic")
+    for invalid_cursor in (messages[0]["id"], outsider_mail["id"], "message_missing", 42):
+        with pytest.raises(WorkbenchError) as exc:
+            store.employee_messages(
+                project["id"], sender["id"], folder="inbox", limit=2,
+                before_message_id=invalid_cursor,
+            )
+        assert exc.value.code == "invalid_field"
+
+
 def test_employee_mail_folders_filter_before_limit_and_do_not_mutate(store, project, employee):
     bob = store.create_employee("Bob", "codex", project["id"])
     source = running(store, project, employee)

@@ -153,9 +153,13 @@ def build_server(session_file: str | Path) -> MCPServer:
         return call("context", {})
 
     @server.tool()
-    def project_messages(folder: str = "inbox", limit: int = 100) -> dict:
-        """Read newest mail first without marking messages read or starting work."""
-        return call("messages", {"folder": folder, "limit": limit})
+    def project_messages(
+        folder: str = "inbox", limit: int = 100, before_message_id: str = ""
+    ) -> dict:
+        """Read newest mail first; pass the last ID as before_message_id for older mail."""
+        return call(
+            "messages", {"folder": folder, "limit": limit, "before_message_id": before_message_id}
+        )
 
     @server.tool()
     def project_message_open(message_id: str) -> dict:
