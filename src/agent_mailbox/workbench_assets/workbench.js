@@ -1358,6 +1358,10 @@ function openNativeReceiverStatus(employee) {
         if (result.state !== "held_mail_list" || result.delivery_verified !== false || !Array.isArray(result.items)) throw new Error("unconfirmed");
         for (const item of result.items) {
           if (!/^message_[a-f0-9]{32}$/.test(item.id) || typeof item.title !== "string" || typeof item.created_at !== "string") throw new Error("unconfirmed");
+          if (item.sender_id !== null && !/^employee_[a-f0-9]{32}$/.test(item.sender_id)) throw new Error("unconfirmed");
+          if (item.sender_name !== null && typeof item.sender_name !== "string") throw new Error("unconfirmed");
+          const sender = item.sender_id ? `${item.sender_name || item.sender_id} (${item.sender_id})`
+            : t("未登记发件员工", "No registered sender employee");
           const view = button(t("查看旧信正文", "Read older letter"), null);
           const send = button(t("确认补达这一封", "Confirm this redelivery"), null, {attrs: {hidden: true}});
           const letter = el("pre", {class: "receiver-held-body", hidden: true});
@@ -1372,6 +1376,7 @@ function openNativeReceiverStatus(employee) {
               if (!live()) return;
               if (preview.state !== "confirmation_required" || preview.message_id !== item.id
                   || preview.title !== item.title || typeof preview.body !== "string"
+                  || preview.sender_id !== item.sender_id || preview.sender_name !== item.sender_name
                   || !/^[a-f0-9]{64}$/.test(preview.fingerprint)
                   || preview.delivery_verified !== false) throw new Error("unconfirmed");
               approval = preview.fingerprint;
@@ -1389,8 +1394,8 @@ function openNativeReceiverStatus(employee) {
             const fingerprint = approval;
             approval = null; send.hidden = true;
             if (!window.confirm(t(
-              `仅将这封旧信重新排入 ${employee.name} 在当前项目的原会话提醒：${item.title}。这不代表宿主已收到。确认？`,
-              `Queue only this older letter for ${employee.name}'s original session in this project: ${item.title}. This does not prove host delivery. Confirm?`))) return;
+              `发件登记：${sender}。仅将这封旧信重新排入 ${employee.name} 在当前项目的原会话提醒：${item.title}。登记身份不证明内部作者；这也不代表宿主已收到。确认？`,
+              `Registered sender: ${sender}. Queue only this older letter for ${employee.name}'s original session in this project: ${item.title}. Registration does not verify the internal author or prove host delivery. Confirm?`))) return;
             heldPending = true; heldCheck.disabled = true; view.disabled = true;
             try {
               const outcome = await api.hermesHeldMail({employee_id: employee.id, project_id: projectId,
@@ -1410,7 +1415,10 @@ function openNativeReceiverStatus(employee) {
           const scope = t(`收件人：${employee.name} · 项目：${projectName}`,
             `Recipient: ${employee.name} · Project: ${projectName}`);
           heldList.append(el("li", {}, el("span", {}, `${item.title} · ${formatDate(item.created_at, true)}`),
-            el("span", {class: "receiver-held-scope"}, scope), view, letter, send));
+            el("span", {class: "receiver-held-scope"}, scope),
+            el("span", {class: "receiver-held-scope"}, t(`登记发件：${sender} · 内部作者未独立核实`,
+              `Registered sender: ${sender} · Internal author not independently verified`)),
+            view, letter, send));
         }
         heldList.hidden = result.items.length === 0;
         heldStatus.textContent = result.items.length ? t(

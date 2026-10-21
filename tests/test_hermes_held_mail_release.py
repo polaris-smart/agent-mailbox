@@ -75,6 +75,7 @@ def test_exact_ordinary_held_mail_requires_confirmation_and_then_routes(linked):
     preview = release.operation(store, employee["id"], second["id"], old["id"], "preview")
     assert preview["state"] == "confirmation_required"
     assert preview["title"] == "One old letter"
+    assert preview["sender_id"] is None and preview["sender_name"] is None
     assert "original-session" not in json.dumps(preview)
     assert "held-release-test.sock" not in json.dumps(preview)
     assert held(store.root, old["id"])
@@ -106,6 +107,25 @@ def test_exact_ordinary_held_mail_requires_confirmation_and_then_routes(linked):
     assert (note["status"], note["attempts"]) == ("pending", 0)
     routes, missing = resolve_routes(store, employee["id"], [old["id"]])
     assert missing == [] and routes[0]["messages"] == [old["id"]]
+
+
+def test_held_mail_review_shows_registered_sender_before_owner_can_release(linked):
+    store, _, second, employee = linked
+    sender = store.create_employee("WorkBuddy", "workbuddy", second["id"])
+    session = create_session(store, sender["id"], second["id"], "Synthetic sender")
+    old = store.send_message(
+        second["id"], "Old agent letter", "Synthetic content", recipient_id=employee["id"],
+        sender_id=sender["id"], mailbox_token=session["token"],
+    )
+    _link(store, second, employee)
+    listed = release.list_held(store, employee["id"], second["id"])["items"]
+    assert listed == [{
+        "id": old["id"], "title": old["title"], "created_at": old["created_at"],
+        "sender_id": sender["id"], "sender_name": "WorkBuddy",
+    }]
+    preview = release.operation(store, employee["id"], second["id"], old["id"], "preview")
+    assert preview["sender_id"] == sender["id"]
+    assert preview["sender_name"] == "WorkBuddy"
 
 
 def test_two_project_backlog_does_not_burst_when_routes_are_linked(linked):

@@ -37,9 +37,11 @@ def list_held(store, employee_id, project_id):
     catalog._member(store, employee_id, project_id)
     with store._transaction(readonly=True) as db:
         rows = db.execute(
-            "SELECT m.id,m.title,m.created_at FROM notifications n "
+            "SELECT m.id,m.title,m.created_at,m.sender_id,e.name AS sender_name "
+            "FROM notifications n "
             "JOIN messages m ON m.id=n.state_hash AND m.recipient_id=n.target_id "
             "AND m.project_id=n.project_id "
+            "LEFT JOIN employees e ON e.id=m.sender_id "
             "WHERE n.kind=? AND n.target_id=? AND n.project_id=? "
             "AND n.status IN ('reauthorization_held','pending') AND n.attempts=0 "
             "AND m.request_work=0 AND m.task_id IS NULL AND m.source_task_id IS NULL "
@@ -99,10 +101,12 @@ def _candidate(store, employee_id, project_id, message_id):
         raise ValueError("held_mail_route_unconfirmed")
     with store._transaction(readonly=True) as db:
         row = db.execute(
-            "SELECT m.id,m.title,m.body,m.created_at,m.request_work,m.task_id,m.source_task_id,"
+            "SELECT m.id,m.title,m.body,m.created_at,m.sender_id,e.name AS sender_name,"
+            "m.request_work,m.task_id,m.source_task_id,"
             "n.id AS notification_id,n.status,n.attempts,n.updated_at "
             "FROM messages m JOIN notifications n ON n.state_hash=m.id "
             "AND n.kind=? AND n.target_id=m.recipient_id AND n.project_id=m.project_id "
+            "LEFT JOIN employees e ON e.id=m.sender_id "
             "WHERE m.id=? AND m.recipient_id=? AND m.project_id=?",
             (KIND, message_id, employee_id, project_id),
         ).fetchone()
@@ -144,6 +148,7 @@ def _candidate(store, employee_id, project_id, message_id):
         "content_sha256": hashlib.sha256(
             json.dumps([note["title"], note["body"]], ensure_ascii=False).encode()
         ).hexdigest(),
+        "sender_id": note["sender_id"],
         "notification_id": note["notification_id"],
         "status": note["status"],
         "updated_at": note["updated_at"],
@@ -197,6 +202,8 @@ def operation(
                 "title": note["title"],
                 "body": note["body"],
                 "created_at": note["created_at"],
+                "sender_id": note["sender_id"],
+                "sender_name": note["sender_name"],
                 "delivery_verified": False,
             }
         if fingerprint != expected_fingerprint:
