@@ -97,6 +97,7 @@ def build_server(session_file: str | Path) -> MCPServer:
                 "PROJECT_MISMATCH": "This task belongs to another project. Open that project's employee mailbox.",
                 "ASSIGNEE_MISMATCH": "This task is not assigned to the current employee.",
                 "MODE_MISMATCH": "This is not a mailbox task. Use its managed execution workflow.",
+                "invalid_state": "This task is not in a state that permits this action. Check project_tasks; a submitted task in review cannot be submitted again.",
             }
             try:
                 failure = json.loads(exc.read(65537))

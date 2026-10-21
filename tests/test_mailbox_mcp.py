@@ -292,6 +292,18 @@ def test_task_denial_reason_survives_mcp_without_leaking_server_detail(connectio
     assert "employee-secret" not in str(caught.value)
 
 
+def test_review_resubmit_is_reported_as_state_conflict_not_outage(connection):
+    manifest, _, state, _ = connection
+    server = build_server(manifest)
+    state["status"] = 400
+    state["response"] = {"error": {"code": "invalid_state", "message": "employee-secret private detail"}}
+    with pytest.raises(ToolError, match="invalid_state") as caught:
+        asyncio.run(server.call_tool("project_task_submit", {"task_id": "task-1", "result": "Addendum"}))
+    assert "in review cannot be submitted again" in str(caught.value)
+    assert "MAILBOX_UNAVAILABLE" not in str(caught.value)
+    assert "employee-secret" not in str(caught.value)
+
+
 def test_private_thread_denial_is_not_reported_as_mailbox_outage(connection):
     manifest, _, state, _ = connection
     server = build_server(manifest)
