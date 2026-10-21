@@ -179,7 +179,7 @@ def onboarding_status(store, employee_id, project_id=None):
         "project_id": project_id,
         "checks": checks,
         "probe": probe,
-        "shared_native_identity": True,
+        "shared_native_identity": bool(supported and employee["connection_type"] == "cli"),
         "can_verify": bool(
             local
             and supported

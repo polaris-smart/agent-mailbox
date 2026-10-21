@@ -54,6 +54,32 @@ def test_no_probe_or_plain_success_is_not_verification(probe_fixture, monkeypatc
     assert not store.snapshot()["employees"][0]["execution_verified"]
 
 
+def test_stale_workbuddy_cli_entry_is_not_treated_as_shared_login_or_verified_host(
+    tmp_path, monkeypatch
+):
+    store = WorkbenchStore(tmp_path / "home")
+    project = store.create_project("Project", tmp_path)
+    employee = store.create_employee(
+        "WorkBuddy", "workbuddy", project["id"],
+        connection_type="cli", entrypoint=str(tmp_path / "wb"), status="installed",
+    )
+    monkeypatch.setattr(
+        "agent_mailbox.workbench_onboarding.discover_employees",
+        lambda: [{"kind": "workbuddy", "connection_type": "app", "entrypoint": "/Applications/WorkBuddy.app"}],
+    )
+    monkeypatch.setattr(
+        "agent_mailbox.workbench_onboarding.runtime_status",
+        lambda root: {"installed": True, "node_available": True},
+    )
+    result = onboarding_status(store, employee["id"], project["id"])
+    checks = {item["id"]: item["status"] for item in result["checks"]}
+    assert checks["adapter"] == "blocked"
+    assert checks["entrypoint"] == "blocked"
+    assert result["shared_native_identity"] is False
+    assert result["can_verify"] is False
+    assert store.snapshot()["tasks"] == []
+
+
 def test_order_marker_and_cancel_guards(probe_fixture):
     store, project, employee = probe_fixture
     task = start(store, project, employee)
