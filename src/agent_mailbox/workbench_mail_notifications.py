@@ -236,7 +236,7 @@ def ready_ids(store, employee_id, *, ready_threads=frozenset()):
 
     from .workbench_host_bindings import resolve_routes
     from .workbench_host_transport import configured_for_binding, receiver_online
-    from .workbench_wake import _claim_receipt, hook_command
+    from .workbench_wake import _claim_receipt, _unknown_hermes_envelope, hook_command
 
     settle_preexisting_opens(store, employee_id)
     pending = pending_ids(store, employee_id)
@@ -273,9 +273,17 @@ def ready_ids(store, employee_id, *, ready_threads=frozenset()):
             eligible.update(mid for mid in route["messages"] if mid not in unknown)
             if binding["host_kind"] == "hermes":
                 # The host may have durable turn evidence even when its receipt
-                # mirror is missing. Let hook_deliver query this exact unknown
-                # delivery; its unknown fence still forbids reinjection.
-                eligible.update(unknown)
+                # mirror is missing. Only the original delivery for this exact
+                # binding may reach the journal query; older project claims may
+                # not become ready just because the new receiver is online.
+                eligible.update(
+                    mid
+                    for mid in unknown
+                    if _unknown_hermes_envelope(
+                        store.root / "wake", employee_id, mid, binding
+                    )
+                    is not None
+                )
             if binding["host_kind"] == "codex" and binding["host_session_id"] in ready_threads:
                 immediate.update(mid for mid in route["messages"] if mid not in unknown)
     now = time.time()

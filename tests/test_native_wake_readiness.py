@@ -471,7 +471,9 @@ def test_unknown_delivery_does_not_block_other_mail_and_late_receipt_reconciles(
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        assert ready_ids(store, employee["id"]) == [ordinary]
+        # The original unknown may be queried for its durable host journal,
+        # while the independent fresh message must still be delivered.
+        assert ready_ids(store, employee["id"]) == [uncertain, ordinary]
         assert drain()["woke"] == [employee["id"]]
         assert delivered == [[ordinary]]
         assert pending_ids(store, employee["id"]) == [uncertain]

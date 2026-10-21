@@ -148,14 +148,30 @@ def test_linking_two_projects_keeps_each_old_backlog_out_of_new_routes(case):
     assert {mid for route in routes for mid in route["messages"]} == {fresh_second, fresh_third}
 
 
-def test_new_project_route_never_replays_an_unknown_old_delivery(case, monkeypatch):
-    store, _, second, employee, _, _ = case
+@pytest.mark.parametrize("old_envelope", (False, True))
+def test_new_project_route_never_replays_an_unknown_old_delivery(
+    case, monkeypatch, old_envelope
+):
+    store, _, second, employee, original_binding, _ = case
     unknown = create_mail_task(store, second["id"], "Old unknown", "Synthetic", employee["id"])[
         "request_message_id"
     ]
     claims = store.root / "wake" / "claims"
     claims.mkdir(mode=0o700, exist_ok=True)
     (claims / f"{unknown}.unknown").write_text("wake-prior-unknown")
+    if old_envelope:
+        outbox = store.root / "wake" / "wake-outbox"
+        outbox.mkdir(mode=0o700, exist_ok=True)
+        (outbox / "wake-prior-unknown.json").write_text(
+            json.dumps(
+                {
+                    "delivery_id": "wake-prior-unknown",
+                    "employee_id": employee["id"],
+                    "binding": original_binding,
+                    "fresh": [unknown],
+                }
+            )
+        )
 
     preview = link.operation(store, employee["id"], second["id"], "preview")
     result = link.operation(

@@ -705,6 +705,31 @@ def _claim_receipt(base: Path, employee_id: str, claim: Path, binding=None) -> b
         return False
 
 
+def _unknown_hermes_envelope(base: Path, employee_id: str, message_id: str, binding):
+    """Return only the original unknown delivery for this exact host route."""
+    try:
+        delivery_id = (base / "claims" / f"{message_id}.unknown").read_text(
+            encoding="utf-8"
+        ).strip()
+        if not delivery_id.startswith("wake-") or Path(delivery_id).name != delivery_id:
+            return None
+        payload = json.loads(
+            (base / OUTBOX_DIRNAME / f"{delivery_id}.json").read_text(encoding="utf-8")
+        )
+        if (
+            isinstance(payload, dict)
+            and payload.get("delivery_id") == delivery_id
+            and payload.get("employee_id") == employee_id
+            and payload.get("binding") == binding
+            and isinstance(payload.get("fresh"), list)
+            and message_id in payload["fresh"]
+        ):
+            return payload
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
+
+
 def hook_deliver(
     home: Path,
     *,
@@ -767,6 +792,7 @@ def hook_deliver(
                 # readiness provider. An unknown effect must block only its
                 # own message, never another letter in the same route batch.
                 safe = []
+                reconcile = []
                 for mid in route["messages"]:
                     if held(home, mid):
                         delivered = False
@@ -775,15 +801,21 @@ def hook_deliver(
                     if unknown.is_file() and not _claim_receipt(
                         base, employee_id, unknown, binding
                     ):
-                        if binding["host_kind"] == "hermes":
-                            # The inner delivery path can query this exact
-                            # host journal without reinjecting the message.
-                            safe.append(mid)
+                        if (
+                            binding["host_kind"] == "hermes"
+                            and _unknown_hermes_envelope(
+                                base, employee_id, mid, binding
+                            )
+                            is not None
+                        ):
+                            # Keep a journal query separate from fresh mail:
+                            # one unresolved unknown must not block its peer.
+                            reconcile.append(mid)
                         else:
                             delivered = False
                     else:
                         safe.append(mid)
-                if not safe:
+                if not safe and not reconcile:
                     continue
                 send = hook_deliver(
                     home,
@@ -794,10 +826,16 @@ def hook_deliver(
                     include_pending=include_pending,
                     cutoff_checked=True,
                 )
-                ok = send(employee_id, {**decision, "fresh": safe})
-                if ok:
-                    decision["delivered_ids"].extend(safe)
-                delivered = delivered and ok
+                for mid in reconcile:
+                    ok = send(employee_id, {**decision, "fresh": [mid]})
+                    if ok:
+                        decision["delivered_ids"].append(mid)
+                    delivered = delivered and ok
+                if safe:
+                    ok = send(employee_id, {**decision, "fresh": safe})
+                    if ok:
+                        decision["delivered_ids"].extend(safe)
+                    delivered = delivered and ok
             return delivered and bool(work)
         command = hook_command(home)
         from .workbench_host_transport import (
@@ -839,29 +877,16 @@ def hook_deliver(
                 ):
                     # Query only the exact OLD delivery journal. Never resend an
                     # unknown envelope: host DB loss must remain unknown.
-                    try:
-                        delivery_id = unknown.read_text(encoding="utf-8").strip()
-                        if (
-                            delivery_id.startswith("wake-")
-                            and Path(delivery_id).name == delivery_id
-                        ):
-                            marker = base / OUTBOX_DIRNAME / f"{delivery_id}.json"
-                            payload = json.loads(marker.read_text(encoding="utf-8"))
-                            if (
-                                isinstance(payload, dict)
-                                and payload.get("delivery_id") == delivery_id
-                                and payload.get("employee_id") == employee_id
-                                and payload.get("binding") == expected_binding
-                                and message_id in (payload.get("fresh") or [])
-                            ):
-                                query_existing_hermes_delivery(
-                                    home,
-                                    native_socket,
-                                    payload,
-                                    timeout=min(timeout, 2),
-                                )
-                    except (OSError, ValueError, TypeError):
-                        pass  # No fresh evidence: preserve unknown, never reinject.
+                    payload = _unknown_hermes_envelope(
+                        base, employee_id, message_id, expected_binding
+                    )
+                    if payload is not None:
+                        try:
+                            query_existing_hermes_delivery(
+                                home, native_socket, payload, timeout=min(timeout, 2)
+                            )
+                        except (OSError, ValueError, TypeError):
+                            pass  # No fresh evidence: preserve unknown, never reinject.
                 if unknown.is_file() and _claim_receipt(
                     base, employee_id, unknown, expected_binding
                 ):
