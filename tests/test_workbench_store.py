@@ -770,6 +770,25 @@ def test_version_four_to_five_adds_receipt_proofs_without_replacing_identity(
         assert db.execute("SELECT count(*) FROM remote_receipts").fetchone()[0] == 0
 
 
+def test_employee_mail_returns_newest_first_with_a_bounded_window(store, project, employee):
+    from agent_mailbox.workbench_mail_sessions import create_session
+
+    sender = store.create_employee("Sender", "codex", project["id"])
+    session = create_session(store, sender["id"], project["id"], "Synthetic sender")
+    messages = [
+        store.send_message(
+            project["id"], f"Mail {i}", "synthetic", sender_id=sender["id"],
+            recipient_id=employee["id"], mailbox_token=session["token"],
+        )
+        for i in range(3)
+    ]
+    inbox = store.employee_messages(project["id"], employee["id"], limit=2)
+    assert [m["id"] for m in inbox["messages"]] == [messages[2]["id"], messages[1]["id"]]
+    assert inbox["has_older"] is True
+    sent = store.employee_messages(project["id"], sender["id"], folder="sent", limit=2)
+    assert [m["id"] for m in sent["messages"]] == [messages[2]["id"], messages[1]["id"]]
+
+
 def test_employee_mail_folders_filter_before_limit_and_do_not_mutate(store, project, employee):
     bob = store.create_employee("Bob", "codex", project["id"])
     source = running(store, project, employee)

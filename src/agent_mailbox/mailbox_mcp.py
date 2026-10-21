@@ -154,7 +154,7 @@ def build_server(session_file: str | Path) -> MCPServer:
 
     @server.tool()
     def project_messages(folder: str = "inbox", limit: int = 100) -> dict:
-        """Read my mailbox without marking messages read or starting work."""
+        """Read newest mail first without marking messages read or starting work."""
         return call("messages", {"folder": folder, "limit": limit})
 
     @server.tool()

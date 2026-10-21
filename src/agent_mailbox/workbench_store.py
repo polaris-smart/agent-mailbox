@@ -1789,7 +1789,7 @@ class WorkbenchStore:
     def employee_messages(
         self, project_id: str, employee_id: str, folder: str = "inbox", limit: int = 100
     ) -> dict:
-        """Read a bound employee's folder; viewing never acknowledges or starts work."""
+        """Read newest mail first; viewing never acknowledges or starts work."""
         if folder not in ("inbox", "sent", "group"):
             raise WorkbenchError("invalid_field", "信箱分类必须是 inbox、sent 或 group。")
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
@@ -1812,7 +1812,7 @@ class WorkbenchStore:
                 "project_id": project_id,
                 "employee_id": employee_id,
                 "folder": folder,
-                "messages": [self._message(db, row) for row in reversed(rows[:limit])],
+                "messages": [self._message(db, row) for row in rows[:limit]],
                 "has_older": len(rows) > limit,
                 "viewing_acknowledges": False,
             }
