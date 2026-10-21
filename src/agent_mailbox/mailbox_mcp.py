@@ -97,7 +97,6 @@ def build_server(session_file: str | Path) -> MCPServer:
                 "PROJECT_MISMATCH": "This task belongs to another project. Open that project's employee mailbox.",
                 "ASSIGNEE_MISMATCH": "This task is not assigned to the current employee.",
                 "MODE_MISMATCH": "This is not a mailbox task. Use its managed execution workflow.",
-                "invalid_state": "This task is not in a state that permits this action. Check project_tasks; a submitted task in review cannot be submitted again.",
             }
             try:
                 failure = json.loads(exc.read(65537))
@@ -109,6 +108,10 @@ def build_server(session_file: str | Path) -> MCPServer:
                 exc.close()
             if isinstance(code, str) and code in known:
                 raise ToolError(f"{code}: {known[code]}") from None
+            if code == "invalid_state" and tool == "task_accept":
+                raise ToolError("invalid_state: Only a queued mailbox task can be accepted. Check project_tasks.") from None
+            if code == "invalid_state" and tool == "task_submit":
+                raise ToolError("invalid_state: Only a running mailbox task can be submitted. A task in review cannot be submitted again; check project_tasks.") from None
             if code == "RECIPIENT_NOT_IN_PROJECT" and tool == "message":
                 raise ToolError(
                     f"{code}: Recipient {args.get('recipient_id')!r} is not a member of "

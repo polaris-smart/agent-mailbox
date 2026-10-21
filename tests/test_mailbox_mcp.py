@@ -303,6 +303,9 @@ def test_review_resubmit_is_reported_as_state_conflict_not_outage(connection):
     assert "MAILBOX_UNAVAILABLE" not in str(caught.value)
     assert "employee-secret" not in str(caught.value)
 
+    with pytest.raises(ToolError, match="Only a queued mailbox task"):
+        asyncio.run(server.call_tool("project_task_accept", {"task_id": "task-1"}))
+
 
 def test_private_thread_denial_is_not_reported_as_mailbox_outage(connection):
     manifest, _, state, _ = connection
