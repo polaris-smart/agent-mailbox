@@ -2131,6 +2131,22 @@ class WorkbenchStore:
                             "MESSAGE_REQUEST_CONFLICT", "同一个请求编号不能用于不同的消息。"
                         )
                     return self._message(db, previous)
+            if (
+                parent
+                and parent["sender_id"] is not None
+                and parent["recipient_id"] is not None
+                and sender_id in (parent["sender_id"], parent["recipient_id"])
+            ):
+                expected_recipient = (
+                    parent["recipient_id"]
+                    if sender_id == parent["sender_id"]
+                    else parent["sender_id"]
+                )
+                if recipient_id != expected_recipient:
+                    raise WorkbenchError(
+                        "REPLY_RECIPIENT_MISMATCH",
+                        "私信回复只能发给原信的另一方；如需转给其他成员，请新建消息。",
+                    )
             if request_work and source_task_id:
                 self._check_request_chain(db, source_task_id, recipient_id)
             timestamp = _now()

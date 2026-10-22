@@ -145,6 +145,32 @@ def test_mail_exchange_without_tasks_and_session_attribution(team):
         )
 
 
+def test_private_reply_cannot_silently_change_recipient(team):
+    store, project, _alice, bob, (a, b) = team
+    third = store.create_employee("Third", "gemini", project["id"])
+    first = invoke(
+        store,
+        a["token"],
+        "message",
+        {"title": "Question", "body": "Private", "recipient_id": bob["id"]},
+    )
+
+    with pytest.raises(WorkbenchError) as error:
+        invoke(
+            store,
+            b["token"],
+            "message",
+            {
+                "title": "Re: Question",
+                "body": "Wrong destination",
+                "recipient_id": third["id"],
+                "reply_to": first["id"],
+            },
+        )
+    assert error.value.code == "REPLY_RECIPIENT_MISMATCH"
+    assert [message["id"] for message in store.list_messages(project["id"])] == [first["id"]]
+
+
 def test_identity_tool_and_cross_project_rejections(team, tmp_path):
     store, project, alice, bob, (a, _b) = team
     other = store.create_project("Other", str(tmp_path))
