@@ -28,8 +28,11 @@ Known preview boundaries:
   profile solely because its isolated probe passes.
 - Existing held mail remains held until the owner reviews and releases each
   message. The alpha does not bulk-send previously held messages.
-- Cross-device transfer, offline relay, family permissions and controller
-  recovery need separate end-to-end acceptance before the final 0.8.3 release.
+- Broader receiver adapters, multi-Human private/shared access controls and
+  online device-to-device transfer are planned for 0.8.3b; family isolation is
+  planned for 0.8.3c. Offline relay and controller migration/recovery are
+  planned for 0.8.5. None is claimed by this 0.8.3a1 preview; each needs its
+  own end-to-end acceptance.
 - Python and npm package registries are not part of this first alpha App
   distribution. The Python package uses version `0.8.3a1`; an eventual npm
   pre-release would use the SemVer form `0.8.3-alpha.1`.
