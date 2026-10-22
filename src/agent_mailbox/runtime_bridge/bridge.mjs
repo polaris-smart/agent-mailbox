@@ -97,9 +97,10 @@ function deliverableText(output) {
   // Codex can report a successful WebSocket -> HTTPS fallback as an ACP text
   // delta before the actual answer. Keep the diagnostic in the event stream,
   // but do not submit it as the employee's work product.
-  const fallback = "Warning: Falling back from WebSockets to HTTPS transport. request timed out\n\n";
-  return output.startsWith(fallback) && output.length > fallback.length
-    ? output.slice(fallback.length) : output;
+  const fallback = /^Warning: Falling back from WebSockets to HTTPS transport\. (?:request timed out|stream disconnected before completion: Connection reset by peer \(os error [0-9]{1,3}\))\r?\n\r?\n/;
+  const notice = fallback.exec(output);
+  return notice && output.length > notice[0].length
+    ? output.slice(notice[0].length) : output;
 }
 function emit(run, type, payload = {}) {
   if (run?.terminal && type !== "result") return;

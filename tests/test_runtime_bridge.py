@@ -137,8 +137,14 @@ for line in sys.stdin:
             sys.exit(7)
         elif text == "empty":
             result(request, {"stopReason":"end_turn"})
-        elif text == "transport_fallback":
-            chunk(params["sessionId"], "Warning: Falling back from WebSockets to HTTPS transport. request timed out\n\n")
+        elif text in ("transport_fallback", "transport_fallback_disconnect"):
+            warning = (
+                "Warning: Falling back from WebSockets to HTTPS transport. request timed out\n\n"
+                if text == "transport_fallback"
+                else "Warning: Falling back from WebSockets to HTTPS transport. "
+                "stream disconnected before completion: Connection reset by peer (os error 54)\n\n"
+            )
+            chunk(params["sessionId"], warning)
             finish(request, "V083-LOCAL-REAL-AGENT-20261022")
         elif text == "long":
             finish(request, "字" * 50000)
@@ -366,9 +372,10 @@ def launch(tmp_path, runtime_dir):
         process.close()
 
 
-def test_transport_fallback_notice_is_not_delivered_as_agent_answer(launch):
+@pytest.mark.parametrize("prompt", ["transport_fallback", "transport_fallback_disconnect"])
+def test_transport_fallback_notice_is_not_delivered_as_agent_answer(launch, prompt):
     bridge = launch()
-    bridge.run(prompt="transport_fallback")
+    bridge.run(prompt=prompt)
     result = bridge.result()
     assert result["status"] == "completed"
     assert result["output_text"] == "V083-LOCAL-REAL-AGENT-20261022"
