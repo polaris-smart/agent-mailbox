@@ -2755,7 +2755,7 @@ function renderAbout() {
     buildInfoSection(section, el));
   diagnostics.open = state.aboutDiagnosticsOpen;
   diagnostics.addEventListener("toggle", () => { if (diagnostics.isConnected) state.aboutDiagnosticsOpen = diagnostics.open; });
-  return [heading(navLabels.about, "agent-mailbox · " + version), el("div", { class: "about-content" },
+  return [heading(t("关于与更新", "About & updates"), "agent-mailbox · " + version), el("div", { class: "about-content" },
     section(t("界面语言", "Interface language"), el("p", {}, t("支持简体中文与英文。偏好保存在当前浏览器；切换会重新加载界面，不会改变任务或项目资料的语言。", "Simplified Chinese and English are available. Preferences are stored in this browser. Switching reloads the interface and does not translate tasks or project content.")), language),
     renderUpdateSection(),
     diagnostics,
