@@ -222,6 +222,7 @@ function applyTheme(theme) {
   const control = document.getElementById("theme-button");
   control.replaceChildren(icon(dark ? "sun" : "moon"));
   control.setAttribute("aria-label", dark ? t("切换为浅色外观", "Switch to light appearance") : t("切换为深色外观", "Switch to dark appearance"));
+  control.title = t("切换外观", "Toggle theme");
 }
 function setSidebar(open) {
   const sidebar = document.getElementById("sidebar");
@@ -3679,11 +3680,16 @@ document.getElementById("project-list").setAttribute("aria-label", t("项目列�
 document.getElementById("sidebar-toggle").setAttribute("aria-label", t("打开导航", "Open navigation"));
 document.getElementById("sidebar-backdrop").setAttribute("aria-label", t("关闭导航", "Close navigation"));
 document.querySelector(".brand").setAttribute("aria-label", t("agent-mailbox 工作台", "agent-mailbox workbench"));
+const humanSpaceLink = document.querySelector('.topbar-actions a[href="/human"]');
+humanSpaceLink.setAttribute("aria-label", t("进入我的空间", "Open My spaces"));
+humanSpaceLink.title = t("我的空间", "My spaces");
 document.querySelector('[data-action="new-project"]').title = t("新建项目", "New project");
 document.querySelector("#quit-application-button > span").textContent = t("退出应用", "Quit application");
 document.querySelector(".skip-link").textContent = t("跳到工作区", "Skip to workspace");
 document.querySelector('[data-action="new-project"]').setAttribute("aria-label", t("新建项目", "New project"));
 document.getElementById("refresh-button").setAttribute("aria-label", t("刷新工作台", "Refresh workbench"));
+document.getElementById("refresh-button").title = t("刷新工作台", "Refresh workbench");
+document.getElementById("statusbar").setAttribute("aria-label", t("状态栏", "Status bar"));
 let theme = "light";
 try { theme = localStorage.getItem("agent-mailbox.workbench.theme") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"); } catch { /* use light */ }
 applyTheme(theme);
