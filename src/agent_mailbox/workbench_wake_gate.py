@@ -46,6 +46,7 @@ def evaluate(
         raise ValueError("invalid_pending_age")
     home = Path(home).expanduser().resolve()
     db_path = home / "workbench" / "state.db"
+    claims = home / "wake" / "claims"
     if not db_path.is_file():
         raise ValueError("workbench_db_missing")
     with closing(sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True)) as db:
@@ -75,10 +76,21 @@ def evaluate(
                 (employee_id, project_id),
             )
         ]
+        legacy_untracked_pending = sum(
+            db.execute(
+                "SELECT 1 FROM messages m WHERE m.id=? AND m.recipient_id=? "
+                "AND m.project_id=? AND NOT EXISTS ("
+                "SELECT 1 FROM notifications n WHERE n.kind='mailbox_wake' "
+                "AND n.state_hash=m.id AND n.target_id=m.recipient_id "
+                "AND n.project_id=m.project_id)",
+                (marker.name[: -len(".pending")], employee_id, project_id),
+            ).fetchone()
+            is not None
+            for marker in claims.glob("*.pending")
+        )
     pending = counts.get("pending", 0)
     held = counts.get("reauthorization_held", 0)
     receipts = counts.get("host_received", 0)
-    claims = home / "wake" / "claims"
     unknown = sum((claims / f"{row['state_hash']}.unknown").is_file() for row in pending_rows)
     oldest_pending_minutes = max(
         (
@@ -112,7 +124,8 @@ def evaluate(
         "G2_listener": {"passed": receiver},
         "G3_consistent": {"passed": declared and route_ready},
         "G4_backlog": {
-            "passed": held == unknown == 0 and oldest_pending_minutes <= max_pending_minutes
+            "passed": held == unknown == legacy_untracked_pending == 0
+            and oldest_pending_minutes <= max_pending_minutes
         },
         "G5_receipt": {"passed": receipts > 0},
     }
@@ -131,6 +144,7 @@ def evaluate(
         "pending": pending,
         "held": held,
         "unknown": unknown,
+        "legacy_untracked_pending": legacy_untracked_pending,
         "oldest_pending_minutes": round(oldest_pending_minutes, 1),
         "host_receipts": receipts,
     }

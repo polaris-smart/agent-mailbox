@@ -109,6 +109,38 @@ def test_gate_reports_held_without_releasing_it(tmp_path, capsys):
     assert (store.root / "workbench" / "state.db").stat().st_mtime_ns == before
 
 
+def test_gate_does_not_hide_untracked_legacy_pending_mail(tmp_path, capsys):
+    store = WorkbenchStore(tmp_path / "home")
+    project = store.create_project("Synthetic", tmp_path)
+    other = store.create_project("Other", tmp_path)
+    employee = store.create_employee("Worker", "codex", project["id"])
+    store.add_project_member(other["id"], employee["id"])
+    old = store.send_message(project["id"], "Old", "Synthetic", recipient_id=employee["id"])
+    unrelated = store.send_message(other["id"], "Other", "Synthetic", recipient_id=employee["id"])
+    with store._transaction() as db:
+        db.execute(
+            "DELETE FROM notifications WHERE kind='mailbox_wake' AND state_hash IN (?,?)",
+            (old["id"], unrelated["id"]),
+        )
+    claims = store.root / "wake" / "claims"
+    claims.mkdir(parents=True, exist_ok=True)
+    for message in (old, unrelated):
+        (claims / f"{message['id']}.pending").write_text("legacy\n")
+
+    code, result = _check(store.root, employee["id"], project["id"], capsys)
+    assert code == 1
+    assert result["checks"]["G4_backlog"]["passed"] is False
+    assert result["legacy_untracked_pending"] == 1
+    assert (claims / f"{old['id']}.pending").read_text() == "legacy\n"
+
+    with store._transaction() as db:
+        enqueue(db, old["id"], employee["id"], project["id"])
+    code, result = _check(store.root, employee["id"], project["id"], capsys)
+    assert code == 1  # No route or receipt, though the fresh queue has no legacy gap.
+    assert result["legacy_untracked_pending"] == 0
+    assert result["checks"]["G4_backlog"]["passed"] is True
+
+
 def test_gate_distinguishes_fresh_pending_from_stale_backlog(tmp_path, capsys):
     store = WorkbenchStore(tmp_path / "home")
     project = store.create_project("Synthetic", tmp_path)
