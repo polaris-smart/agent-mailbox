@@ -137,6 +137,9 @@ for line in sys.stdin:
             sys.exit(7)
         elif text == "empty":
             result(request, {"stopReason":"end_turn"})
+        elif text == "transport_fallback":
+            chunk(params["sessionId"], "Warning: Falling back from WebSockets to HTTPS transport. request timed out\n\n")
+            finish(request, "V083-LOCAL-REAL-AGENT-20261022")
         elif text == "long":
             finish(request, "字" * 50000)
         elif text in ("provider_model_error", "provider_fragmented"):
@@ -361,6 +364,19 @@ def launch(tmp_path, runtime_dir):
     yield create
     for process in processes:
         process.close()
+
+
+def test_transport_fallback_notice_is_not_delivered_as_agent_answer(launch):
+    bridge = launch()
+    bridge.run(prompt="transport_fallback")
+    result = bridge.result()
+    assert result["status"] == "completed"
+    assert result["output_text"] == "V083-LOCAL-REAL-AGENT-20261022"
+    assert any(
+        message.get("type") == "event"
+        and "Falling back from WebSockets" in str(message.get("event", {}).get("text", ""))
+        for message in bridge.seen
+    )
 
 
 def test_injects_mcp_and_returns_complete_output(launch):

@@ -93,6 +93,14 @@ function providerFailure(output) {
       retryable: envelope.status === 429 || envelope.status >= 500 };
   }
 }
+function deliverableText(output) {
+  // Codex can report a successful WebSocket -> HTTPS fallback as an ACP text
+  // delta before the actual answer. Keep the diagnostic in the event stream,
+  // but do not submit it as the employee's work product.
+  const fallback = "Warning: Falling back from WebSockets to HTTPS transport. request timed out\n\n";
+  return output.startsWith(fallback) && output.length > fallback.length
+    ? output.slice(fallback.length) : output;
+}
 function emit(run, type, payload = {}) {
   if (run?.terminal && type !== "result") return;
   process.stdout.write(JSON.stringify({ protocol: 1, run_id: run?.id ?? null,
@@ -101,7 +109,7 @@ function emit(run, type, payload = {}) {
 function terminal(run, result) {
   if (run.terminal) return;
   run.terminal = true;
-  emit(run, "result", { output_text: run.output.join(""), ...result });
+  emit(run, "result", { output_text: deliverableText(run.output.join("")), ...result });
   runs.delete(run.id);
   for (const pending of run.permissions.values()) pending.finish({ outcome: "cancel" });
 }
