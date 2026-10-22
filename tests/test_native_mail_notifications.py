@@ -1498,3 +1498,40 @@ def test_native_stream_does_not_replay_old_mail_without_notification_intent(team
     )
     assert result["woke"] == []
     assert calls == []
+
+
+def test_no_instance_wake_cli_does_not_replay_legacy_pending_without_intent(team, monkeypatch):
+    import agent_mailbox.workbench_wake as wake
+
+    store, project, worker, _, _ = team
+    message = store.send_message(project["id"], "Old", "Historical mail", recipient_id=worker["id"])
+    with store._transaction() as db:
+        db.execute("DELETE FROM notifications WHERE state_hash=?", (message["id"],))
+    claim = store.root / "wake/claims" / (message["id"] + ".pending")
+    claim.parent.mkdir(parents=True, exist_ok=True)
+    claim.write_text(worker["id"], encoding="utf-8")
+    state = wake.load_state(store.root)
+    state["cold_done"] = True
+    wake.save_state(store.root, state)
+    calls = []
+
+    def fake_hook(home, **kwargs):
+        calls.append(("hook", kwargs))
+
+        def deliver(employee_id, decision):
+            calls.append(("deliver", employee_id, decision))
+            return False
+
+        return deliver
+
+    monkeypatch.setattr(wake, "hook_deliver", fake_hook)
+    assert wake.cli_main(["--once"], home=store.root, store=store) == 0
+    assert not [call for call in calls if call[0] == "deliver"]
+    assert claim.read_text(encoding="utf-8") == worker["id"]
+    assert calls[0][1]["include_pending"] is False
+    fresh = store.send_message(project["id"], "New", "Current mail", recipient_id=worker["id"])
+    assert wake.cli_main(["--once"], home=store.root, store=store) == 0
+    delivered = [call for call in calls if call[0] == "deliver"]
+    assert len(delivered) == 1
+    assert delivered[0][1] == worker["id"]
+    assert delivered[0][2]["fresh"] == [fresh["id"]]

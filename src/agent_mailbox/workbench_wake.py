@@ -380,6 +380,7 @@ def run_once(
     pending_provider: Any = None,
     acknowledge: Any = None,
     event_driven: bool = False,
+    intent_only: bool = False,
     paused_provider: Any = None,
 ) -> dict[str, Any]:
     """一轮轮询 ✓ **整轮持排他锁** ✗（A1 ✓）。
@@ -407,6 +408,7 @@ def run_once(
                 pending_provider=pending_provider,
                 acknowledge=acknowledge,
                 event_driven=event_driven,
+                intent_only=intent_only,
             )
     except WakeLockBusy as exc:
         print(f"⚠ {exc}")
@@ -426,6 +428,7 @@ def _run_once_locked(
     pending_provider: Any = None,
     acknowledge: Any = None,
     event_driven: bool = False,
+    intent_only: bool = False,
 ) -> dict[str, Any]:
     """跑一次轮询 ✓（依赖全部注入 ⇒ 可单测 ✓）。
 
@@ -458,7 +461,7 @@ def _run_once_locked(
             return {"cold": True, "woke": [], "skipped": list(employee_ids), "degraded": degraded}
     for employee_id in employee_ids:
         durable = set(pending_provider(store, employee_id) if pending_provider else [])
-        if event_driven and pending_provider is not None:
+        if (event_driven or intent_only) and pending_provider is not None:
             # The durable provider already joins messages, membership and the
             # active recipient. Avoid paging through every historical letter on
             # each five-second recovery pass merely to intersect with this set.
@@ -480,7 +483,7 @@ def _run_once_locked(
         # 水位线已推进 ⇒ decide 认为无新信 ✓ ⇒ 但**有本员工的未接通待办且 hook 可执行**时，
         # 必须把补投当作**本轮要投递** ✓（否则"接通后补发"永远走不到 ✓）
         _recover = _pending_for(Path(home), employee_id)
-        if event_driven:
+        if event_driven or intent_only:
             _recover = [mid for mid in _recover if mid in durable]
         if (
             decision is None
@@ -1397,7 +1400,12 @@ def cli_main(argv: list[str], *, home: Path, store: Any = None) -> int:
     employee_ids = active_employee_ids(store)
     from .workbench_host_bindings import resolve_routes
     from .workbench_mail_notifications import mark_host_received, pending_ids
+    from .workbench_store import WorkbenchStore
 
+    # The real store has a durable notification ledger. Keep synthetic legacy
+    # callers' generic run_once semantics, but never replay pre-ledger markers
+    # through the no-App CLI fallback.
+    intent_only = isinstance(store, WorkbenchStore)
     cold = not state.get("cold_done")  # 显式标志 ✓ 不用"状态为空"推断 ✗（实测会永远判冷启动 ✓）
     result = run_once(
         store,
@@ -1407,11 +1415,13 @@ def cli_main(argv: list[str], *, home: Path, store: Any = None) -> int:
             home,
             require_receipt=True,
             binding_resolver=lambda eid, mids: resolve_routes(store, eid, mids),
+            include_pending=not intent_only,
         ),
         employee_ids=employee_ids,
         cold_started=not cold,
         pending_provider=pending_ids,
         acknowledge=mark_host_received,
+        intent_only=intent_only,
         paused_provider=lambda: store.update_maintenance()["paused"],
     )
     if result.get("deferred") == "update_paused":
