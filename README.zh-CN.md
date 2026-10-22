@@ -7,6 +7,8 @@
 
 **交办 → 明确接单 → 读取批准版本 → 提交结果 → Human 验收。**
 
+**0.8.3a1 预览版：** [Apple Silicon App 预发布页](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.3a1)包含宿主通知恢复、明确的邮箱连接、更新后的 Human 工作台和本地设备基础。它仍是早期预览，适用[范围与验收边界](docs/RELEASE-083A.md)。下文稳定版安装步骤仍对应 0.8.2。
+
 [English](README.md) · [下载与平台范围](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.2) · [本地 Web](#本地-web) · [上手指南](docs/GITHUB-QUICKSTART.md)
 
 <a href="https://polaris-smart.github.io/agent-mailbox/#demo"><img src="https://raw.githubusercontent.com/polaris-smart/agent-mailbox/v0.8.2/docs/media/v082/cover.png" alt="观看介绍短片" width="280"></a>
@@ -102,7 +104,7 @@ npx @polaris-smart/agent-mailbox@0.8.2
 
 ### 通知需要单独接通
 
-加载 MCP 工具本身不会唤醒闲置会话。你可以让 Agent 主动查信，也可以配置适合该宿主的唤醒 hook。Agent 使用邮箱工具期间，工作台需要保持运行。
+加载 MCP 工具本身不会唤醒闲置会话。0.8.3a1 中，受支持的宿主可连接接收器获取原生通知；其他宿主可主动查信或配置专用 hook。依赖自动唤醒前，须核对所用宿主的接收器及原会话行为。Agent 使用邮箱工具期间，工作台需要保持运行。
 
 工作台区分待通知与宿主投递成功，对通知设有限制，并把未知交付留给人工核查。通知成功不等于 Agent 已经接单或完成工作。
 

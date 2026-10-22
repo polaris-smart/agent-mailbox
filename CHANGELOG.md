@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.3a1 — 2026-10-23 (preview)
+
+- Improve host mail notification recovery and make mailbox connections explicit. Delivery, first opening, task acceptance, submission and Human review remain separate states.
+- Refresh the Human workbench and add local device/Fleet foundations. Previously held mail remains frozen until reviewed and released one message at a time.
+- Publish an Apple Silicon macOS App preview only. Receiver adapters, expanded permissions and online direct transfer remain for 0.8.3b; household isolation remains for 0.8.3c; relay and controller recovery remain for 0.8.5.
+- See [preview scope and validation limits](docs/RELEASE-083A.md). No Python or npm registry publication accompanies this preview.
+
 ## 0.8.2 — 2026-10-10
 
 - Add native CI and extracted-package HTTP/MCP checks for macOS arm64, macOS Intel, Windows x64 and Linux x64 on Python 3.10 and 3.13. Additional platforms are preview support; see [scope and limits](docs/RELEASE-082.md).
@@ -800,7 +807,11 @@ Docs-only hotfix: v0.6.0 updated only the English README; every other doc surfac
 - Web board tokens use constant-time comparison (`hmac.compare_digest`, both sites) and persist across reboots (`~/.agent-mail/web_token`, mode 0600; `AGENT_MAIL_WEB_TOKEN` env always wins).
 - `sent.log` auto-rotates one generation past 10 MB (`os.replace` → `sent.log.1`).
 
-[Unreleased]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.6...HEAD
+[Unreleased]: https://github.com/polaris-smart/agent-mailbox/compare/v0.8.3a1...HEAD
+[0.8.3a1]: https://github.com/polaris-smart/agent-mailbox/compare/v0.8.2...v0.8.3a1
+[0.8.2]: https://github.com/polaris-smart/agent-mailbox/compare/v0.8.1...v0.8.2
+[0.8.1]: https://github.com/polaris-smart/agent-mailbox/compare/v0.8.0...v0.8.1
+[0.8.0]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.6...v0.8.0
 [0.7.6]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.5...v0.7.6
 [0.7.4]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/polaris-smart/agent-mailbox/compare/v0.7.2...v0.7.3

@@ -7,6 +7,8 @@ Working across DeepSeek Harness, Workbuddy, Doubao, ZCode, Claude Code or Codex?
 
 **Assign → accept → work from approved versions → submit → Human review.**
 
+**0.8.3a1 preview:** The [Apple Silicon App prerelease](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.3a1) adds host notification recovery, explicit mailbox connections, a refreshed Human workbench and local device foundations. It is an early preview; [scope and validation limits](docs/RELEASE-083A.md) apply. The stable installation instructions below remain for 0.8.2.
+
 [中文](README.zh-CN.md) · [Downloads and platform scope](https://github.com/polaris-smart/agent-mailbox/releases/tag/v0.8.2) · [Local Web](#local-web) · [Quick start](docs/GITHUB-QUICKSTART.md)
 
 <a href="https://polaris-smart.github.io/agent-mailbox/#demo"><img src="https://raw.githubusercontent.com/polaris-smart/agent-mailbox/v0.8.2/docs/media/v082/cover.png" alt="Watch the introduction" width="280"></a>
@@ -102,7 +104,7 @@ A mailbox delivery is an agent's report. It does not automatically capture code 
 
 ### Notification is a separate connection
 
-Loading MCP tools does not itself wake an idle conversation. Ask the agent to check its mailbox, or configure a host-specific wake hook. Keep the workbench running while agents use it.
+Loading MCP tools does not itself wake an idle conversation. In 0.8.3a1, supported hosts can use a connected receiver for native notifications; other hosts can check mail or use a host-specific hook. Confirm the chosen host's receiver and original-conversation behavior before relying on automatic wake-up. Keep the workbench running while agents use it.
 
 The workbench distinguishes pending notification from successful host delivery, applies notification limits, and exposes uncertain deliveries for manual checking. A successful notification does not mean the agent accepted or completed the task.
 
