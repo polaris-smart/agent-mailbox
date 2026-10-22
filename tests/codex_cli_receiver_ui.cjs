@@ -103,5 +103,23 @@ const click = async label => {
   });
   dispatch(employee);
   assert.equal(cliRouted, 1);
+
+  // A legacy employee can be registered as CLI while its existing route is
+  // the original Desktop session. The UI must not invite a second CLI route.
+  buttons.length = 0;
+  elements.length = 0;
+  scope.api.receiverStatus = async () => ({
+    state: 'receiver_online', installed: true, binding_id: 'binding-desktop',
+    bound_thread_id: 'desktop-thread', receiver_online: true,
+  });
+  scope.api.receiverAction = async () => assert.fail('Desktop-bound employee must not start CLI setup');
+  open(employee);
+  await new Promise(setImmediate);
+  const desktopThread = elements.find(item => item.id === 'cli-receiver-thread');
+  desktopThread.value = '12345678-1234-1234-1234-123456789abc';
+  desktopThread.events.input();
+  assert.equal(buttons.find(item => item.label === '安装接收组件').disabled, true);
+  assert.equal(buttons.find(item => item.label === '核对已有会话').disabled, true);
+  assert.match(elements.find(item => item.tag === 'p')?.textContent || '', /桌面/);
   console.log('CLI fixed mailbox setup event flow: PASS');
 })().catch(error => { console.error(error); process.exitCode = 1; });

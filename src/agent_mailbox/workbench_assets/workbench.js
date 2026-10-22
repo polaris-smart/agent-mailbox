@@ -1755,9 +1755,9 @@ function openNativeReceiverStatus(employee) {
 }
 
 function openCodexCliReceiverSettings(employee) {
-  const body = openForm(t("Codex CLI 接收设置", "Codex CLI reception"), t(
-    "这个 CLI 员工只有一个固定信箱。项目钥匙与接收会话只是它的连接；Codex 桌面应用须登记为另一名员工。接收组件空闲时不会启动模型。",
-    "This CLI employee has one fixed mailbox. Project keys and sessions are connections to it. Register the Codex desktop app as a separate employee. The idle receiver does not start a model."));
+  const body = openForm(t("Codex 接收设置", "Codex reception"), t(
+    "这个员工只有一个固定信箱。CLI 与桌面原会话须分别登记；已有桌面接收连接时，此处不会叠加 CLI 路由。接收组件空闲时不会启动模型。",
+    "This employee has one fixed mailbox. Register CLI and desktop sessions separately. An existing desktop route cannot be mixed with a CLI route here. The idle receiver does not start a model."));
   if (!body) return;
   const projects = state.data.projects.filter(p => employee.project_id === p.id || employee.project_ids?.includes(p.id));
   const projectSelect = el("select", { id: "cli-receiver-project" }, projects.map(p => el("option", { value: p.id }, p.name)));
@@ -1773,19 +1773,22 @@ function openCodexCliReceiverSettings(employee) {
   const status = el("p", { role: "status", "aria-live": "polite" });
   const error = errorBox();
   let busy = false, current = null, verifiedThread = "";
+  const desktopBound = () => Boolean(current?.binding_id && !String(current.state).startsWith("cli_"));
   const controls = () => {
     const sameThread = verifiedThread && verifiedThread === thread.value.trim();
+    const cliAvailable = Boolean(current) && !desktopBound();
     projectSelect.disabled = busy || !projects.length;
-    thread.disabled = busy || !projects.length;
-    install.disabled = busy || !projects.length;
-    preflight.disabled = busy || !projects.length || !thread.value.trim();
-    consent.disabled = busy || !sameThread;
-    bind.disabled = busy || !sameThread || !consent.checked;
-    enable.disabled = busy || !sameThread || !consent.checked || !current?.installed ||
+    thread.disabled = busy || !projects.length || !cliAvailable;
+    install.disabled = busy || !projects.length || !cliAvailable;
+    preflight.disabled = busy || !projects.length || !cliAvailable || !thread.value.trim();
+    consent.disabled = busy || !cliAvailable || !sameThread;
+    bind.disabled = busy || !cliAvailable || !sameThread || !consent.checked;
+    enable.disabled = busy || !cliAvailable || !sameThread || !consent.checked || !current?.installed ||
       !current?.binding_id || current.bound_thread_id !== verifiedThread;
     refresh.disabled = busy || !projects.length;
   };
   const explain = (result) => {
+    if (result.binding_id && !String(result.state).startsWith("cli_")) return t("此员工当前绑定 Codex 桌面原会话；现有收信不受影响。CLI 请另登记一名员工，不能把桌面会话 ID 当作 CLI 会话核对。", "This employee is bound to an original Codex desktop session; existing reception remains unchanged. Register a separate CLI employee instead of verifying the desktop thread as a CLI thread.");
     if (result.state === "cli_receiver_online") return t("按需接收端已就绪；信件是否打开、接单与交付另有记录。", "The on-demand receiver is ready. Message opens, acceptance and delivery are recorded separately.");
     if (result.state === "cli_receiver_unavailable" || result.state === "cli_launch_requested") return t("接收端尚未确认就绪。刷新状态；邮件仍保留在固定信箱中。", "Reception is not yet confirmed. Refresh status; mail stays in the fixed mailbox.");
     if (!result.installed) return t("先安装本机接收组件，然后核对已有 CLI 会话。", "Install the local receiver, then verify an existing CLI thread.");
@@ -1793,7 +1796,7 @@ function openCodexCliReceiverSettings(employee) {
     return t("输入此项目已有的 Codex CLI 会话 ID，核对后明确授权连接。", "Enter an existing Codex CLI thread ID for this project, verify it, then explicitly authorize the connection.");
   };
   const perform = async (action) => {
-    if (busy || !projectSelect.value) return;
+    if (busy || !projectSelect.value || (action !== "status" && (!current || desktopBound()))) return;
     busy = true; controls(); error.replaceChildren();
     const selectedProject = projectSelect.value, selectedThread = thread.value.trim();
     try {
