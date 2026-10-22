@@ -32,6 +32,23 @@ def _recipient_opened(db, project_id, message_id, recipient_id):
     )
 
 
+def legacy_untracked_pending_count(db, home, employee_id, project_id):
+    """Count old claim markers with a real directed message but no durable intent."""
+    claims = Path(home) / "wake" / "claims"
+    return sum(
+        db.execute(
+            "SELECT 1 FROM messages m WHERE m.id=? AND m.recipient_id=? "
+            "AND m.project_id=? AND NOT EXISTS ("
+            "SELECT 1 FROM notifications n WHERE n.kind=? "
+            "AND n.state_hash=m.id AND n.target_id=m.recipient_id "
+            "AND n.project_id=m.project_id)",
+            (marker.name[: -len(".pending")], employee_id, project_id, KIND),
+        ).fetchone()
+        is not None
+        for marker in claims.glob("*.pending")
+    )
+
+
 def settle_opened_notification(db, message):
     """An explicit recipient open dismisses pending or held mail without a host receipt."""
     return db.execute(

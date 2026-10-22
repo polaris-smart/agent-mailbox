@@ -7,7 +7,7 @@ const assets=path.resolve(process.env.MAILBOX_UI_ASSETS||path.join(__dirname,'..
   const browser=await chromium.launch({headless:true,...process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{}});
   const results=[];
   try {
-    for(const kind of ['hermes','deepseek'])for(const locale of ['zh-CN','en-US'])for(const scenario of ['states','held-status','project-race','closed-form',...(kind==='hermes'?['project-link','project-link-race','held-mail','profiles','profile-race','profile-close','diagnostic','diagnostic-race','admission','admission-existing','admission-other-route','admission-unknown','admission-race','grant','grant-offline','grant-race','grant-close','grant-invalid']:['dsh-profiles'])]){
+    for(const kind of ['hermes','deepseek'])for(const locale of ['zh-CN','en-US'])for(const scenario of ['states','held-status','legacy-status','project-race','closed-form',...(kind==='hermes'?['project-link','project-link-race','held-mail','profiles','profile-race','profile-close','diagnostic','diagnostic-race','admission','admission-existing','admission-other-route','admission-unknown','admission-race','grant','grant-offline','grant-race','grant-close','grant-invalid']:['dsh-profiles'])]){
       const context=await browser.newContext({locale,viewport:{width:locale==='zh-CN'?1200:900,height:locale==='zh-CN'?800:600}});
       const page=await context.newPage();page.setDefaultTimeout(6000);
       const fixture={projects:['A','B'].map(id=>({id,name:'Synthetic '+id,path:'/synthetic/'+id})),
@@ -150,6 +150,7 @@ const assets=path.resolve(process.env.MAILBOX_UI_ASSETS||path.join(__dirname,'..
             ...(kind==='hermes'?{hermes_route_present:hermesRoutePresent}:{}),
             component_available:state==='component_available',session_verified:false,delivery_verified:false,
             pending_alert_count:scenario==='states'?2:0,
+            legacy_untracked_alert_count:scenario==='legacy-status'&&url.searchParams.get('project_id')==='A'?2:0,
             held_alert_count:scenario==='held-status'&&url.searchParams.get('project_id')==='A'?2:0,
             unknown_delivery_alert_count:scenario==='states'?1:0,
             oldest_pending_alert_at:scenario==='states'?'2026-10-19T00:00:00Z':null,
@@ -175,6 +176,12 @@ const assets=path.resolve(process.env.MAILBOX_UI_ASSETS||path.join(__dirname,'..
       if(scenario==='held-status'){
         const backlog=dialog.locator('#native-receiver-backlog');
         await backlog.getByText(zh?'2 条旧提醒':'2 older alerts',{exact:false}).waitFor();
+        await dialog.locator('#native-receiver-project').selectOption('B');
+        await backlog.waitFor({state:'hidden'});
+      }else if(scenario==='legacy-status'){
+        const backlog=dialog.locator('#native-receiver-backlog');
+        await backlog.getByText(zh?'2 条旧版待投递标记':'2 older pending markers',{exact:false}).waitFor();
+        assert.match(await backlog.textContent(),zh?/不会自动补投/:/will not be replayed automatically/);
         await dialog.locator('#native-receiver-project').selectOption('B');
         await backlog.waitFor({state:'hidden'});
       }else if(scenario.startsWith('project-link')){

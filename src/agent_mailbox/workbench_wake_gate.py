@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .workbench_host_bindings import load_bindings
 from .workbench_host_transport import configured_for_binding, endpoint_for, receiver_online
+from .workbench_mail_notifications import legacy_untracked_pending_count
 from .workbench_receiver_status import _probe
 
 
@@ -76,18 +77,7 @@ def evaluate(
                 (employee_id, project_id),
             )
         ]
-        legacy_untracked_pending = sum(
-            db.execute(
-                "SELECT 1 FROM messages m WHERE m.id=? AND m.recipient_id=? "
-                "AND m.project_id=? AND NOT EXISTS ("
-                "SELECT 1 FROM notifications n WHERE n.kind='mailbox_wake' "
-                "AND n.state_hash=m.id AND n.target_id=m.recipient_id "
-                "AND n.project_id=m.project_id)",
-                (marker.name[: -len(".pending")], employee_id, project_id),
-            ).fetchone()
-            is not None
-            for marker in claims.glob("*.pending")
-        )
+        legacy_untracked_pending = legacy_untracked_pending_count(db, home, employee_id, project_id)
     pending = counts.get("pending", 0)
     held = counts.get("reauthorization_held", 0)
     receipts = counts.get("host_received", 0)

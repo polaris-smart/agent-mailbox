@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .workbench_host_bindings import load_bindings
 from .workbench_host_transport import configured_for_binding, endpoint_for, receiver_online
+from .workbench_mail_notifications import legacy_untracked_pending_count
 from .workbench_store import WorkbenchError
 
 
@@ -159,6 +160,7 @@ def reception_status(store, employee_id, project_id):
             "AND status='reauthorization_held'",
             (employee_id, project_id),
         ).fetchone()[0]
+        legacy_untracked = legacy_untracked_pending_count(db, store.root, employee_id, project_id)
     claims = store.root / "wake" / "claims"
     unknown_count = sum((claims / f"{row['state_hash']}.unknown").is_file() for row in pending)
     result = {
@@ -169,6 +171,7 @@ def reception_status(store, employee_id, project_id):
         "session_verified": False,
         "delivery_verified": False,
         "pending_alert_count": len(pending),
+        "legacy_untracked_alert_count": legacy_untracked,
         "held_alert_count": held_count,
         "unknown_delivery_alert_count": unknown_count,
         "oldest_pending_alert_at": min((row["created_at"] for row in pending), default=None),

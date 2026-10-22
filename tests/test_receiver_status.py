@@ -181,6 +181,7 @@ def test_codex_original_thread_receiver_status_uses_scoped_health(tmp_path):
             "session_verified": False,
             "delivery_verified": False,
             "pending_alert_count": 0,
+            "legacy_untracked_alert_count": 0,
             "held_alert_count": 0,
             "unknown_delivery_alert_count": 0,
             "oldest_pending_alert_at": None,
@@ -265,6 +266,7 @@ def test_status_requires_exact_hermes_route_without_claiming_delivery(setup, ava
         "session_verified": False,
         "delivery_verified": False,
         "pending_alert_count": 0,
+        "legacy_untracked_alert_count": 0,
         "held_alert_count": 0,
         "unknown_delivery_alert_count": 0,
         "oldest_pending_alert_at": None,
@@ -370,6 +372,31 @@ def test_held_alerts_remain_visible_in_exact_project_diagnostics(tmp_path):
             ).fetchone()["status"]
             == "reauthorization_held"
         )
+
+
+def test_untracked_legacy_pending_is_visible_only_in_its_project(tmp_path):
+    store = WorkbenchStore(tmp_path / "home")
+    first = store.create_project("First", tmp_path)
+    second = store.create_project("Second", tmp_path)
+    employee = store.create_employee("Worker", "codex", first["id"])
+    store.add_project_member(second["id"], employee["id"])
+    old = store.send_message(first["id"], "Old", "Synthetic", recipient_id=employee["id"])
+    with store._transaction() as db:
+        db.execute(
+            "DELETE FROM notifications WHERE kind='mailbox_wake' AND state_hash=?",
+            (old["id"],),
+        )
+    claims = store.root / "wake" / "claims"
+    claims.mkdir(parents=True, exist_ok=True)
+    marker = claims / f"{old['id']}.pending"
+    marker.write_text("legacy\n")
+
+    first_status = status.reception_status(store, employee["id"], first["id"])
+    second_status = status.reception_status(store, employee["id"], second["id"])
+    assert first_status["pending_alert_count"] == 0
+    assert first_status["legacy_untracked_alert_count"] == 1
+    assert second_status["legacy_untracked_alert_count"] == 0
+    assert marker.read_text() == "legacy\n"
 
 
 @pytest.mark.parametrize("other_project", [False, True])

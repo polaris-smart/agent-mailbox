@@ -70,9 +70,6 @@ def test_diagnostic_registration_exposes_only_private_metadata_without_turn_hook
         )
         plugin.register(ctx)
         try:
-            deadline = time.monotonic() + 3
-            while not Path(address).exists() and time.monotonic() < deadline:
-                time.sleep(0.01)
 
             def request(payload):
                 with socket.socket(socket.AF_UNIX) as client:
@@ -81,7 +78,16 @@ def test_diagnostic_registration_exposes_only_private_metadata_without_turn_hook
                     client.sendall(json.dumps(payload).encode() + b"\n")
                     return json.loads(client.makefile("rb").readline())
 
-            assert request({"operation": "routing_context"}) == metadata
+            deadline = time.monotonic() + 3
+            while True:
+                try:
+                    routing_context = request({"operation": "routing_context"})
+                    break
+                except (FileNotFoundError, ConnectionRefusedError):
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.01)
+            assert routing_context == metadata
             assert request({"operation": "probe"})["gateway_injection_available"] is False
             for payload in (
                 {"delivery_id": "wake-synthetic"},

@@ -1257,6 +1257,13 @@ function openNativeReceiverStatus(employee) {
             `This employee has ${result.pending_alert_count} pending alerts in this project; oldest recorded ${oldest}. Mail remains in the mailbox; this does not confirm delivery.`);
           backlog.hidden = false;
         }
+        if (Number.isSafeInteger(result.legacy_untracked_alert_count) && result.legacy_untracked_alert_count > 0) {
+          const legacyText = t(
+            `此员工在当前项目另有 ${result.legacy_untracked_alert_count} 条旧版待投递标记未纳入投递账。请逐封核对原会话与邮件；系统不会自动补投。`,
+            `This employee has ${result.legacy_untracked_alert_count} older pending markers in this project without delivery records. Check the original host session and each message; they will not be replayed automatically.`);
+          backlog.textContent = backlog.hidden ? legacyText : `${backlog.textContent} ${legacyText}`;
+          backlog.hidden = false;
+        }
         if (Number.isSafeInteger(result.held_alert_count) && result.held_alert_count > 0) {
           const heldText = t(
             `此员工在当前项目另有 ${result.held_alert_count} 条旧提醒暂停投递，尚未视为送达。须逐封核对；系统不会自动补投。`,
