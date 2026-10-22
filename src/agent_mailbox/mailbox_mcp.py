@@ -109,9 +109,13 @@ def build_server(session_file: str | Path) -> MCPServer:
             if isinstance(code, str) and code in known:
                 raise ToolError(f"{code}: {known[code]}") from None
             if code == "invalid_state" and tool == "task_accept":
-                raise ToolError("invalid_state: Only a queued mailbox task can be accepted. Check project_tasks.") from None
+                raise ToolError(
+                    "invalid_state: Only a queued mailbox task can be accepted. Check project_tasks."
+                ) from None
             if code == "invalid_state" and tool == "task_submit":
-                raise ToolError("invalid_state: Only a running mailbox task can be submitted. A task in review cannot be submitted again; check project_tasks.") from None
+                raise ToolError(
+                    "invalid_state: Only a running mailbox task can be submitted. A task in review cannot be submitted again; check project_tasks."
+                ) from None
             if code == "RECIPIENT_NOT_IN_PROJECT" and tool == "message":
                 raise ToolError(
                     f"{code}: Recipient {args.get('recipient_id')!r} is not a member of "

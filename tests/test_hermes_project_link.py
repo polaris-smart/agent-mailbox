@@ -149,9 +149,7 @@ def test_linking_two_projects_keeps_each_old_backlog_out_of_new_routes(case):
 
 
 @pytest.mark.parametrize("old_envelope", (False, True))
-def test_new_project_route_never_replays_an_unknown_old_delivery(
-    case, monkeypatch, old_envelope
-):
+def test_new_project_route_never_replays_an_unknown_old_delivery(case, monkeypatch, old_envelope):
     store, _, second, employee, original_binding, _ = case
     unknown = create_mail_task(store, second["id"], "Old unknown", "Synthetic", employee["id"])[
         "request_message_id"

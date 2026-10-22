@@ -194,9 +194,7 @@ def test_same_name_cli_profiles_cannot_share_one_mailbox(scene, monkeypatch):
         we.onboard(store, project["id"], apply=True)
     assert _snapshot(store)["employees"] == 0
 
-    first = we.enroll(
-        store, project["id"], "codex", name="Codex", entrypoint="/opt/first/codex"
-    )
+    first = we.enroll(store, project["id"], "codex", name="Codex", entrypoint="/opt/first/codex")
     outline = we.plan(store, project["id"])
     assert [row["already_enrolled"] for row in outline["suggestions"]] == [True, False]
     assert all("--entrypoint " in row["command"] for row in outline["suggestions"])
@@ -204,7 +202,9 @@ def test_same_name_cli_profiles_cannot_share_one_mailbox(scene, monkeypatch):
         we.enroll(store, project["id"], "codex", name="Codex", entrypoint="/opt/second/codex")
     assert _snapshot(store)["mailbox_sessions"] == 1
     with store._transaction(readonly=True) as db:
-        actual = db.execute("SELECT entrypoint FROM employees WHERE id=?", (first["employee"]["id"],)).fetchone()
+        actual = db.execute(
+            "SELECT entrypoint FROM employees WHERE id=?", (first["employee"]["id"],)
+        ).fetchone()
     assert actual["entrypoint"] == "/opt/first/codex"
 
 
@@ -232,7 +232,9 @@ def test_unique_discovered_entrypoint_fills_legacy_employee(scene):
     result = we.enroll(store, project["id"], "codex", name="Codex")
     assert result["employee"]["id"] == legacy["id"]
     with store._transaction(readonly=True) as db:
-        actual = db.execute("SELECT entrypoint FROM employees WHERE id=?", (legacy["id"],)).fetchone()
+        actual = db.execute(
+            "SELECT entrypoint FROM employees WHERE id=?", (legacy["id"],)
+        ).fetchone()
     assert actual["entrypoint"] == "/usr/local/bin/codex"
 
 
@@ -240,10 +242,24 @@ def test_cli_enroll_passes_explicit_entrypoint(scene, capsys):
     from agent_mailbox.cli import main
 
     store, project = scene
-    assert main([
-        "enroll", "codex", "--home", str(store.root), "--project", project["id"],
-        "--name", "Codex", "--entrypoint", "/opt/custom/codex", "--json",
-    ]) == 0
+    assert (
+        main(
+            [
+                "enroll",
+                "codex",
+                "--home",
+                str(store.root),
+                "--project",
+                project["id"],
+                "--name",
+                "Codex",
+                "--entrypoint",
+                "/opt/custom/codex",
+                "--json",
+            ]
+        )
+        == 0
+    )
     payload = json.loads(capsys.readouterr().out)
     with store._transaction(readonly=True) as db:
         actual = db.execute(

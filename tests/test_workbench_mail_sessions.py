@@ -64,14 +64,18 @@ def test_session_mail_pages_older_messages(team):
     store, _project, _alice, bob, (a, b) = team
     sent = [
         invoke(
-            store, a["token"], "message",
+            store,
+            a["token"],
+            "message",
             {"title": f"Page {i}", "body": "synthetic", "recipient_id": bob["id"]},
         )
         for i in range(3)
     ]
     first = invoke(store, b["token"], "messages", {"limit": 2})
     second = invoke(
-        store, b["token"], "messages",
+        store,
+        b["token"],
+        "messages",
         {"limit": 2, "before_message_id": first["messages"][-1]["id"]},
     )
     assert [m["id"] for m in first["messages"] + second["messages"]] == [

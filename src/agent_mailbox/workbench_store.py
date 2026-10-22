@@ -1787,7 +1787,11 @@ class WorkbenchStore:
 
     # 防积压查看水位会写入；逐封已读回执只由 message_open 写入。
     def employee_messages(
-        self, project_id: str, employee_id: str, folder: str = "inbox", limit: int = 100,
+        self,
+        project_id: str,
+        employee_id: str,
+        folder: str = "inbox",
+        limit: int = 100,
         before_message_id: str = "",
     ) -> dict:
         """Read newest mail first; page using the last visible message ID."""
@@ -1810,7 +1814,8 @@ class WorkbenchStore:
             if before_message_id:
                 cursor = db.execute(
                     "SELECT created_at,rowid FROM messages WHERE project_id=? AND "
-                    + condition + " AND id=?",
+                    + condition
+                    + " AND id=?",
                     (project_id, employee_id, before_message_id),
                 ).fetchone()
                 if cursor is None:

@@ -708,7 +708,10 @@ class FleetCoordinator:
             return result
         if tool == "messages":
             return self.store.employee_messages(
-                project_id, employee_id, args.get("folder", "inbox"), args.get("limit", 100),
+                project_id,
+                employee_id,
+                args.get("folder", "inbox"),
+                args.get("limit", 100),
                 args.get("before_message_id", ""),
             )
         if tool in {"note", "message", "team_message", "resource_propose"}:

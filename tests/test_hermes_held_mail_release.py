@@ -114,15 +114,24 @@ def test_held_mail_review_shows_registered_sender_before_owner_can_release(linke
     sender = store.create_employee("WorkBuddy", "workbuddy", second["id"])
     session = create_session(store, sender["id"], second["id"], "Synthetic sender")
     old = store.send_message(
-        second["id"], "Old agent letter", "Synthetic content", recipient_id=employee["id"],
-        sender_id=sender["id"], mailbox_token=session["token"],
+        second["id"],
+        "Old agent letter",
+        "Synthetic content",
+        recipient_id=employee["id"],
+        sender_id=sender["id"],
+        mailbox_token=session["token"],
     )
     _link(store, second, employee)
     listed = release.list_held(store, employee["id"], second["id"])["items"]
-    assert listed == [{
-        "id": old["id"], "title": old["title"], "created_at": old["created_at"],
-        "sender_id": sender["id"], "sender_name": "WorkBuddy",
-    }]
+    assert listed == [
+        {
+            "id": old["id"],
+            "title": old["title"],
+            "created_at": old["created_at"],
+            "sender_id": sender["id"],
+            "sender_name": "WorkBuddy",
+        }
+    ]
     preview = release.operation(store, employee["id"], second["id"], old["id"], "preview")
     assert preview["sender_id"] == sender["id"]
     assert preview["sender_name"] == "WorkBuddy"
@@ -205,12 +214,12 @@ def test_one_employee_cannot_preview_or_release_another_projects_held_mail(linke
     _link(store, second, employee)
     _link(store, third, employee)
 
-    assert [item["id"] for item in release.list_held(store, employee["id"], second["id"])["items"]] == [
-        second_mail["id"]
-    ]
-    assert [item["id"] for item in release.list_held(store, employee["id"], third["id"])["items"]] == [
-        third_mail["id"]
-    ]
+    assert [
+        item["id"] for item in release.list_held(store, employee["id"], second["id"])["items"]
+    ] == [second_mail["id"]]
+    assert [
+        item["id"] for item in release.list_held(store, employee["id"], third["id"])["items"]
+    ] == [third_mail["id"]]
     second_preview = release.operation(
         store, employee["id"], second["id"], second_mail["id"], "preview"
     )
@@ -459,8 +468,12 @@ def test_sender_change_invalidates_old_confirmation(linked):
     replacement = store.create_employee("Replacement", "workbuddy", second["id"])
     session = create_session(store, original["id"], second["id"], "Synthetic sender")
     old = store.send_message(
-        second["id"], "Old", "Synthetic", recipient_id=employee["id"],
-        sender_id=original["id"], mailbox_token=session["token"],
+        second["id"],
+        "Old",
+        "Synthetic",
+        recipient_id=employee["id"],
+        sender_id=original["id"],
+        mailbox_token=session["token"],
     )
     _link(store, second, employee)
     preview = release.operation(store, employee["id"], second["id"], old["id"], "preview")

@@ -777,8 +777,12 @@ def test_employee_mail_returns_newest_first_with_a_bounded_window(store, project
     session = create_session(store, sender["id"], project["id"], "Synthetic sender")
     messages = [
         store.send_message(
-            project["id"], f"Mail {i}", "synthetic", sender_id=sender["id"],
-            recipient_id=employee["id"], mailbox_token=session["token"],
+            project["id"],
+            f"Mail {i}",
+            "synthetic",
+            sender_id=sender["id"],
+            recipient_id=employee["id"],
+            mailbox_token=session["token"],
         )
         for i in range(3)
     ]
@@ -798,17 +802,26 @@ def test_employee_mail_pages_older_messages_without_cross_scope_cursor(
     session = create_session(store, sender["id"], project["id"], "Page sender session")
     messages = [
         store.send_message(
-            project["id"], f"Page {i}", "synthetic", sender_id=sender["id"],
-            recipient_id=employee["id"], mailbox_token=session["token"],
-        ) for i in range(5)
+            project["id"],
+            f"Page {i}",
+            "synthetic",
+            sender_id=sender["id"],
+            recipient_id=employee["id"],
+            mailbox_token=session["token"],
+        )
+        for i in range(5)
     ]
     first = store.employee_messages(project["id"], employee["id"], limit=2)
     second = store.employee_messages(
-        project["id"], employee["id"], limit=2,
+        project["id"],
+        employee["id"],
+        limit=2,
         before_message_id=first["messages"][-1]["id"],
     )
     third = store.employee_messages(
-        project["id"], employee["id"], limit=2,
+        project["id"],
+        employee["id"],
+        limit=2,
         before_message_id=second["messages"][-1]["id"],
     )
     assert [m["id"] for page in (first, second, third) for m in page["messages"]] == [
@@ -822,7 +835,10 @@ def test_employee_mail_pages_older_messages_without_cross_scope_cursor(
     for invalid_cursor in (messages[0]["id"], outsider_mail["id"], "message_missing", 42):
         with pytest.raises(WorkbenchError) as exc:
             store.employee_messages(
-                project["id"], sender["id"], folder="inbox", limit=2,
+                project["id"],
+                sender["id"],
+                folder="inbox",
+                limit=2,
                 before_message_id=invalid_cursor,
             )
         assert exc.value.code == "invalid_field"

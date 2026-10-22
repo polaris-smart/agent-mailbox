@@ -1566,14 +1566,16 @@ class Handler(BaseHTTPRequestHandler):
                 set(data) != {"employee_id", "project_id", "plan_id", "profile_id", "confirmed"}
                 or data["confirmed"] is not True
             ):
-                raise WorkbenchError(
-                    "INVALID_REQUEST", "Confirm one exact fenced Hermes plan."
-                )
+                raise WorkbenchError("INVALID_REQUEST", "Confirm one exact fenced Hermes plan.")
             return self.send_value(
                 200,
                 refresh_exact_fenced_plan(
-                    store, data["employee_id"], data["project_id"],
-                    data["plan_id"], data["profile_id"], confirmed=True,
+                    store,
+                    data["employee_id"],
+                    data["project_id"],
+                    data["plan_id"],
+                    data["profile_id"],
+                    confirmed=True,
                 ),
             )
         if (

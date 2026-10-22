@@ -28,12 +28,18 @@ def test_recovery_accepts_preview_profile_id_without_browser_path(monkeypatch, t
     profile = tmp_path / "profile"
     profile.mkdir()
     monkeypatch.setattr(recovery.catalog, "_member", lambda *_: None)
-    monkeypatch.setattr(recovery.catalog, "_discover", lambda: (
-        tmp_path, Path("/fake/python"),
-        {"profiles": [{"profile_id": "default", "home": str(profile)}]},
-    ))
+    monkeypatch.setattr(
+        recovery.catalog,
+        "_discover",
+        lambda: (
+            tmp_path,
+            Path("/fake/python"),
+            {"profiles": [{"profile_id": "default", "home": str(profile)}]},
+        ),
+    )
     assert recovery._resolve_cutover_profile(store, "employee", "project", "default") == (
-        Path("/fake/python"), profile,
+        Path("/fake/python"),
+        profile,
     )
     with pytest.raises(Exception, match="Choose a listed Hermes profile"):
         recovery._resolve_cutover_profile(store, "employee", "project", str(profile))

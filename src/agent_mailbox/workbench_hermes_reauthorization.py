@@ -45,9 +45,11 @@ def refresh_exact_fenced_plan(
             ):
                 return {"state": "fence_requires_recovery", "delivery_verified": False}
             _root, python, discovery = catalog._discover()
-            matches = [] if discovery is None else [
-                item for item in discovery["profiles"] if item["profile_id"] == profile_id
-            ]
+            matches = (
+                []
+                if discovery is None
+                else [item for item in discovery["profiles"] if item["profile_id"] == profile_id]
+            )
             if len(matches) != 1:
                 return {"state": "profile_unconfirmed", "delivery_verified": False}
             profile = Path(matches[0]["home"])
@@ -66,17 +68,25 @@ def refresh_exact_fenced_plan(
                 for name in process.FILES
             }
             result = process.run(
-                python, profile,
+                python,
+                profile,
                 {
-                    "version": 1, "operation": "pin_refresh", "profile": str(profile),
-                    "plan_id": plan_id, "expected_binding_id": binding["id"],
+                    "version": 1,
+                    "operation": "pin_refresh",
+                    "profile": str(profile),
+                    "plan_id": plan_id,
+                    "expected_binding_id": binding["id"],
                     "expected_candidate_fingerprint": candidate["candidate_fingerprint"],
                     "confirmed": True,
                 },
-                source=source, expected_files=hashes, timeout=5,
+                source=source,
+                expected_files=hashes,
+                timeout=5,
             )
             return {
-                "state": "plan_refreshed" if result.get("state") == "preview" else "check_unconfirmed",
+                "state": "plan_refreshed"
+                if result.get("state") == "preview"
+                else "check_unconfirmed",
                 "plan_id": plan_id,
                 "expires_at": result.get("expires_at"),
                 "old_mail_released": False,

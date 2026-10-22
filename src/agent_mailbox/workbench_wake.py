@@ -747,9 +747,9 @@ def _claim_receipt(base: Path, employee_id: str, claim: Path, binding=None) -> b
 def _unknown_hermes_envelope(base: Path, employee_id: str, message_id: str, binding):
     """Return only the original unknown delivery for this exact host route."""
     try:
-        delivery_id = (base / "claims" / f"{message_id}.unknown").read_text(
-            encoding="utf-8"
-        ).strip()
+        delivery_id = (
+            (base / "claims" / f"{message_id}.unknown").read_text(encoding="utf-8").strip()
+        )
         if not delivery_id.startswith("wake-") or Path(delivery_id).name != delivery_id:
             return None
         payload = json.loads(
@@ -842,9 +842,7 @@ def hook_deliver(
                     ):
                         if (
                             binding["host_kind"] == "hermes"
-                            and _unknown_hermes_envelope(
-                                base, employee_id, mid, binding
-                            )
+                            and _unknown_hermes_envelope(base, employee_id, mid, binding)
                             is not None
                         ):
                             # Keep a journal query separate from fresh mail:

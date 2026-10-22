@@ -10,7 +10,12 @@ import pytest
 
 from agent_mailbox import workbench_hermes_cutover as cutover
 from agent_mailbox import workbench_hermes_journal as journal
-from agent_mailbox.workbench_reauthorization_holds import cutoff_path, epoch_path, gate_path, required_path
+from agent_mailbox.workbench_reauthorization_holds import (
+    cutoff_path,
+    epoch_path,
+    gate_path,
+    required_path,
+)
 
 
 class FakeControl:
@@ -523,13 +528,26 @@ def test_exact_prearmed_plan_can_commit_without_releasing_old_mail(monkeypatch, 
     claims.mkdir(mode=0o700)
     required = required_path(store.root, binding_id)
     gate = gate_path(store.root, binding_id)
-    required.write_text(json.dumps({
-        "version": 1, "binding_id": binding_id, "plan_id": plan_id,
-    }))
-    gate.write_text(json.dumps({
-        "version": 1, "binding_id": binding_id, "plan_id": plan_id,
-        "employee_id": "employee", "project_id": "project",
-    }))
+    required.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "binding_id": binding_id,
+                "plan_id": plan_id,
+            }
+        )
+    )
+    gate.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "binding_id": binding_id,
+                "plan_id": plan_id,
+                "employee_id": "employee",
+                "project_id": "project",
+            }
+        )
+    )
     required.chmod(0o600)
     gate.chmod(0o600)
     assert invoke(store, controller)["state"] == "new_route_released"
@@ -546,19 +564,30 @@ def test_exact_prearmed_plan_after_prejournal_baseline_can_commit(monkeypatch, t
     timestamp = datetime.now(timezone.utc).isoformat()
     records = {
         required_path(store.root, binding_id): {
-            "version": 1, "binding_id": binding_id, "plan_id": old_plan,
+            "version": 1,
+            "binding_id": binding_id,
+            "plan_id": old_plan,
         },
         cutoff_path(store.root, binding_id): {
-            "version": 1, "binding_id": binding_id, "plan_id": old_plan,
+            "version": 1,
+            "binding_id": binding_id,
+            "plan_id": old_plan,
             "authorized_after": timestamp,
         },
         epoch_path(store.root, binding_id, plan_id): {
-            "version": 1, "binding_id": binding_id, "plan_id": plan_id,
-            "phase": "pending", "previous_cutoff": timestamp, "authorized_after": None,
+            "version": 1,
+            "binding_id": binding_id,
+            "plan_id": plan_id,
+            "phase": "pending",
+            "previous_cutoff": timestamp,
+            "authorized_after": None,
         },
         gate_path(store.root, binding_id): {
-            "version": 1, "binding_id": binding_id, "plan_id": plan_id,
-            "employee_id": "employee", "project_id": "project",
+            "version": 1,
+            "binding_id": binding_id,
+            "plan_id": plan_id,
+            "employee_id": "employee",
+            "project_id": "project",
         },
     }
     for path, value in records.items():

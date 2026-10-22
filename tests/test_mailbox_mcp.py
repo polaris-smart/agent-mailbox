@@ -304,9 +304,13 @@ def test_review_resubmit_is_reported_as_state_conflict_not_outage(connection):
     manifest, _, state, _ = connection
     server = build_server(manifest)
     state["status"] = 400
-    state["response"] = {"error": {"code": "invalid_state", "message": "employee-secret private detail"}}
+    state["response"] = {
+        "error": {"code": "invalid_state", "message": "employee-secret private detail"}
+    }
     with pytest.raises(ToolError, match="invalid_state") as caught:
-        asyncio.run(server.call_tool("project_task_submit", {"task_id": "task-1", "result": "Addendum"}))
+        asyncio.run(
+            server.call_tool("project_task_submit", {"task_id": "task-1", "result": "Addendum"})
+        )
     assert "in review cannot be submitted again" in str(caught.value)
     assert "MAILBOX_UNAVAILABLE" not in str(caught.value)
     assert "employee-secret" not in str(caught.value)

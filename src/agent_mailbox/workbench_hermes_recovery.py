@@ -40,9 +40,11 @@ def _resolve_cutover_profile(store, employee_id, project_id, profile_id):
         if exc.code != "RECEIVER_PROFILE_UNCONFIRMED":
             raise
     _root, python, discovery = catalog._discover()
-    matches = [] if discovery is None else [
-        entry for entry in discovery["profiles"] if entry["profile_id"] == profile_id
-    ]
+    matches = (
+        []
+        if discovery is None
+        else [entry for entry in discovery["profiles"] if entry["profile_id"] == profile_id]
+    )
     if len(matches) != 1:
         raise WorkbenchError("RECEIVER_PROFILE_UNCONFIRMED", "Choose a listed Hermes profile.")
     return python, Path(matches[0]["home"])

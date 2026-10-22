@@ -279,9 +279,7 @@ def ready_ids(store, employee_id, *, ready_threads=frozenset()):
                 eligible.update(
                     mid
                     for mid in unknown
-                    if _unknown_hermes_envelope(
-                        store.root / "wake", employee_id, mid, binding
-                    )
+                    if _unknown_hermes_envelope(store.root / "wake", employee_id, mid, binding)
                     is not None
                 )
             if binding["host_kind"] == "codex" and binding["host_session_id"] in ready_threads:

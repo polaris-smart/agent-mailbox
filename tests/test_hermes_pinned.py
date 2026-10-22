@@ -203,9 +203,13 @@ class PinnedDispatchTest(unittest.IsolatedAsyncioTestCase):
         import gateway.session_automation as automation
 
         authority = SimpleNamespace(sessions={})
-        self.owner.session_store.lookup_by_session_key = lambda key: self.entry if key == self.key else None
-        with (patch.object(authorities, "authority_for_home", return_value=authority),
-              patch.object(automation, "committed_route_envelope", return_value=None)):
+        self.owner.session_store.lookup_by_session_key = lambda key: (
+            self.entry if key == self.key else None
+        )
+        with (
+            patch.object(authorities, "authority_for_home", return_value=authority),
+            patch.object(automation, "committed_route_envelope", return_value=None),
+        ):
             self.assertFalse(self.request().current())
             authority.sessions["original"] = SimpleNamespace(route=self.key)
             self.assertTrue(self.request().current())
@@ -218,9 +222,15 @@ class PinnedDispatchTest(unittest.IsolatedAsyncioTestCase):
         import gateway.session_automation as automation
 
         authority = SimpleNamespace(sessions={})
-        self.owner.session_store.lookup_by_session_key = lambda key: self.entry if key == self.key else None
-        with (patch.object(authorities, "authority_for_home", return_value=authority),
-              patch.object(automation, "committed_route_envelope", return_value={"provenance": "synthetic"})):
+        self.owner.session_store.lookup_by_session_key = lambda key: (
+            self.entry if key == self.key else None
+        )
+        with (
+            patch.object(authorities, "authority_for_home", return_value=authority),
+            patch.object(
+                automation, "committed_route_envelope", return_value={"provenance": "synthetic"}
+            ),
+        ):
             self.assertTrue(self.request().current())
             self.reset("another-conversation")
             self.assertFalse(self.request().current())

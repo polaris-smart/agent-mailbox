@@ -45,7 +45,7 @@ def test_pid_identity_uses_hermes_bounded_macos_fingerprint_drift(
     monkeypatch, tmp_path, observed, returncode, expected
 ):
     instance = control(tmp_path)
-    monkeypatch.setattr(instance, "_env", lambda: {})
+    monkeypatch.setattr(instance, "_env", dict)
     monkeypatch.setattr(
         gateway_control.subprocess,
         "run",
