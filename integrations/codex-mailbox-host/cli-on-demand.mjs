@@ -185,6 +185,9 @@ export async function startCliReceiver({home,socketPath,stateDir,config}) {
 }
 
 if(process.argv[1] && import.meta.url===pathToFileURL(process.argv[1]).href){
+  // This process owns only the CLI receiver. Bind its socket private from the
+  // first instant, before an external health probe can observe it.
+  process.umask(0o177);
   const [home,socketPath,stateDir,configFile]=process.argv.slice(2);
   try{
     await privatePath(configFile);
