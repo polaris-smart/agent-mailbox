@@ -264,7 +264,7 @@ def test_slow_response_has_total_deadline_and_is_not_retried(local):
             except OSError:
                 pass
 
-    server = socketserver.UnixStreamServer(str(endpoint), Handler)
+    server = socketserver.ThreadingUnixStreamServer(str(endpoint), Handler)
     endpoint.chmod(0o600)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
