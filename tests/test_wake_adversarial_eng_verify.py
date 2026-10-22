@@ -311,8 +311,9 @@ def test_multiprocess_concurrent_wake_once_wakes_exactly_once(tmp_path):
         "        stream.write(employee_id + '\\n')\n"
         "    time.sleep(0.4)\n"
         "    return True\n"
-        "def hook(home, *, require_receipt, binding_resolver):\n"
+        "def hook(home, *, require_receipt, binding_resolver, include_pending):\n"
         "    assert require_receipt is True\n"
+        "    assert include_pending is False\n"
         "    return deliver\n"
         "wk.hook_deliver = hook\n" + command[2]
     )
