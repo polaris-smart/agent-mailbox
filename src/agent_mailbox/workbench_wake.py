@@ -1387,6 +1387,15 @@ def cli_main(argv: list[str], *, home: Path, store: Any = None) -> int:
     if store is None:
         print("缺 store ⇒ 无法轮询 ✗")
         return 2
+    # A native owner uses durable notification intents, not the legacy claim
+    # scanner. Never let a second CLI process replay old .pending markers while
+    # its App instance exists, even when that instance cannot be reached yet.
+    if (Path(state_home) / "workbench/instance.json").exists():
+        if _signal_running_workbench(state_home):
+            print("已通知运行中的工作台检查未读信；由原生接收器处理。")
+            return 0
+        print("工作台实例状态不可确认；本轮未执行旧式唤醒，启动工作台后再检查。")
+        return 2
     employee_ids = active_employee_ids(store)
     from .workbench_host_bindings import resolve_routes
     from .workbench_mail_notifications import mark_host_received, pending_ids

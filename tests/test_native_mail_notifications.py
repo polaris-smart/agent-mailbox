@@ -1127,6 +1127,45 @@ def test_reenable_from_separate_cli_signals_running_native_worker(team, monkeypa
     assert not native.is_alive()
 
 
+def test_legacy_once_delegates_to_running_native_owner_without_replaying_claim(team, monkeypatch):
+    """A launchd wake pass must not replay old claim files beside a live App."""
+    import agent_mailbox.workbench_wake as wake
+
+    store, _, worker, _, _ = team
+    claim = store.root / "wake/claims/legacy-message.pending"
+    claim.parent.mkdir(parents=True)
+    claim.write_text(worker["id"])
+    instance = store.root / "workbench/instance.json"
+    instance.parent.mkdir(parents=True, exist_ok=True)
+    instance.write_text('{"endpoint":"http://127.0.0.1:1","token":"synthetic"}')
+    signalled = []
+    monkeypatch.setattr(wake, "_signal_running_workbench", lambda home: signalled.append(home) or True)
+    monkeypatch.setattr(
+        wake, "run_once", lambda *_args, **_kwargs: pytest.fail("legacy wake ran beside App")
+    )
+    assert wake.cli_main(["--once"], home=store.root, store=store) == 0
+    assert signalled == [store.root]
+    assert claim.read_text() == worker["id"]
+
+
+def test_legacy_once_does_not_replay_claim_when_native_owner_is_uncertain(team, monkeypatch):
+    import agent_mailbox.workbench_wake as wake
+
+    store, _, worker, _, _ = team
+    claim = store.root / "wake/claims/legacy-message.pending"
+    claim.parent.mkdir(parents=True)
+    claim.write_text(worker["id"])
+    instance = store.root / "workbench/instance.json"
+    instance.parent.mkdir(parents=True, exist_ok=True)
+    instance.write_text('{"endpoint":"http://127.0.0.1:1","token":"synthetic"}')
+    monkeypatch.setattr(wake, "_signal_running_workbench", lambda _home: False)
+    monkeypatch.setattr(
+        wake, "run_once", lambda *_args, **_kwargs: pytest.fail("legacy wake ran with uncertain App")
+    )
+    assert wake.cli_main(["--once"], home=store.root, store=store) == 2
+    assert claim.read_text() == worker["id"]
+
+
 def test_codex_turn_complete_signal_retries_busy_pending_before_recovery_interval(
     team, monkeypatch
 ):
