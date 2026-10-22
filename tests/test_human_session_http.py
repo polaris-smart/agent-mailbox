@@ -530,7 +530,8 @@ def test_human_http_never_falls_through_to_owner_capability(tmp_path):
         status, team_mail = request(server, "GET", "human/projects/" + shared + "/messages", bearer)
         assert status == 200 and team_mail["viewing_acknowledges"] is False
         assert [item["id"] for item in team_mail["messages"]] == [
-            newer_shared_group["id"], shared_group["id"]
+            newer_shared_group["id"],
+            shared_group["id"],
         ]
         assert set(team_mail["messages"][0]) == {
             "id",
