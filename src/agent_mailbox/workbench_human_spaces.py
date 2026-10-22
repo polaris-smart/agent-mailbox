@@ -390,7 +390,7 @@ def list_team_messages_for_human(store, human_id, project_id):
             "ORDER BY created_at DESC,rowid DESC LIMIT 100",
             (project_id,),
         ).fetchall()
-        messages = [dict(row) for row in reversed(rows)]
+        messages = [dict(row) for row in rows]
         return {"messages": store._scrub(db, messages), "viewing_acknowledges": False}
 
 
