@@ -250,10 +250,22 @@ def run(
             except (OSError, UnicodeError, json.JSONDecodeError, subprocess.TimeoutExpired):
                 raise ValueError("dsh_preparation_result_unknown") from None
             finally:
-                if not finished:
+                if not finished and child.poll() is None:
                     try:
                         os.killpg(child.pid, signal.SIGKILL)
-                    except ProcessLookupError:
+                    except OSError:
+                        # macOS can deny signalling the new process group even
+                        # though this caller still owns the direct child.
+                        try:
+                            child.kill()
+                        except OSError:
+                            pass
+                try:
+                    child.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    try:
+                        child.kill()
+                        child.wait(timeout=1)
+                    except (OSError, subprocess.TimeoutExpired):
                         pass
-                child.wait()
                 child.stdout.close()

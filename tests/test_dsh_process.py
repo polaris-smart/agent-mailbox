@@ -138,6 +138,27 @@ def test_invalid_output_and_timeout_are_redacted_unknown(case, code):
     assert time.monotonic() - before < 3
 
 
+def test_process_group_permission_failure_falls_back_to_child_kill(case, monkeypatch):
+    spawned = []
+    real_popen = process.subprocess.Popen
+
+    def tracked(*args, **kwargs):
+        child = real_popen(*args, **kwargs)
+        spawned.append(child)
+        return child
+
+    def denied(*_args):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(process.subprocess, "Popen", tracked)
+    monkeypatch.setattr(process.os, "killpg", denied)
+    before = time.monotonic()
+    with pytest.raises(ValueError, match="^dsh_preparation_result_unknown$"):
+        case[5]("setTimeout(()=>{},10000);", timeout=0.1)
+    assert time.monotonic() - before < 3
+    assert len(spawned) == 1 and spawned[0].poll() is not None
+
+
 def test_failure_cannot_claim_success(case):
     with pytest.raises(ValueError, match="^dsh_preparation_refused_or_incomplete$"):
         case[5](success() + "process.exitCode=2;")
