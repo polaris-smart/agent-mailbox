@@ -464,7 +464,7 @@ def _run_once_locked(
         if (event_driven or intent_only) and pending_provider is not None:
             # The durable provider already joins messages, membership and the
             # active recipient. Avoid paging through every historical letter on
-            # each five-second recovery pass merely to intersect with this set.
+            # each periodic recovery pass merely to intersect with this set.
             # Cold-start reconciliation above still reads history once.
             unread = sorted(durable)
         else:

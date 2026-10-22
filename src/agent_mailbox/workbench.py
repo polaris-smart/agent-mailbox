@@ -146,7 +146,7 @@ def t_manual_detail(entrypoint: str) -> str:
 
 
 def wake_redeem_loop(
-    store, home, *, interval: float | None = 5.0, stop: object | None = None
+    store, home, *, interval: float | None = 60.0, stop: object | None = None
 ) -> None:
     """Deliver durable intents on commit signals; a bound host adapter is required.
 
